@@ -1,0 +1,21 @@
+# Use root/example as user/password credentials
+version: '3.1'
+
+services:
+  ci:
+    build:
+      context: .
+      args:
+        - GH_TOKEN=${ACTIONS_BOT_TOKEN:?}
+      dockerfile: Dockerfile.ci
+    volumes:
+      - .:/fivetran-source
+    working_dir: /fivetran-source
+  licensing:
+    build:
+      context: containers/licensing
+      args:
+        - GH_TOKEN=${ACTIONS_BOT_TOKEN:?}
+    volumes:
+      - .:/work
+    working_dir: /work
