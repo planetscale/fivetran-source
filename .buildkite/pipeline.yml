@@ -1,0 +1,47 @@
+agents:
+  queue: "private"
+
+steps:
+  - name: "Tests"
+    label: "Tests"
+    command: "go test -race -v ./..."
+    env:
+      DOCKER_BUILDKIT: 1
+    plugins:
+      - docker-compose#v3.9.0:
+          run: ci
+
+  - name: "go vet"
+    label: "Tests"
+    command: "go vet ./..."
+    env:
+      DOCKER_BUILDKIT: 1
+    plugins:
+      - docker-compose#v3.9.0:
+          run: ci
+
+  - name: "lint-fmt"
+    label: "Lint Format"
+    command: "make lint-fmt"
+    env:
+      DOCKER_BUILDKIT: 1
+    plugins:
+      - docker-compose#v3.9.0:
+          run: ci
+
+  - name: "staticcheck"
+    label: "Tests"
+    command: "go install honnef.co/go/tools/cmd/staticcheck@latest && staticcheck ./..."
+    env:
+      DOCKER_BUILDKIT: 1
+    plugins:
+      - docker-compose#v3.9.0:
+          run: ci
+
+  - name: "Verify dependency licenses %n"
+    command: "go get -v ./... && license_finder"
+    env:
+      DOCKER_BUILDKIT: 1
+    plugins:
+      - docker-compose#v3.9.0:
+          run: licensing
