@@ -3,6 +3,7 @@ VERSION := "0.1.19"
 DATE := $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 NAME := "fivetran-source"
 DOCKER_BUILD_PLATFORM := "linux/amd64"
+DOCKER_LINUX_BUILD_PLATFORM := "linux/arm64/v8"
 ifeq ($(strip $(shell git status --porcelain 2>/dev/null)),)
   GIT_TREE_STATE=clean
 else
@@ -49,7 +50,7 @@ fmt: bootstrap
 
 .PHONY: build-server
 build-server:
-	@go build ./cmd/server
+	@go build -x ./cmd/server
 
 .PHONY: server
 server:
@@ -67,7 +68,13 @@ lint-fmt: fmt
 .PHONY: build-image
 build-image:
 	@echo "==> Building docker image ${REPO}/${NAME}:$(VERSION)"
-	@docker build --platform ${DOCKER_BUILD_PLATFORM} --build-arg VERSION=$(VERSION:v%=%) --build-arg COMMIT=$(COMMIT) --build-arg DATE=$(DATE) -t ${REPO}/${NAME}:$(VERSION) .
+	@docker build --platform ${DOCKER_BUILD_PLATFORM} --build-arg VERSION=$(VERSION:v%=%)  --build-arg GH_TOKEN=${GH_TOKEN} --build-arg COMMIT=$(COMMIT) --build-arg DATE=$(DATE) -t ${REPO}/${NAME}:$(VERSION) .
+	@docker tag ${REPO}/${NAME}:$(VERSION) ${REPO}/${NAME}:latest
+
+.PHONY: build-image-linux
+build-image-linux:
+	@echo "==> Building docker image ${REPO}/${NAME}:$(VERSION)"
+	@docker build --platform ${DOCKER_LINUX_BUILD_PLATFORM} --build-arg VERSION=$(VERSION:v%=%)  --build-arg GH_TOKEN=${GH_TOKEN} --build-arg COMMIT=$(COMMIT) --build-arg DATE=$(DATE) -t ${REPO}/${NAME}:$(VERSION) .
 	@docker tag ${REPO}/${NAME}:$(VERSION) ${REPO}/${NAME}:latest
 
 .PHONY: push
