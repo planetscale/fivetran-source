@@ -122,7 +122,7 @@ func (c *connectorServer) Update(request *fivetran_sdk.UpdateRequest, server fiv
 		return status.Error(codes.InvalidArgument, "request did not contain a Selection_WithSchema")
 	}
 
-	logger := handlers.NewLogger(server, requestId)
+	logger := handlers.NewLogger(server, requestId, psc.TreatTinyIntAsBoolean)
 	defer logger.Release()
 	var db handlers.PlanetScaleDatabase
 	if c.clientConstructor == nil {

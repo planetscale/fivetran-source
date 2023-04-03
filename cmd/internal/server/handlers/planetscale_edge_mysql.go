@@ -119,7 +119,7 @@ func (p planetScaleEdgeMySQLAccess) GetKeyspaceTableSchema(ctx context.Context, 
 		}
 
 		properties[name] = &Column{
-			Type: getFivetranDataType(columnType, !psc.Options.DoNotTreatTinyIntAsBoolean),
+			Type: getFivetranDataType(columnType, psc.TreatTinyIntAsBoolean),
 		}
 	}
 
