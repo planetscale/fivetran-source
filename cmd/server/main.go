@@ -16,7 +16,7 @@ var port = flag.Int("port", 8000, "The server port")
 func main() {
 	ss := server.NewConnectorServer()
 	flag.Parse()
-	lis, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", *port))
+	lis, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", *port))
 	if err != nil {
 		log.Fatalf("failed to listen: %v", err)
 	}
