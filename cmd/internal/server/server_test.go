@@ -231,6 +231,33 @@ func TestUpdateReturnsRows(t *testing.T) {
 	}
 	client, closer := server(ctx, clientConstructor)
 	defer closer()
+	customerSelection := &fivetransdk.TableSelection{
+		Included:  true,
+		TableName: "customers",
+		Columns:   map[string]bool{},
+	}
+
+	for _, f := range allTypesResult.Fields {
+		customerSelection.Columns[f.Name] = true
+	}
+
+	selection := &fivetransdk.Selection_WithSchema{
+		WithSchema: &fivetransdk.TablesWithSchema{
+			Schemas: []*fivetransdk.SchemaSelection{
+				{
+					SchemaName: "SalesDB",
+					Included:   true,
+					Tables: []*fivetransdk.TableSelection{
+						customerSelection,
+						{
+							Included:  false,
+							TableName: "customer_secrets",
+						},
+					},
+				},
+			},
+		},
+	}
 	out, err := client.Update(ctx, &fivetransdk.UpdateRequest{
 		Configuration: map[string]string{
 			"host":     "earth.psdb",
@@ -239,26 +266,7 @@ func TestUpdateReturnsRows(t *testing.T) {
 			"database": "employees",
 		},
 		Selection: &fivetransdk.Selection{
-			Selection: &fivetransdk.Selection_WithSchema{
-				WithSchema: &fivetransdk.TablesWithSchema{
-					Schemas: []*fivetransdk.SchemaSelection{
-						{
-							SchemaName: "SalesDB",
-							Included:   true,
-							Tables: []*fivetransdk.TableSelection{
-								{
-									Included:  true,
-									TableName: "customers",
-								},
-								{
-									Included:  false,
-									TableName: "customer_secrets",
-								},
-							},
-						},
-					},
-				},
-			},
+			Selection: selection,
 		},
 	})
 	assert.NoError(t, err)

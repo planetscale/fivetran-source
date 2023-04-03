@@ -128,6 +128,11 @@ func TestCanSerializeRecord(t *testing.T) {
 	}
 	table := &fivetransdk.TableSelection{
 		TableName: "Customers",
+		Columns:   map[string]bool{},
+	}
+
+	for _, f := range row.Fields {
+		table.Columns[f.Name] = true
 	}
 
 	err = l.Record(row, schema, table)
@@ -161,6 +166,64 @@ func TestCanSerializeRecord(t *testing.T) {
 	dt, err := time.Parse("2006-01-02 15:04:05", "2021-01-19 03:14:07.999999")
 	require.NoError(t, err)
 	assert.Equal(t, timestamppb.New(dt), data["datetime_value"].GetNaiveDatetime())
+}
+
+func TestCanSkipColumns(t *testing.T) {
+	row := &sqltypes.Result{
+		Fields: []*querypb.Field{
+			{
+				Name:         "customer_id",
+				Type:         querypb.Type_INT32,
+				ColumnLength: 21,
+				Charset:      63,
+				Flags:        32928,
+			},
+			{
+				Name:         "name",
+				Type:         querypb.Type_VARCHAR,
+				ColumnLength: 21,
+				Charset:      63,
+				Flags:        32928,
+			},
+		},
+		Rows: [][]sqltypes.Value{
+			{
+				sqltypes.NewInt32(123),
+				sqltypes.NewVarChar("PhaniRaj"),
+			},
+		},
+	}
+
+	tl := &testLogSender{}
+	l := NewLogger(tl, "", false)
+
+	schema := &fivetransdk.SchemaSelection{
+		SchemaName: "SalesDB",
+	}
+	table := &fivetransdk.TableSelection{
+		TableName: "Customers",
+		Columns: map[string]bool{
+			"customer_id": true,
+			"name":        false,
+		},
+	}
+
+	err := l.Record(row, schema, table)
+	assert.NoError(t, err)
+	assert.NotNil(t, tl.lastResponse)
+
+	operation, ok := tl.lastResponse.Response.(*fivetransdk.UpdateResponse_Operation)
+	require.Truef(t, ok, "recordResponse Operation is not of type %s", "UpdateResponse_Operation")
+
+	operationRecord, ok := operation.Operation.Op.(*fivetransdk.Operation_Record)
+	assert.Truef(t, ok, "recordResponse Operation.Op is not of type %s", "Operation_Record")
+
+	data := operationRecord.Record.Data
+	assert.NotNil(t, data)
+
+	assert.Equal(t, int32(123), data["customer_id"].GetShort())
+	_, found := data["name"]
+	assert.False(t, found, "should not include unselected column in output")
 }
 
 func BenchmarkRecordSerialization(b *testing.B) {
