@@ -379,7 +379,8 @@ func (p PlanetScaleEdgeDatabase) getLatestCursorPosition(ctx context.Context, sh
 }
 
 // Convert columnType to fivetran type
-func getFivetranDataType(mysqlType string, treatTinyIntAsBoolean bool) fivetransdk.DataType {
+func getFivetranDataType(mType string, treatTinyIntAsBoolean bool) fivetransdk.DataType {
+	mysqlType := strings.ToLower(mType)
 	if strings.HasPrefix(mysqlType, "tinyint") {
 		if treatTinyIntAsBoolean {
 			return fivetransdk.DataType_BOOLEAN
@@ -422,12 +423,12 @@ func getFivetranDataType(mysqlType string, treatTinyIntAsBoolean bool) fivetrans
 		return fivetransdk.DataType_DOUBLE
 	}
 
-	if strings.HasPrefix(mysqlType, "time") {
-		return fivetransdk.DataType_STRING
-	}
-
 	if strings.HasPrefix(mysqlType, "timestamp") {
 		return fivetransdk.DataType_UTC_DATETIME
+	}
+
+	if strings.HasPrefix(mysqlType, "time") {
+		return fivetransdk.DataType_STRING
 	}
 
 	if strings.HasPrefix(mysqlType, "datetime") {
