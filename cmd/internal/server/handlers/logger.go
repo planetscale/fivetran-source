@@ -137,7 +137,7 @@ func queryResultToData(result *sqltypes.Result, serializeTinyIntAsBool bool, tab
 			if idx < len(columns) {
 
 				colName := columns[idx]
-				if selected, _ := table.Columns[colName]; !selected {
+				if selected := table.Columns[colName]; !selected {
 					continue
 				}
 
