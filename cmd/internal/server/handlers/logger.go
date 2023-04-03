@@ -158,7 +158,7 @@ func sqlTypeToValueType(value sqltypes.Value) (*fivetransdk.ValueType, error) {
 		return &fivetransdk.ValueType{
 			Inner: &fivetransdk.ValueType_String_{String_: value.ToString()},
 		}, nil
-	case querypb.Type_INT8, querypb.Type_UINT8:
+	case querypb.Type_INT8:
 		i, err := value.ToInt64()
 		if err != nil {
 			return nil, errors.Wrap(err, "failed to serialize Type_INT8")
@@ -195,7 +195,7 @@ func sqlTypeToValueType(value sqltypes.Value) (*fivetransdk.ValueType, error) {
 			Inner: &fivetransdk.ValueType_Json{Json: value.ToString()},
 		}, nil
 
-	case querypb.Type_INT16, querypb.Type_INT32, querypb.Type_INT24, querypb.Type_UINT16, querypb.Type_UINT32, querypb.Type_UINT24:
+	case querypb.Type_INT16, querypb.Type_UINT8, querypb.Type_INT32, querypb.Type_INT24, querypb.Type_UINT16, querypb.Type_UINT24:
 		i, err := value.ToInt64()
 		if err != nil {
 			return nil, errors.Wrap(err, "failed to serialize Type_INT32")
@@ -207,7 +207,7 @@ func sqlTypeToValueType(value sqltypes.Value) (*fivetransdk.ValueType, error) {
 			Inner: &fivetransdk.ValueType_Short{Short: int32(i)},
 		}, nil
 
-	case querypb.Type_INT64, querypb.Type_UINT64:
+	case querypb.Type_INT64, querypb.Type_UINT32, querypb.Type_UINT64:
 		i, err := value.ToInt64()
 		if err != nil {
 			return nil, errors.Wrap(err, "failed to serialize Type_INT64")
