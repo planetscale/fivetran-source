@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/base64"
+	"strconv"
 
 	"github.com/pkg/errors"
 	psdbconnect "github.com/planetscale/airbyte-source/proto/psdbconnect/v1alpha1"
@@ -51,6 +52,14 @@ func SourceFromRequest(request ConfiguredRequest) (*PlanetScaleSource, error) {
 		psc.Host = val
 	} else {
 		return nil, errors.New("hostname not found in configuration")
+	}
+
+	if val, ok := configuration["treat_tiny_int_as_boolean"]; ok {
+		b, err := strconv.ParseBool(val)
+		if err != nil {
+			return nil, errors.Wrap(err, "treat_tiny_int_as_boolean has an invalid value")
+		}
+		psc.TreatTinyIntAsBoolean = b
 	}
 
 	return psc, nil

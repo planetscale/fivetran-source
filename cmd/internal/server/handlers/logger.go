@@ -28,16 +28,18 @@ type LogSender interface {
 }
 
 type logger struct {
-	prefix            string
-	sender            LogSender
-	recordResponseKey string
-	recordResponse    *fivetransdk.UpdateResponse
+	prefix                 string
+	sender                 LogSender
+	recordResponseKey      string
+	recordResponse         *fivetransdk.UpdateResponse
+	serializeTinyIntAsBool bool
 }
 
-func NewLogger(sender LogSender, prefix string) Logger {
+func NewLogger(sender LogSender, prefix string, serializeTinyIntAsBool bool) Logger {
 	return &logger{
-		prefix: prefix,
-		sender: sender,
+		prefix:                 prefix,
+		sender:                 sender,
+		serializeTinyIntAsBool: serializeTinyIntAsBool,
 	}
 }
 
@@ -97,7 +99,7 @@ func (l *logger) Record(result *sqltypes.Result, schema *fivetransdk.SchemaSelec
 		}
 	}
 
-	rows, err := queryResultToData(result)
+	rows, err := queryResultToData(result, l.serializeTinyIntAsBool)
 	if err != nil {
 		return l.Log(fivetransdk.LogLevel_SEVERE, fmt.Sprintf("%q", err))
 	}
@@ -122,7 +124,7 @@ func responseKey(schema *fivetransdk.SchemaSelection, table *fivetransdk.TableSe
 	return schema.SchemaName + ":" + table.TableName
 }
 
-func queryResultToData(result *sqltypes.Result) ([]map[string]*fivetransdk.ValueType, error) {
+func queryResultToData(result *sqltypes.Result, serializeTinyIntAsBool bool) ([]map[string]*fivetransdk.ValueType, error) {
 	data := make([]map[string]*fivetransdk.ValueType, 0, len(result.Rows))
 	columns := make([]string, 0, len(result.Fields))
 	for _, field := range result.Fields {
@@ -133,7 +135,7 @@ func queryResultToData(result *sqltypes.Result) ([]map[string]*fivetransdk.Value
 		record := make(map[string]*fivetransdk.ValueType)
 		for idx, val := range row {
 			if idx < len(columns) {
-				val, err := sqlTypeToValueType(val)
+				val, err := sqlTypeToValueType(val, serializeTinyIntAsBool)
 				if err != nil {
 					return nil, errors.Wrap(err, "unable to serialize row")
 				}
@@ -146,7 +148,7 @@ func queryResultToData(result *sqltypes.Result) ([]map[string]*fivetransdk.Value
 	return data, nil
 }
 
-func sqlTypeToValueType(value sqltypes.Value) (*fivetransdk.ValueType, error) {
+func sqlTypeToValueType(value sqltypes.Value, serializeTinyIntAsBool bool) (*fivetransdk.ValueType, error) {
 	if value.IsNull() {
 		return &fivetransdk.ValueType{
 			Inner: &fivetransdk.ValueType_Null{Null: true},
@@ -164,7 +166,7 @@ func sqlTypeToValueType(value sqltypes.Value) (*fivetransdk.ValueType, error) {
 			return nil, errors.Wrap(err, "failed to serialize Type_INT8")
 		}
 
-		if i <= 1 {
+		if serializeTinyIntAsBool && i <= 1 {
 			b, err := value.ToBool()
 			if err != nil {
 				return nil, errors.Wrap(err, "failed to serialize Type_INT8")
@@ -172,11 +174,12 @@ func sqlTypeToValueType(value sqltypes.Value) (*fivetransdk.ValueType, error) {
 			return &fivetransdk.ValueType{
 				Inner: &fivetransdk.ValueType_Bool{Bool: b},
 			}, nil
-		} else {
-			return &fivetransdk.ValueType{
-				Inner: &fivetransdk.ValueType_Short{Short: int32(i)},
-			}, nil
 		}
+
+		return &fivetransdk.ValueType{
+			Inner: &fivetransdk.ValueType_Short{Short: int32(i)},
+		}, nil
+
 	case querypb.Type_DECIMAL:
 		return &fivetransdk.ValueType{
 			Inner: &fivetransdk.ValueType_Decimal{Decimal: value.ToString()},
