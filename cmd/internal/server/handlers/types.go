@@ -54,12 +54,12 @@ func SourceFromRequest(request ConfiguredRequest) (*PlanetScaleSource, error) {
 		return nil, errors.New("hostname not found in configuration")
 	}
 
-	if val, ok := configuration["do_not_treat_tiny_int_as_boolean"]; ok {
+	if val, ok := configuration["treat_tiny_int_as_boolean"]; ok {
 		b, err := strconv.ParseBool(val)
 		if err != nil {
-			return nil, errors.Wrap(err, "do_not_treat_tiny_int_as_boolean has an invalid value")
+			return nil, errors.Wrap(err, "treat_tiny_int_as_boolean has an invalid value")
 		}
-		psc.DoNotTreatTinyIntAsBoolean = b
+		psc.TreatTinyIntAsBoolean = b
 	}
 
 	return psc, nil
