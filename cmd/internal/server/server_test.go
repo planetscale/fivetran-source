@@ -195,7 +195,7 @@ func TestUpdateReturnsRows(t *testing.T) {
 				sqltypes.MakeTrusted(querypb.Type_UINT64, intValue),
 				sqltypes.MakeTrusted(querypb.Type_FLOAT32, []byte("1.00")),
 				sqltypes.MakeTrusted(querypb.Type_FLOAT64, []byte("1.00")),
-				sqltypes.MakeTrusted(querypb.Type_TIMESTAMP, []byte("1679672891")),
+				sqltypes.MakeTrusted(querypb.Type_TIMESTAMP, []byte("2006-01-02 15:04:05")),
 				sqltypes.MakeTrusted(querypb.Type_DATE, []byte("2023-03-24")),
 				sqltypes.MakeTrusted(querypb.Type_TIME, []byte("Type_TIME")),
 				sqltypes.MakeTrusted(querypb.Type_DATETIME, []byte("2023-03-23 14:28:21.592111")),
