@@ -305,6 +305,16 @@ func TestSchema_CanPickRightFivetranType(t *testing.T) {
 			TreatTinyIntAsBoolean: false,
 		},
 		{
+			MysqlType:             "timestamp",
+			FivetranType:          fivetransdk.DataType_UTC_DATETIME,
+			TreatTinyIntAsBoolean: true,
+		},
+		{
+			MysqlType:             "time",
+			FivetranType:          fivetransdk.DataType_STRING,
+			TreatTinyIntAsBoolean: true,
+		},
+		{
 			MysqlType:    "bigint(16)",
 			FivetranType: fivetransdk.DataType_LONG,
 		},

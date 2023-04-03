@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"math"
-	"strconv"
 	"testing"
 	"time"
 
@@ -29,7 +28,7 @@ func TestCanSerializeRecord(t *testing.T) {
 	require.NoError(t, err)
 	floatValue, err := sqltypes.NewValue(querypb.Type_FLOAT32, []byte("123.456"))
 	require.NoError(t, err)
-	timestamp := "1676324575"
+	timestamp := "2006-01-02 15:04:05"
 	row := &sqltypes.Result{
 		Fields: []*querypb.Field{
 			{
@@ -158,9 +157,9 @@ func TestCanSerializeRecord(t *testing.T) {
 	assert.Equal(t, float32(123.456), data["float_value"].GetFloat())
 	dateValue := time.Date(2004, time.December, 12, 0, 0, 0, 0, time.UTC)
 	assert.Equal(t, timestamppb.New(dateValue), data["date_value"].GetNaiveDate())
-	ts, err := strconv.ParseInt(timestamp, 10, 64)
+	dts, err := time.Parse(timestamp, "2006-01-02 15:04:05")
 	require.NoError(t, err)
-	assert.Equal(t, timestamppb.New(time.Unix(ts, 0)), data["timestamp_value"].GetUtcDatetime())
+	assert.Equal(t, timestamppb.New(dts), data["timestamp_value"].GetUtcDatetime())
 	dt, err := time.Parse("2006-01-02 15:04:05", "2021-01-19 03:14:07.999999")
 	require.NoError(t, err)
 	assert.Equal(t, timestamppb.New(dt), data["datetime_value"].GetNaiveDatetime())

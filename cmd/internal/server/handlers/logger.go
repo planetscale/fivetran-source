@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"strconv"
 	"time"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -248,12 +247,12 @@ func sqlTypeToValueType(value sqltypes.Value) (*fivetransdk.ValueType, error) {
 			Inner: &fivetransdk.ValueType_NaiveDate{NaiveDate: timestamppb.New(t)},
 		}, nil
 	case querypb.Type_TIMESTAMP:
-		ts, err := strconv.ParseInt(value.ToString(), 10, 64)
+		t, err := time.Parse("2006-01-02 15:04:05", value.ToString())
 		if err != nil {
 			return nil, errors.Wrap(err, "failed to serialize Type_TIMESTAMP")
 		}
 		return &fivetransdk.ValueType{
-			Inner: &fivetransdk.ValueType_UtcDatetime{UtcDatetime: timestamppb.New(time.Unix(ts, 0))},
+			Inner: &fivetransdk.ValueType_UtcDatetime{UtcDatetime: timestamppb.New(t)},
 		}, nil
 	case querypb.Type_DATETIME:
 		t, err := time.Parse("2006-01-02 15:04:05", value.ToString())
