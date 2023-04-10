@@ -42,7 +42,7 @@ func TestCallsReadWithSelectedSchema(t *testing.T) {
 		return nil, nil
 	}
 
-	db := lib.NewTestConnectClient(readFn, lib.BlankDiscoverFn)
+	db := lib.NewTestConnectClient(readFn)
 	err := sync.Handle(psc, &db, tl, &lib.SyncState{
 		Keyspaces: map[string]lib.KeyspaceState{
 			"SalesDB": {

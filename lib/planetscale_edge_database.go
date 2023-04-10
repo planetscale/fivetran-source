@@ -10,7 +10,6 @@ import (
 
 	"github.com/pkg/errors"
 	psdbconnect "github.com/planetscale/airbyte-source/proto/psdbconnect/v1alpha1"
-	fivetransdk "github.com/planetscale/fivetran-proto/proto/fivetransdk/v1alpha1"
 	"github.com/planetscale/psdb/auth"
 	grpcclient "github.com/planetscale/psdb/core/pool"
 	clientoptions "github.com/planetscale/psdb/core/pool/options"
@@ -29,7 +28,7 @@ type (
 )
 
 type DatabaseLogger interface {
-	Log(fivetransdk.LogLevel, string) error
+	Info(string)
 }
 
 // PlanetScaleDatabase is a general purpose interface
@@ -107,7 +106,7 @@ func (p PlanetScaleEdgeDatabase) Read(ctx context.Context, logger DatabaseLogger
 	readDuration := 1 * time.Minute
 	preamble := fmt.Sprintf("[%v:%v shard : %v] ", ps.Database, tableName, currentPosition.Shard)
 	for {
-		logger.Log(fivetransdk.LogLevel_INFO, preamble+"peeking to see if there's any new rows")
+		logger.Info(preamble + "peeking to see if there's any new rows")
 		latestCursorPosition, lcErr := p.getLatestCursorPosition(ctx, currentPosition.Shard, currentPosition.Keyspace, tableName, ps, tabletType)
 		if lcErr != nil {
 			return currentSerializedCursor, errors.Wrap(err, "Unable to get latest cursor position")
@@ -115,11 +114,11 @@ func (p PlanetScaleEdgeDatabase) Read(ctx context.Context, logger DatabaseLogger
 
 		// the current vgtid is the same as the last synced vgtid, no new rows.
 		if latestCursorPosition == currentPosition.Position {
-			logger.Log(fivetransdk.LogLevel_INFO, preamble+"no new rows found, exiting")
+			logger.Info(preamble + "no new rows found, exiting")
 			return TableCursorToSerializedCursor(currentPosition)
 		}
-		logger.Log(fivetransdk.LogLevel_INFO, fmt.Sprintf("new rows found, syncing rows for %v", readDuration))
-		logger.Log(fivetransdk.LogLevel_INFO, fmt.Sprintf(preamble+"syncing rows with cursor [%v]", currentPosition))
+		logger.Info(fmt.Sprintf("new rows found, syncing rows for %v", readDuration))
+		logger.Info(fmt.Sprintf(preamble+"syncing rows with cursor [%v]", currentPosition))
 
 		currentPosition, err = p.sync(ctx, logger, tableName, currentPosition, latestCursorPosition, ps, tabletType, readDuration, onResult, onCursor)
 		if currentPosition.Position != "" {
@@ -133,16 +132,16 @@ func (p PlanetScaleEdgeDatabase) Read(ctx context.Context, logger DatabaseLogger
 			if s, ok := status.FromError(err); ok {
 				// if the error is anything other than server timeout, keep going
 				if s.Code() != codes.DeadlineExceeded {
-					logger.Log(fivetransdk.LogLevel_INFO, fmt.Sprintf("%v Got error [%v] with message [%q], Returning with cursor :[%v] after server timeout", preamble, s.Code(), err, currentPosition))
+					logger.Info(fmt.Sprintf("%v Got error [%v] with message [%q], Returning with cursor :[%v] after server timeout", preamble, s.Code(), err, currentPosition))
 					return currentSerializedCursor, nil
 				} else {
-					logger.Log(fivetransdk.LogLevel_INFO, preamble+"Continuing with cursor after server timeout")
+					logger.Info(preamble + "Continuing with cursor after server timeout")
 				}
 			} else if errors.Is(err, io.EOF) {
-				logger.Log(fivetransdk.LogLevel_INFO, fmt.Sprintf("%vFinished reading all rows for table [%v]", preamble, tableName))
+				logger.Info(fmt.Sprintf("%vFinished reading all rows for table [%v]", preamble, tableName))
 				return currentSerializedCursor, nil
 			} else {
-				logger.Log(fivetransdk.LogLevel_INFO, fmt.Sprintf("non-grpc error [%v]]", err))
+				logger.Info(fmt.Sprintf("non-grpc error [%v]]", err))
 				return currentSerializedCursor, err
 			}
 		}
@@ -183,7 +182,7 @@ func (p PlanetScaleEdgeDatabase) sync(ctx context.Context, logger DatabaseLogger
 		tc.Position = ""
 	}
 
-	logger.Log(fivetransdk.LogLevel_INFO, fmt.Sprintf("Syncing with cursor position : [%v], using last known PK : %v, stop cursor is : [%v]", tc.Position, tc.LastKnownPk != nil, stopPosition))
+	logger.Info(fmt.Sprintf("Syncing with cursor position : [%v], using last known PK : %v, stop cursor is : [%v]", tc.Position, tc.LastKnownPk != nil, stopPosition))
 
 	sReq := &psdbconnect.SyncRequest{
 		TableName:  tableName,
