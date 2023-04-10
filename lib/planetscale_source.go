@@ -12,12 +12,12 @@ import (
 // PlanetScaleSource defines a configured FiveTran Source for a PlanetScale database
 // Consider this a connection string to a PlanetScale database.
 type PlanetScaleSource struct {
-	Host     string              `json:"host"`
-	Database string              `json:"database"`
-	Username string              `json:"username"`
-	Password string              `json:"password"`
-	Shards   string              `json:"shards"`
-	Options  CustomSourceOptions `json:"options"`
+	Host                  string `json:"host"`
+	Database              string `json:"database"`
+	Username              string `json:"username"`
+	Password              string `json:"password"`
+	Shards                string `json:"shards"`
+	TreatTinyIntAsBoolean bool   `json:"treat_tiny_int_as_boolean"`
 }
 
 // DSN returns a DataSource that mysql libraries can use to connect to a PlanetScale database.
@@ -93,8 +93,4 @@ func (psc PlanetScaleSource) GetInitialState(keyspaceOrDatabase string, shards [
 	}
 
 	return shardCursors, nil
-}
-
-type CustomSourceOptions struct {
-	DoNotTreatTinyIntAsBoolean bool `json:"do_not_treat_tiny_int_as_boolean"`
 }
