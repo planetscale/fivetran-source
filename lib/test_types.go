@@ -84,6 +84,6 @@ func (tcc *TestConnectClient) Read(ctx context.Context, logger DatabaseLogger, p
 	return nil, errors.New("Unimplemented")
 }
 
-func NewTestConnectClient(r ReadFunc) PlanetScaleDatabase {
+func NewTestConnectClient(r ReadFunc) ConnectClient {
 	return &TestConnectClient{ReadFn: r}
 }

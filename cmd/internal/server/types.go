@@ -17,14 +17,14 @@ type ConfigurationFormHandler interface {
 }
 
 type CheckConnectionHandler interface {
-	Handle(context.Context, lib.PlanetScaleDatabase, string, *lib.PlanetScaleSource) (*fivetransdk.TestResponse, error)
+	Handle(context.Context, lib.ConnectClient, string, *lib.PlanetScaleSource) (*fivetransdk.TestResponse, error)
 }
 type SchemaHandler interface {
-	Handle(context.Context, *lib.PlanetScaleSource, *lib.PlanetScaleEdgeMysqlAccess) (*fivetransdk.SchemaResponse, error)
+	Handle(context.Context, *lib.PlanetScaleSource, *lib.MysqlClient) (*fivetransdk.SchemaResponse, error)
 }
 
 type SyncHandler interface {
-	Handle(*lib.PlanetScaleSource, *lib.PlanetScaleDatabase, handlers.Logger, *lib.SyncState, *fivetransdk.Selection_WithSchema) error
+	Handle(*lib.PlanetScaleSource, *lib.ConnectClient, handlers.Logger, *lib.SyncState, *fivetransdk.Selection_WithSchema) error
 }
 
 func NewConfigurationFormHandler() ConfigurationFormHandler {

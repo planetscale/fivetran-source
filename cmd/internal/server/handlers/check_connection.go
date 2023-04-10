@@ -10,7 +10,7 @@ import (
 
 type CheckConnection struct{}
 
-func (CheckConnection) Handle(ctx context.Context, database lib.PlanetScaleDatabase, s string, source *lib.PlanetScaleSource) (*fivetransdk.TestResponse, error) {
+func (CheckConnection) Handle(ctx context.Context, database lib.ConnectClient, s string, source *lib.PlanetScaleSource) (*fivetransdk.TestResponse, error) {
 	resp := &fivetransdk.TestResponse{
 		Response: &fivetransdk.TestResponse_Success{
 			Success: true,

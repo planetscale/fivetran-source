@@ -11,25 +11,25 @@ import (
 	psdbconnect "github.com/planetscale/airbyte-source/proto/psdbconnect/v1alpha1"
 )
 
-type PlanetScaleEdgeMysqlAccess interface {
+type MysqlClient interface {
 	BuildSchema(ctx context.Context, psc PlanetScaleSource, schemaBuilder SchemaBuilder) error
 	PingContext(context.Context, PlanetScaleSource) error
 	GetVitessShards(ctx context.Context, psc PlanetScaleSource) ([]string, error)
 	Close() error
 }
 
-func NewMySQL(psc *PlanetScaleSource) (PlanetScaleEdgeMysqlAccess, error) {
+func NewMySQL(psc *PlanetScaleSource) (MysqlClient, error) {
 	db, err := sql.Open("mysql", psc.DSN(psdbconnect.TabletType_primary))
 	if err != nil {
 		return nil, err
 	}
 
-	return planetScaleEdgeMySQLAccess{
+	return mysqlClient{
 		db: db,
 	}, nil
 }
 
-type planetScaleEdgeMySQLAccess struct {
+type mysqlClient struct {
 	db *sql.DB
 }
 
@@ -38,7 +38,7 @@ type planetScaleEdgeMySQLAccess struct {
 // 2. Get the schemas for all tables in a keyspace, for each keyspace
 // 2. Get columns and primary keys for each table from information_schema.columns
 // 3. Format results into FiveTran response
-func (p planetScaleEdgeMySQLAccess) BuildSchema(ctx context.Context, psc PlanetScaleSource, schemaBuilder SchemaBuilder) error {
+func (p mysqlClient) BuildSchema(ctx context.Context, psc PlanetScaleSource, schemaBuilder SchemaBuilder) error {
 	keyspaces, err := p.GetKeyspaces(ctx, psc)
 	if err != nil {
 		return errors.Wrap(err, "Unable to build schema for database")
@@ -67,11 +67,11 @@ func (p planetScaleEdgeMySQLAccess) BuildSchema(ctx context.Context, psc PlanetS
 	return nil
 }
 
-func (p planetScaleEdgeMySQLAccess) Close() error {
+func (p mysqlClient) Close() error {
 	return p.db.Close()
 }
 
-func (p planetScaleEdgeMySQLAccess) getKeyspaceTableColumns(ctx context.Context, keyspaceName string, tableName string) ([]MysqlColumn, error) {
+func (p mysqlClient) getKeyspaceTableColumns(ctx context.Context, keyspaceName string, tableName string) ([]MysqlColumn, error) {
 	var columns []MysqlColumn
 	columnNamesQR, err := p.db.QueryContext(
 		ctx,
@@ -105,7 +105,7 @@ func (p planetScaleEdgeMySQLAccess) getKeyspaceTableColumns(ctx context.Context,
 	return columns, nil
 }
 
-func (p planetScaleEdgeMySQLAccess) GetVitessShards(ctx context.Context, psc PlanetScaleSource) ([]string, error) {
+func (p mysqlClient) GetVitessShards(ctx context.Context, psc PlanetScaleSource) ([]string, error) {
 	var shards []string
 
 	// TODO: is there a prepared statement equivalent?
@@ -132,13 +132,13 @@ func (p planetScaleEdgeMySQLAccess) GetVitessShards(ctx context.Context, psc Pla
 	return shards, nil
 }
 
-func (p planetScaleEdgeMySQLAccess) PingContext(ctx context.Context, psc PlanetScaleSource) error {
+func (p mysqlClient) PingContext(ctx context.Context, psc PlanetScaleSource) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	return p.db.PingContext(ctx)
 }
 
-func (p planetScaleEdgeMySQLAccess) getKeyspaceTableNames(ctx context.Context, keyspaceName string) ([]string, error) {
+func (p mysqlClient) getKeyspaceTableNames(ctx context.Context, keyspaceName string) ([]string, error) {
 	var tables []string
 
 	tableNamesQR, err := p.db.Query(fmt.Sprintf("show tables from `%s`;", keyspaceName))
@@ -162,7 +162,7 @@ func (p planetScaleEdgeMySQLAccess) getKeyspaceTableNames(ctx context.Context, k
 	return tables, err
 }
 
-func (p planetScaleEdgeMySQLAccess) GetKeyspaces(ctx context.Context, psc PlanetScaleSource) ([]string, error) {
+func (p mysqlClient) GetKeyspaces(ctx context.Context, psc PlanetScaleSource) ([]string, error) {
 	var keyspaces []string
 
 	// TODO: is there a prepared statement equivalent?
