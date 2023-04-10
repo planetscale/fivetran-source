@@ -113,7 +113,7 @@ func TestUpdateValidatesSchemaSelection(t *testing.T) {
 func TestUpdateValidatesState(t *testing.T) {
 	ctx := context.Background()
 
-	clientConstructor := func() lib.PlanetScaleDatabase {
+	clientConstructor := func() lib.ConnectClient {
 		return &lib.TestConnectClient{
 			ListVitessShardsFn: func(ctx context.Context, ps lib.PlanetScaleSource) ([]string, error) {
 				return []string{"-"}, nil
@@ -217,7 +217,7 @@ func TestUpdateReturnsRows(t *testing.T) {
 			},
 		},
 	}
-	clientConstructor := func() lib.PlanetScaleDatabase {
+	clientConstructor := func() lib.ConnectClient {
 		return &lib.TestConnectClient{
 			ListVitessShardsFn: func(ctx context.Context, ps lib.PlanetScaleSource) ([]string, error) {
 				return []string{"-", "-40"}, nil
@@ -315,7 +315,7 @@ func TestUpdateReturnsRows(t *testing.T) {
 
 func TestUpdateReturnsState(t *testing.T) {
 	ctx := context.Background()
-	clientConstructor := func() lib.PlanetScaleDatabase {
+	clientConstructor := func() lib.ConnectClient {
 		return &lib.TestConnectClient{
 			ListVitessShardsFn: func(ctx context.Context, ps lib.PlanetScaleSource) ([]string, error) {
 				return []string{"-"}, nil
@@ -385,7 +385,7 @@ func TestUpdateReturnsState(t *testing.T) {
 
 func TestCheckConnectionReturnsSuccess(t *testing.T) {
 	ctx := context.Background()
-	clientConstructor := func() lib.PlanetScaleDatabase {
+	clientConstructor := func() lib.ConnectClient {
 		return &lib.TestConnectClient{
 			CanConnectFn: func(ctx context.Context, ps lib.PlanetScaleSource) error {
 				return nil
@@ -432,7 +432,7 @@ func TestCheckConnectionReturnsErrorIfNotEdgePassword(t *testing.T) {
 
 func TestCheckConnectionReturnsErrorIfCheckFails(t *testing.T) {
 	ctx := context.Background()
-	clientConstructor := func() lib.PlanetScaleDatabase {
+	clientConstructor := func() lib.ConnectClient {
 		return &lib.TestConnectClient{
 			CanConnectFn: func(ctx context.Context, ps lib.PlanetScaleSource) error {
 				return fmt.Errorf("unable to connect to PlanetScale Database : %v", ps.Database)
@@ -459,7 +459,7 @@ func TestCheckConnectionReturnsErrorIfCheckFails(t *testing.T) {
 
 func TestSchemaChecksCredentials(t *testing.T) {
 	ctx := context.Background()
-	clientConstructor := func() lib.PlanetScaleDatabase {
+	clientConstructor := func() lib.ConnectClient {
 		return &lib.TestConnectClient{
 			CanConnectFn: func(ctx context.Context, ps lib.PlanetScaleSource) error {
 				return fmt.Errorf("access denied for user : %v", ps.Username)

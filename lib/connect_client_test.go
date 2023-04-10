@@ -16,7 +16,7 @@ import (
 
 func TestRead_CanPeekBeforeRead(t *testing.T) {
 	dbl := &dbLogger{}
-	ped := PlanetScaleEdgeDatabase{}
+	ped := connectClient{}
 	tc := &psdbconnect.TableCursor{
 		Shard:    "-",
 		Position: "THIS_IS_A_SHARD_GTID",
@@ -60,7 +60,7 @@ func TestRead_CanPeekBeforeRead(t *testing.T) {
 
 func TestRead_CanEarlyExitIfNoNewVGtidInPeek(t *testing.T) {
 	dbl := &dbLogger{}
-	ped := PlanetScaleEdgeDatabase{}
+	ped := connectClient{}
 	tc := &psdbconnect.TableCursor{
 		Shard:    "-",
 		Position: "THIS_IS_A_SHARD_GTID",
@@ -100,7 +100,7 @@ func TestRead_CanEarlyExitIfNoNewVGtidInPeek(t *testing.T) {
 
 func TestRead_CanPickPrimaryForShardedKeyspaces(t *testing.T) {
 	dbl := &dbLogger{}
-	ped := PlanetScaleEdgeDatabase{}
+	ped := connectClient{}
 	tc := &psdbconnect.TableCursor{
 		Shard:    "40-80",
 		Position: "THIS_IS_A_SHARD_GTID",
@@ -141,7 +141,7 @@ func TestRead_CanPickPrimaryForShardedKeyspaces(t *testing.T) {
 
 func TestRead_CanReturnNewCursorIfNewFound(t *testing.T) {
 	dbl := &dbLogger{}
-	ped := PlanetScaleEdgeDatabase{}
+	ped := connectClient{}
 	tc := &psdbconnect.TableCursor{
 		Shard:    "-",
 		Position: "THIS_IS_A_SHARD_GTID",
@@ -188,7 +188,7 @@ func TestRead_CanReturnNewCursorIfNewFound(t *testing.T) {
 
 func TestRead_CanStopAtWellKnownCursor(t *testing.T) {
 	dbl := &dbLogger{}
-	ped := PlanetScaleEdgeDatabase{}
+	ped := connectClient{}
 
 	numResponses := 10
 	// when the client tries to get the "current" vgtid,

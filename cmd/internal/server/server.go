@@ -30,8 +30,8 @@ type connectorServer struct {
 }
 
 type (
-	edgeClientConstructor  func() lib.PlanetScaleDatabase
-	mysqlClientConstructor func() lib.PlanetScaleEdgeMysqlAccess
+	edgeClientConstructor  func() lib.ConnectClient
+	mysqlClientConstructor func() lib.MysqlClient
 )
 
 func NewConnectorServer() fivetran_sdk.ConnectorServer {
@@ -67,9 +67,9 @@ func (c *connectorServer) Test(ctx context.Context, request *fivetran_sdk.TestRe
 		return nil, errors.Wrap(err, "unable to open connection to PlanetScale database")
 	}
 	defer mysql.Close()
-	var db lib.PlanetScaleDatabase
+	var db lib.ConnectClient
 	if c.clientConstructor == nil {
-		db = lib.NewEdgeDatabase(&mysql)
+		db = lib.NewConnectClient(&mysql)
 	} else {
 		db = c.clientConstructor()
 	}
@@ -86,8 +86,8 @@ func (c *connectorServer) Schema(ctx context.Context, request *fivetran_sdk.Sche
 	}
 
 	var (
-		mysqlClient lib.PlanetScaleEdgeMysqlAccess
-		db          lib.PlanetScaleDatabase
+		mysqlClient lib.MysqlClient
+		db          lib.ConnectClient
 	)
 
 	if c.mysqlClientConstructor == nil {
@@ -105,7 +105,7 @@ func (c *connectorServer) Schema(ctx context.Context, request *fivetran_sdk.Sche
 	}
 
 	if c.clientConstructor == nil {
-		db = lib.NewEdgeDatabase(&mysqlClient)
+		db = lib.NewConnectClient(&mysqlClient)
 	} else {
 		db = c.clientConstructor()
 	}
@@ -144,14 +144,14 @@ func (c *connectorServer) Update(request *fivetran_sdk.UpdateRequest, server fiv
 
 	logger := handlers.NewLogger(server, requestId, psc.TreatTinyIntAsBoolean)
 	defer logger.Release()
-	var db lib.PlanetScaleDatabase
+	var db lib.ConnectClient
 	if c.clientConstructor == nil {
 		mysql, err := lib.NewMySQL(psc)
 		if err != nil {
 			return status.Error(codes.InvalidArgument, "unable to open connection to PlanetScale database")
 		}
 		defer mysql.Close()
-		db = lib.NewEdgeDatabase(&mysql)
+		db = lib.NewConnectClient(&mysql)
 	} else {
 		db = c.clientConstructor()
 	}

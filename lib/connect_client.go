@@ -31,33 +31,33 @@ type DatabaseLogger interface {
 	Info(string)
 }
 
-// PlanetScaleDatabase is a general purpose interface
+// ConnectClient is a general purpose interface
 // that defines all the data access methods needed for the PlanetScale Fivetran source to function.
-type PlanetScaleDatabase interface {
+type ConnectClient interface {
 	CanConnect(ctx context.Context, ps PlanetScaleSource) error
 	Read(ctx context.Context, logger DatabaseLogger, ps PlanetScaleSource, tableName string, lastKnownPosition *psdbconnect.TableCursor, onResult OnResult, onCursor OnCursor) (*SerializedCursor, error)
 	ListShards(ctx context.Context, ps PlanetScaleSource) ([]string, error)
 }
 
-func NewEdgeDatabase(mysqlAccess *PlanetScaleEdgeMysqlAccess) PlanetScaleDatabase {
-	return &PlanetScaleEdgeDatabase{
+func NewConnectClient(mysqlAccess *MysqlClient) ConnectClient {
+	return &connectClient{
 		Mysql: mysqlAccess,
 	}
 }
 
-// PlanetScaleEdgeDatabase is an implementation of the PlanetScaleDatabase interface defined above.
+// connectClient is an implementation of the ConnectClient interface defined above.
 // It uses the mysql interface provided by PlanetScale for all schema/shard/tablet discovery and
 // the grpc API for incrementally syncing rows from PlanetScale.
-type PlanetScaleEdgeDatabase struct {
+type connectClient struct {
 	clientFn func(ctx context.Context, ps PlanetScaleSource) (psdbconnect.ConnectClient, error)
-	Mysql    *PlanetScaleEdgeMysqlAccess
+	Mysql    *MysqlClient
 }
 
-func (p PlanetScaleEdgeDatabase) ListShards(ctx context.Context, ps PlanetScaleSource) ([]string, error) {
+func (p connectClient) ListShards(ctx context.Context, ps PlanetScaleSource) ([]string, error) {
 	return (*p.Mysql).GetVitessShards(ctx, ps)
 }
 
-func (p PlanetScaleEdgeDatabase) CanConnect(ctx context.Context, ps PlanetScaleSource) error {
+func (p connectClient) CanConnect(ctx context.Context, ps PlanetScaleSource) error {
 	if *p.Mysql == nil {
 		return status.Error(codes.Internal, "Mysql access is uninitialized")
 	}
@@ -69,7 +69,7 @@ func (p PlanetScaleEdgeDatabase) CanConnect(ctx context.Context, ps PlanetScaleS
 	return (*p.Mysql).PingContext(ctx, ps)
 }
 
-func (p PlanetScaleEdgeDatabase) checkEdgePassword(ctx context.Context, psc PlanetScaleSource) error {
+func (p connectClient) checkEdgePassword(ctx context.Context, psc PlanetScaleSource) error {
 	if !strings.HasSuffix(psc.Host, ".connect.psdb.cloud") {
 		return errors.New("This password is not connect-enabled, please ensure that your organization is enrolled in the Connect beta.")
 	}
@@ -94,7 +94,7 @@ func (p PlanetScaleEdgeDatabase) checkEdgePassword(ctx context.Context, psc Plan
 // 3. Ask vstream to stream from the last known vgtid
 // 4. When we reach the stopping point, read all rows available at this vgtid
 // 5. End the stream when (a) a vgtid newer than latest vgtid is encountered or (b) the timeout kicks in.
-func (p PlanetScaleEdgeDatabase) Read(ctx context.Context, logger DatabaseLogger, ps PlanetScaleSource, tableName string, lastKnownPosition *psdbconnect.TableCursor, onResult OnResult, onCursor OnCursor) (*SerializedCursor, error) {
+func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps PlanetScaleSource, tableName string, lastKnownPosition *psdbconnect.TableCursor, onResult OnResult, onCursor OnCursor) (*SerializedCursor, error) {
 	var (
 		err                     error
 		sErr                    error
@@ -148,7 +148,7 @@ func (p PlanetScaleEdgeDatabase) Read(ctx context.Context, logger DatabaseLogger
 	}
 }
 
-func (p PlanetScaleEdgeDatabase) sync(ctx context.Context, logger DatabaseLogger, tableName string, tc *psdbconnect.TableCursor, stopPosition string, ps PlanetScaleSource, tabletType psdbconnect.TabletType, readDuration time.Duration, onResult OnResult, onCursor OnCursor) (*psdbconnect.TableCursor, error) {
+func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableName string, tc *psdbconnect.TableCursor, stopPosition string, ps PlanetScaleSource, tabletType psdbconnect.TabletType, readDuration time.Duration, onResult OnResult, onCursor OnCursor) (*psdbconnect.TableCursor, error) {
 	ctx, cancel := context.WithTimeout(ctx, readDuration)
 	defer cancel()
 
@@ -240,7 +240,7 @@ func (p PlanetScaleEdgeDatabase) sync(ctx context.Context, logger DatabaseLogger
 	}
 }
 
-func (p PlanetScaleEdgeDatabase) getLatestCursorPosition(ctx context.Context, shard, keyspace string, tableName string, ps PlanetScaleSource, tabletType psdbconnect.TabletType) (string, error) {
+func (p connectClient) getLatestCursorPosition(ctx context.Context, shard, keyspace string, tableName string, ps PlanetScaleSource, tabletType psdbconnect.TabletType) (string, error) {
 	timeout := 45 * time.Second
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

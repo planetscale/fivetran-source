@@ -15,7 +15,7 @@ import (
 
 type Sync struct{}
 
-func (s *Sync) Handle(psc *lib.PlanetScaleSource, db *lib.PlanetScaleDatabase, logger Logger, state *lib.SyncState, schema *fivetransdk.Selection_WithSchema) error {
+func (s *Sync) Handle(psc *lib.PlanetScaleSource, db *lib.ConnectClient, logger Logger, state *lib.SyncState, schema *fivetransdk.Selection_WithSchema) error {
 	if state == nil {
 		return status.Error(codes.Internal, "syncState cannot be nil")
 	}
