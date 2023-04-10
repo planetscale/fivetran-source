@@ -1,4 +1,4 @@
-package handlers
+package lib
 
 import (
 	"context"
@@ -12,11 +12,8 @@ import (
 )
 
 type PlanetScaleEdgeMysqlAccess interface {
+	BuildSchema(ctx context.Context, psc PlanetScaleSource, schemaBuilder SchemaBuilder) error
 	PingContext(context.Context, PlanetScaleSource) error
-	GetKeyspaceTableNames(context.Context, string) ([]string, error)
-	GetKeyspaceTableSchema(context.Context, PlanetScaleSource, string, string) (map[string]*Column, error)
-	GetKeyspaceTablePrimaryKeys(context.Context, string, string) ([]string, error)
-	GetKeyspaces(context.Context, PlanetScaleSource) ([]string, error)
 	GetVitessShards(ctx context.Context, psc PlanetScaleSource) ([]string, error)
 	Close() error
 }
@@ -36,8 +33,76 @@ type planetScaleEdgeMySQLAccess struct {
 	db *sql.DB
 }
 
+// BuildSchema returns schemas for all tables in a PlanetScale database
+// 1. Get all keyspaces for the PlanetScale database
+// 2. Get the schemas for all tables in a keyspace, for each keyspace
+// 2. Get columns and primary keys for each table from information_schema.columns
+// 3. Format results into FiveTran response
+func (p planetScaleEdgeMySQLAccess) BuildSchema(ctx context.Context, psc PlanetScaleSource, schemaBuilder SchemaBuilder) error {
+	keyspaces, err := p.GetKeyspaces(ctx, psc)
+	if err != nil {
+		return errors.Wrap(err, "Unable to build schema for database")
+	}
+
+	for _, keyspaceName := range keyspaces {
+		schemaBuilder.OnKesypace(keyspaceName)
+		tableNames, err := p.getKeyspaceTableNames(ctx, keyspaceName)
+		if err != nil {
+			return errors.Wrap(err, "Unable to build schema for database")
+		}
+
+		for _, tableName := range tableNames {
+			schemaBuilder.OnTable(keyspaceName, tableName)
+
+			columns, err := p.getKeyspaceTableColumns(ctx, keyspaceName, tableName)
+			if err != nil {
+				return errors.Wrap(err, "Unable to build schema for database")
+			}
+			for _, column := range columns {
+				schemaBuilder.OnColumn(keyspaceName, tableName, column.Name, column.Type, column.IsPrimaryKey)
+			}
+		}
+	}
+
+	return nil
+}
+
 func (p planetScaleEdgeMySQLAccess) Close() error {
 	return p.db.Close()
+}
+
+func (p planetScaleEdgeMySQLAccess) getKeyspaceTableColumns(ctx context.Context, keyspaceName string, tableName string) ([]MysqlColumn, error) {
+	var columns []MysqlColumn
+	columnNamesQR, err := p.db.QueryContext(
+		ctx,
+		"select column_name, column_type, column_key from information_schema.columns where table_name=? AND table_schema=?;",
+		tableName, keyspaceName,
+	)
+	if err != nil {
+		return nil, errors.Wrapf(err, "Unable to get column names & types for table %v", tableName)
+	}
+	for columnNamesQR.Next() {
+		var (
+			name       string
+			columnType string
+			columnKey  string
+		)
+		if err = columnNamesQR.Scan(&name, &columnType, &columnKey); err != nil {
+			return nil, errors.Wrapf(err, "Unable to scan row for column names & types of table %v", tableName)
+		}
+
+		columns = append(columns, MysqlColumn{
+			Name:         name,
+			Type:         columnType,
+			IsPrimaryKey: strings.EqualFold(columnKey, "PRI"),
+		})
+	}
+
+	if err := columnNamesQR.Err(); err != nil {
+		return nil, errors.Wrapf(err, "unable to iterate columns for table %s", tableName)
+	}
+
+	return columns, nil
 }
 
 func (p planetScaleEdgeMySQLAccess) GetVitessShards(ctx context.Context, psc PlanetScaleSource) ([]string, error) {
@@ -73,7 +138,7 @@ func (p planetScaleEdgeMySQLAccess) PingContext(ctx context.Context, psc PlanetS
 	return p.db.PingContext(ctx)
 }
 
-func (p planetScaleEdgeMySQLAccess) GetKeyspaceTableNames(ctx context.Context, keyspaceName string) ([]string, error) {
+func (p planetScaleEdgeMySQLAccess) getKeyspaceTableNames(ctx context.Context, keyspaceName string) ([]string, error) {
 	var tables []string
 
 	tableNamesQR, err := p.db.Query(fmt.Sprintf("show tables from `%s`;", keyspaceName))
@@ -95,67 +160,6 @@ func (p planetScaleEdgeMySQLAccess) GetKeyspaceTableNames(ctx context.Context, k
 	}
 
 	return tables, err
-}
-
-func (p planetScaleEdgeMySQLAccess) GetKeyspaceTableSchema(ctx context.Context, psc PlanetScaleSource, tableName string, keyspaceName string) (map[string]*Column, error) {
-	properties := map[string]*Column{}
-
-	columnNamesQR, err := p.db.QueryContext(
-		ctx,
-		"select column_name, column_type from information_schema.columns where table_name=? AND table_schema=?;",
-		tableName, keyspaceName,
-	)
-	if err != nil {
-		return properties, errors.Wrapf(err, "Unable to get column names & types for table %v in keyspace %s", tableName, keyspaceName)
-	}
-
-	for columnNamesQR.Next() {
-		var (
-			name       string
-			columnType string
-		)
-		if err = columnNamesQR.Scan(&name, &columnType); err != nil {
-			return properties, errors.Wrapf(err, "Unable to scan row for column names & types of table %v in keyspace %s", tableName, keyspaceName)
-		}
-
-		properties[name] = &Column{
-			Type: getFivetranDataType(columnType, !psc.Options.DoNotTreatTinyIntAsBoolean),
-		}
-	}
-
-	if err := columnNamesQR.Err(); err != nil {
-		return properties, errors.Wrapf(err, "unable to iterate columns for table %s in keyspace %s", tableName, keyspaceName)
-	}
-
-	return properties, nil
-}
-
-func (p planetScaleEdgeMySQLAccess) GetKeyspaceTablePrimaryKeys(ctx context.Context, tableName string, keyspaceName string) ([]string, error) {
-	var primaryKeys []string
-
-	primaryKeysQR, err := p.db.QueryContext(
-		ctx,
-		"select column_name from information_schema.columns where table_schema=? AND table_name=? AND column_key='PRI';",
-		keyspaceName, tableName,
-	)
-	if err != nil {
-		return primaryKeys, errors.Wrapf(err, "Unable to scan row for primary keys of table %v", tableName)
-	}
-
-	for primaryKeysQR.Next() {
-		var name string
-		if err = primaryKeysQR.Scan(&name); err != nil {
-			return primaryKeys, errors.Wrapf(err, "Unable to scan row for primary keys of table %v", tableName)
-		}
-
-		primaryKeys = append(primaryKeys, name)
-	}
-
-	if err := primaryKeysQR.Err(); err != nil {
-		return primaryKeys, errors.Wrapf(err, "unable to iterate primary keys for table %s", tableName)
-	}
-
-	return primaryKeys, nil
 }
 
 func (p planetScaleEdgeMySQLAccess) GetKeyspaces(ctx context.Context, psc PlanetScaleSource) ([]string, error) {

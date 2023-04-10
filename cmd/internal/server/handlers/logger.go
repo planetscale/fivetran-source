@@ -7,6 +7,8 @@ import (
 	"math"
 	"time"
 
+	"github.com/planetscale/fivetran-source/lib"
+
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/pkg/errors"
@@ -19,7 +21,7 @@ import (
 type Logger interface {
 	Log(fivetransdk.LogLevel, string) error
 	Record(*sqltypes.Result, *fivetransdk.SchemaSelection, *fivetransdk.TableSelection) error
-	State(SyncState) error
+	State(lib.SyncState) error
 	Release()
 }
 
@@ -41,7 +43,7 @@ func NewLogger(sender LogSender, prefix string) Logger {
 	}
 }
 
-func (l *logger) State(sc SyncState) error {
+func (l *logger) State(sc lib.SyncState) error {
 	state, err := json.Marshal(sc)
 	if err != nil {
 		return l.Log(fivetransdk.LogLevel_SEVERE, fmt.Sprintf("%q", err))
