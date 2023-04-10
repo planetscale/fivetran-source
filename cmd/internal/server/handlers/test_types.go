@@ -41,20 +41,3 @@ func (testLogger) Release() {
 	// TODO implement me
 	panic("implement me")
 }
-
-type dbLogMessage struct {
-	level   fivetransdk.LogLevel
-	message string
-}
-type dbLogger struct {
-	messages []dbLogMessage
-}
-
-func (dbl *dbLogger) Log(level fivetransdk.LogLevel, s string) error {
-	dbl.messages = append(dbl.messages, dbLogMessage{
-		level:   level,
-		message: s,
-	})
-
-	return nil
-}

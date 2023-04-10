@@ -37,12 +37,12 @@ func (s *fivetranSchemaBuilder) OnTable(keyspaceName, tableName string) {
 }
 
 func (s *fivetranSchemaBuilder) getOrCreateTable(keyspaceName string, tableName string) *fivetransdk.Table {
-	schema, ok := s.schemas[keyspaceName]
+	_, ok := s.schemas[keyspaceName]
 	if !ok {
 		s.OnKesypace(keyspaceName)
 	}
 	var table *fivetransdk.Table
-	schema, ok = s.schemas[keyspaceName]
+	schema, ok := s.schemas[keyspaceName]
 	if !ok {
 		panic("schema not found " + keyspaceName)
 	}
