@@ -11,7 +11,7 @@ import (
 type Schema struct{}
 
 func (Schema) Handle(ctx context.Context, psc *lib.PlanetScaleSource, db *lib.PlanetScaleEdgeMysqlAccess) (*fivetransdk.SchemaResponse, error) {
-	schemaBuilder := NewSchemaBuilder()
+	schemaBuilder := NewSchemaBuilder(psc.TreatTinyIntAsBoolean)
 	if err := (*db).BuildSchema(ctx, *psc, schemaBuilder); err != nil {
 		return nil, err
 	}

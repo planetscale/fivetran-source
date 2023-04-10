@@ -9,12 +9,15 @@ import (
 )
 
 type fivetranSchemaBuilder struct {
-	schemas map[string]*fivetransdk.Schema
-	tables  map[string]map[string]*fivetransdk.Table
+	schemas               map[string]*fivetransdk.Schema
+	tables                map[string]map[string]*fivetransdk.Table
+	treatTinyIntAsBoolean bool
 }
 
-func NewSchemaBuilder() lib.SchemaBuilder {
-	return &fivetranSchemaBuilder{}
+func NewSchemaBuilder(treatTinyIntAsBoolean bool) lib.SchemaBuilder {
+	return &fivetranSchemaBuilder{
+		treatTinyIntAsBoolean: treatTinyIntAsBoolean,
+	}
 }
 
 func (s *fivetranSchemaBuilder) OnKesypace(keyspaceName string) {
@@ -77,7 +80,7 @@ func (s *fivetranSchemaBuilder) OnColumn(keyspaceName, tableName, columnName, my
 
 	table.Columns = append(table.Columns, &fivetransdk.Column{
 		Name:       columnName,
-		Type:       getFivetranDataType(mysqlType, false),
+		Type:       getFivetranDataType(mysqlType, s.treatTinyIntAsBoolean),
 		PrimaryKey: isPrimaryKey,
 	})
 }
