@@ -20,12 +20,6 @@ type SchemaBuilder interface {
 	OnColumn(keyspaceName, tableName, columnName, mysqlType string, isPrimaryKey bool)
 }
 
-// ConfiguredRequest is a grpc request that contains a Configuration in the payload.
-// current examples are : Test, Schema & Update
-type ConfiguredRequest interface {
-	GetConfiguration() map[string]string
-}
-
 func (s SerializedCursor) SerializedCursorToTableCursor() (*psdbconnect.TableCursor, error) {
 	var tc psdbconnect.TableCursor
 	decoded, err := base64.StdEncoding.DecodeString(s.Cursor)

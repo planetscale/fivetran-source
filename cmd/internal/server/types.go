@@ -43,13 +43,21 @@ func NewCheckConnectionHandler() CheckConnectionHandler {
 	return &handlers.CheckConnection{}
 }
 
+// ConfiguredRequest is a grpc request that contains a Configuration in the payload.
+// current examples are : Test, Schema & Update
+type ConfiguredRequest interface {
+	GetConfiguration() map[string]string
+}
+
+// StatefulRequest is a grpc request that contains sync state in the payload.
+// current examples are : Update
 type StatefulRequest interface {
 	GetStateJson() string
 }
 
 // SourceFromRequest extracts the required configuration values from the map
 // and returns a usable PlanetScaleSource to connect to a PlanetScale database.
-func SourceFromRequest(request lib.ConfiguredRequest) (*lib.PlanetScaleSource, error) {
+func SourceFromRequest(request ConfiguredRequest) (*lib.PlanetScaleSource, error) {
 	psc := &lib.PlanetScaleSource{}
 	configuration := request.GetConfiguration()
 	if val, ok := configuration["username"]; ok {
