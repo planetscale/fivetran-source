@@ -7,7 +7,7 @@ require (
 	github.com/google/uuid v1.3.0
 	github.com/pkg/errors v0.9.1
 	github.com/planetscale/airbyte-source v1.12.0
-	github.com/planetscale/fivetran-proto v0.0.0-20230328191619-a7e5ff4ae556
+	github.com/planetscale/fivetran-proto v0.0.0-20230410214623-a81ba896d0e0
 	github.com/planetscale/psdb v0.0.0-20220429000526-e2a0e798aaf3
 	github.com/stretchr/testify v1.8.1
 	google.golang.org/grpc v1.53.0

@@ -10,7 +10,7 @@ import (
 
 	"github.com/pkg/errors"
 	psdbconnect "github.com/planetscale/airbyte-source/proto/psdbconnect/v1alpha1"
-	fivetransdk "github.com/planetscale/fivetran-proto/proto/fivetransdk/v1alpha1"
+	fivetransdk "github.com/planetscale/fivetran-proto/go"
 	"github.com/planetscale/psdb/auth"
 	grpcclient "github.com/planetscale/psdb/core/pool"
 	clientoptions "github.com/planetscale/psdb/core/pool/options"
