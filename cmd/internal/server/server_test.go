@@ -20,7 +20,7 @@ import (
 
 	"vitess.io/vitess/go/sqltypes"
 
-	fivetransdk "github.com/planetscale/fivetran-proto/proto/fivetransdk/v1alpha1"
+	fivetransdk "github.com/planetscale/fivetran-proto/go"
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"

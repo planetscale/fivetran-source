@@ -7,13 +7,14 @@ import (
 	"os"
 	"time"
 
+	fivetran_sdk "github.com/planetscale/fivetran-proto/go"
+
 	"github.com/google/uuid"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	"github.com/pkg/errors"
-	fivetran_sdk "github.com/planetscale/fivetran-proto/proto/fivetransdk/v1alpha1"
 	"github.com/planetscale/fivetran-source/cmd/internal/server/handlers"
 )
 
