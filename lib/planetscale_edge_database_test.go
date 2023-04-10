@@ -8,7 +8,6 @@ import (
 	"vitess.io/vitess/go/vt/proto/query"
 
 	psdbconnect "github.com/planetscale/airbyte-source/proto/psdbconnect/v1alpha1"
-	fivetransdk "github.com/planetscale/fivetran-proto/proto/fivetransdk/v1alpha1"
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/grpc"
 
@@ -45,14 +44,13 @@ func TestRead_CanPeekBeforeRead(t *testing.T) {
 		return &cc, nil
 	}
 	ps := PlanetScaleSource{}
-	table := &fivetransdk.TableSelection{}
 	onRow := func(*sqltypes.Result) error {
 		return nil
 	}
 	onCursor := func(*psdbconnect.TableCursor) error {
 		return nil
 	}
-	sc, err := ped.Read(context.Background(), dbl, ps, table.TableName, tc, onRow, onCursor)
+	sc, err := ped.Read(context.Background(), dbl, ps, "customers", tc, onRow, onCursor)
 	assert.NoError(t, err)
 	esc, err := TableCursorToSerializedCursor(tc)
 	assert.NoError(t, err)
@@ -85,14 +83,13 @@ func TestRead_CanEarlyExitIfNoNewVGtidInPeek(t *testing.T) {
 		return &cc, nil
 	}
 	ps := PlanetScaleSource{}
-	table := &fivetransdk.TableSelection{}
 	onRow := func(*sqltypes.Result) error {
 		return nil
 	}
 	onCursor := func(*psdbconnect.TableCursor) error {
 		return nil
 	}
-	sc, err := ped.Read(context.Background(), dbl, ps, table.TableName, tc, onRow, onCursor)
+	sc, err := ped.Read(context.Background(), dbl, ps, "customers", tc, onRow, onCursor)
 	assert.NoError(t, err)
 	esc, err := TableCursorToSerializedCursor(tc)
 	assert.NoError(t, err)
@@ -128,14 +125,13 @@ func TestRead_CanPickPrimaryForShardedKeyspaces(t *testing.T) {
 	ps := PlanetScaleSource{
 		Database: "connect-test",
 	}
-	table := &fivetransdk.TableSelection{}
 	onRow := func(*sqltypes.Result) error {
 		return nil
 	}
 	onCursor := func(*psdbconnect.TableCursor) error {
 		return nil
 	}
-	sc, err := ped.Read(context.Background(), dbl, ps, table.TableName, tc, onRow, onCursor)
+	sc, err := ped.Read(context.Background(), dbl, ps, "customers", tc, onRow, onCursor)
 	assert.NoError(t, err)
 	esc, err := TableCursorToSerializedCursor(tc)
 	assert.NoError(t, err)
@@ -176,14 +172,13 @@ func TestRead_CanReturnNewCursorIfNewFound(t *testing.T) {
 	ps := PlanetScaleSource{
 		Database: "connect-test",
 	}
-	table := &fivetransdk.TableSelection{}
 	onRow := func(*sqltypes.Result) error {
 		return nil
 	}
 	onCursor := func(*psdbconnect.TableCursor) error {
 		return nil
 	}
-	sc, err := ped.Read(context.Background(), dbl, ps, table.TableName, tc, onRow, onCursor)
+	sc, err := ped.Read(context.Background(), dbl, ps, "customers", tc, onRow, onCursor)
 	assert.NoError(t, err)
 	esc, err := TableCursorToSerializedCursor(newTC)
 	assert.NoError(t, err)
@@ -256,9 +251,6 @@ func TestRead_CanStopAtWellKnownCursor(t *testing.T) {
 	ps := PlanetScaleSource{
 		Database: "connect-test",
 	}
-	table := &fivetransdk.TableSelection{
-		TableName: "customers",
-	}
 	rowCounter := 0
 	onRow := func(*sqltypes.Result) error {
 		rowCounter += 1
@@ -267,7 +259,7 @@ func TestRead_CanStopAtWellKnownCursor(t *testing.T) {
 	onCursor := func(*psdbconnect.TableCursor) error {
 		return nil
 	}
-	sc, err := ped.Read(context.Background(), dbl, ps, table.TableName, responses[0].Cursor, onRow, onCursor)
+	sc, err := ped.Read(context.Background(), dbl, ps, "customers", responses[0].Cursor, onRow, onCursor)
 
 	assert.NoError(t, err)
 	// sync should start at the first vgtid

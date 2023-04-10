@@ -4,10 +4,9 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"github.com/planetscale/fivetran-source/lib"
 	"math"
 	"time"
-
-	"github.com/planetscale/fivetran-source/lib"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -19,6 +18,7 @@ import (
 )
 
 type Logger interface {
+	Info(string)
 	Log(fivetransdk.LogLevel, string) error
 	Record(*sqltypes.Result, *fivetransdk.SchemaSelection, *fivetransdk.TableSelection) error
 	State(lib.SyncState) error
@@ -41,6 +41,10 @@ func NewLogger(sender LogSender, prefix string) Logger {
 		prefix: prefix,
 		sender: sender,
 	}
+}
+
+func (l *logger) Info(msg string) {
+	l.Log(fivetransdk.LogLevel_INFO, msg)
 }
 
 func (l *logger) State(sc lib.SyncState) error {

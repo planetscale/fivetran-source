@@ -7,25 +7,20 @@ import (
 	"github.com/pkg/errors"
 
 	psdbconnect "github.com/planetscale/airbyte-source/proto/psdbconnect/v1alpha1"
-	fivetransdk "github.com/planetscale/fivetran-proto/proto/fivetransdk/v1alpha1"
 	"google.golang.org/grpc"
 )
 
 type dbLogMessage struct {
-	level   fivetransdk.LogLevel
 	message string
 }
 type dbLogger struct {
 	messages []dbLogMessage
 }
 
-func (dbl *dbLogger) Log(level fivetransdk.LogLevel, s string) error {
+func (dbl *dbLogger) Info(s string) {
 	dbl.messages = append(dbl.messages, dbLogMessage{
-		level:   level,
 		message: s,
 	})
-
-	return nil
 }
 
 type clientConnectionMock struct {
@@ -56,21 +51,15 @@ func (c *clientConnectionMock) Sync(ctx context.Context, in *psdbconnect.SyncReq
 
 type (
 	ReadFunc             func(ctx context.Context, logger DatabaseLogger, ps PlanetScaleSource, tableName string, tc *psdbconnect.TableCursor, onResult OnResult, onCursor OnCursor) (*SerializedCursor, error)
-	DiscoverFunc         func(ctx context.Context, ps PlanetScaleSource) (*fivetransdk.SchemaResponse, error)
 	CanConnectFunc       func(ctx context.Context, ps PlanetScaleSource) error
 	ListVitessShardsFunc func(ctx context.Context, ps PlanetScaleSource) ([]string, error)
 
 	TestConnectClient struct {
 		ReadFn             ReadFunc
-		DiscoverFn         DiscoverFunc
 		CanConnectFn       CanConnectFunc
 		ListVitessShardsFn ListVitessShardsFunc
 	}
 )
-
-func BlankDiscoverFn(ctx context.Context, ps PlanetScaleSource) (*fivetransdk.SchemaResponse, error) {
-	return nil, nil
-}
 
 func (tcc *TestConnectClient) ListShards(ctx context.Context, ps PlanetScaleSource) ([]string, error) {
 	if tcc.ListVitessShardsFn != nil {
@@ -95,14 +84,6 @@ func (tcc *TestConnectClient) Read(ctx context.Context, logger DatabaseLogger, p
 	return nil, errors.New("Unimplemented")
 }
 
-func NewTestConnectClient(r ReadFunc, d DiscoverFunc) PlanetScaleDatabase {
-	return &TestConnectClient{ReadFn: r, DiscoverFn: d}
-}
-
-type statefulRequest struct {
-	stateJson string
-}
-
-func (sfr statefulRequest) GetStateJson() string {
-	return sfr.stateJson
+func NewTestConnectClient(r ReadFunc) PlanetScaleDatabase {
+	return &TestConnectClient{ReadFn: r}
 }

@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-
 	"github.com/planetscale/fivetran-source/lib"
 
 	fivetransdk "github.com/planetscale/fivetran-proto/proto/fivetransdk/v1alpha1"

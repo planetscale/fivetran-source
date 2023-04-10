@@ -2,17 +2,10 @@ package lib
 
 import (
 	"encoding/base64"
-
 	"github.com/pkg/errors"
 	psdbconnect "github.com/planetscale/airbyte-source/proto/psdbconnect/v1alpha1"
-	fivetransdk "github.com/planetscale/fivetran-proto/proto/fivetransdk/v1alpha1"
 	"github.com/planetscale/psdb/core/codec"
 )
-
-type Column struct {
-	Type         fivetransdk.DataType
-	IsPrimaryKey bool
-}
 
 type MysqlColumn struct {
 	Name         string
@@ -93,4 +86,20 @@ func TableCursorToSerializedCursor(cursor *psdbconnect.TableCursor) (*Serialized
 		Cursor: base64.StdEncoding.EncodeToString(d),
 	}
 	return sc, nil
+}
+
+type SerializedCursor struct {
+	Cursor string `json:"cursor"`
+}
+
+type ShardStates struct {
+	Shards map[string]*SerializedCursor `json:"shards"`
+}
+
+type KeyspaceState struct {
+	Streams map[string]ShardStates `json:"streams"`
+}
+
+type SyncState struct {
+	Keyspaces map[string]KeyspaceState `json:"keyspaces"`
 }
