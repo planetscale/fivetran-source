@@ -7,6 +7,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/planetscale/fivetran-source/lib"
+
 	"github.com/google/uuid"
 
 	"google.golang.org/grpc/codes"
@@ -18,14 +20,18 @@ import (
 )
 
 type connectorServer struct {
-	configurationForm ConfigurationFormHandler
-	schema            SchemaHandler
-	sync              SyncHandler
-	checkConnection   CheckConnectionHandler
-	clientConstructor edgeClientConstructor
+	configurationForm      ConfigurationFormHandler
+	schema                 SchemaHandler
+	sync                   SyncHandler
+	checkConnection        CheckConnectionHandler
+	clientConstructor      edgeClientConstructor
+	mysqlClientConstructor mysqlClientConstructor
 }
 
-type edgeClientConstructor func() handlers.PlanetScaleDatabase
+type (
+	edgeClientConstructor  func() lib.PlanetScaleDatabase
+	mysqlClientConstructor func() lib.PlanetScaleEdgeMysqlAccess
+)
 
 func NewConnectorServer() fivetran_sdk.ConnectorServer {
 	return &connectorServer{
@@ -51,18 +57,18 @@ func (c *connectorServer) Test(ctx context.Context, request *fivetran_sdk.TestRe
 		return nil, status.Errorf(codes.InvalidArgument, "%s is not a valid test", request.Name)
 	}
 
-	psc, err := handlers.SourceFromRequest(request)
+	psc, err := lib.SourceFromRequest(request)
 	if err != nil {
 		return nil, errors.Wrap(err, "request did not contain a valid configuration")
 	}
-	mysql, err := handlers.NewMySQL(psc)
+	mysql, err := lib.NewMySQL(psc)
 	if err != nil {
 		return nil, errors.Wrap(err, "unable to open connection to PlanetScale database")
 	}
 	defer mysql.Close()
-	var db handlers.PlanetScaleDatabase
+	var db lib.PlanetScaleDatabase
 	if c.clientConstructor == nil {
-		db = handlers.NewEdgeDatabase(&mysql)
+		db = lib.NewEdgeDatabase(&mysql)
 	} else {
 		db = c.clientConstructor()
 	}
@@ -73,19 +79,32 @@ func (c *connectorServer) Schema(ctx context.Context, request *fivetran_sdk.Sche
 	logger := newRequestLogger(newRequestID())
 
 	logger.Println("handling schema request")
-	psc, err := handlers.SourceFromRequest(request)
+	psc, err := lib.SourceFromRequest(request)
 	if err != nil {
 		return nil, errors.Wrap(err, "request did not contain a valid configuration")
 	}
 
-	var db handlers.PlanetScaleDatabase
-	if c.clientConstructor == nil {
-		mysql, err := handlers.NewMySQL(psc)
+	var (
+		mysqlClient lib.PlanetScaleEdgeMysqlAccess
+		db          lib.PlanetScaleDatabase
+	)
+
+	if c.mysqlClientConstructor == nil {
+		mysqlClient, err = lib.NewMySQL(psc)
 		if err != nil {
 			return nil, status.Error(codes.InvalidArgument, "unable to open connection to PlanetScale database")
 		}
-		defer mysql.Close()
-		db = handlers.NewEdgeDatabase(&mysql)
+		defer mysqlClient.Close()
+	} else {
+		mysqlClient = c.mysqlClientConstructor()
+	}
+
+	if mysqlClient == nil {
+		panic("mysql client is not initialized")
+	}
+
+	if c.clientConstructor == nil {
+		db = lib.NewEdgeDatabase(&mysqlClient)
 	} else {
 		db = c.clientConstructor()
 	}
@@ -100,7 +119,7 @@ func (c *connectorServer) Schema(ctx context.Context, request *fivetran_sdk.Sche
 		return nil, status.Errorf(codes.InvalidArgument, "unable to connect to PlanetScale database, failed with : %q", checkConn.GetFailure())
 	}
 
-	return c.schema.Handle(ctx, psc, &db)
+	return c.schema.Handle(ctx, psc, &mysqlClient)
 }
 
 func (c *connectorServer) Update(request *fivetran_sdk.UpdateRequest, server fivetran_sdk.Connector_UpdateServer) error {
@@ -108,7 +127,7 @@ func (c *connectorServer) Update(request *fivetran_sdk.UpdateRequest, server fiv
 	rLogger := newRequestLogger(requestId)
 
 	rLogger.Println("handling update request")
-	psc, err := handlers.SourceFromRequest(request)
+	psc, err := lib.SourceFromRequest(request)
 	if err != nil {
 		return status.Error(codes.InvalidArgument, "request did not contain a valid configuration")
 	}
@@ -124,14 +143,14 @@ func (c *connectorServer) Update(request *fivetran_sdk.UpdateRequest, server fiv
 
 	logger := handlers.NewLogger(server, requestId)
 	defer logger.Release()
-	var db handlers.PlanetScaleDatabase
+	var db lib.PlanetScaleDatabase
 	if c.clientConstructor == nil {
-		mysql, err := handlers.NewMySQL(psc)
+		mysql, err := lib.NewMySQL(psc)
 		if err != nil {
 			return status.Error(codes.InvalidArgument, "unable to open connection to PlanetScale database")
 		}
 		defer mysql.Close()
-		db = handlers.NewEdgeDatabase(&mysql)
+		db = lib.NewEdgeDatabase(&mysql)
 	} else {
 		db = c.clientConstructor()
 	}
@@ -143,8 +162,8 @@ func (c *connectorServer) Update(request *fivetran_sdk.UpdateRequest, server fiv
 	if err != nil {
 		return status.Errorf(codes.InvalidArgument, "unable to list shards for this database : %q", err)
 	}
-	var state *handlers.SyncState
-	state, err = handlers.StateFromRequest(request, *psc, shards, *schema)
+	var state *lib.SyncState
+	state, err = lib.StateFromRequest(request, *psc, shards, *schema)
 	if err != nil {
 		return status.Error(codes.InvalidArgument, fmt.Sprintf("request did not contain a valid stateJson : %q", err))
 	}

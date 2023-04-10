@@ -3,6 +3,8 @@ package server
 import (
 	"context"
 
+	"github.com/planetscale/fivetran-source/lib"
+
 	fivetransdk "github.com/planetscale/fivetran-proto/proto/fivetransdk/v1alpha1"
 	"github.com/planetscale/fivetran-source/cmd/internal/server/handlers"
 )
@@ -12,14 +14,14 @@ type ConfigurationFormHandler interface {
 }
 
 type CheckConnectionHandler interface {
-	Handle(context.Context, handlers.PlanetScaleDatabase, string, *handlers.PlanetScaleSource) (*fivetransdk.TestResponse, error)
+	Handle(context.Context, lib.PlanetScaleDatabase, string, *lib.PlanetScaleSource) (*fivetransdk.TestResponse, error)
 }
 type SchemaHandler interface {
-	Handle(context.Context, *handlers.PlanetScaleSource, *handlers.PlanetScaleDatabase) (*fivetransdk.SchemaResponse, error)
+	Handle(context.Context, *lib.PlanetScaleSource, *lib.PlanetScaleEdgeMysqlAccess) (*fivetransdk.SchemaResponse, error)
 }
 
 type SyncHandler interface {
-	Handle(*handlers.PlanetScaleSource, *handlers.PlanetScaleDatabase, handlers.Logger, *handlers.SyncState, *fivetransdk.Selection_WithSchema) error
+	Handle(*lib.PlanetScaleSource, *lib.PlanetScaleDatabase, handlers.Logger, *lib.SyncState, *fivetransdk.Selection_WithSchema) error
 }
 
 func NewConfigurationFormHandler() ConfigurationFormHandler {

@@ -1,4 +1,4 @@
-package handlers
+package lib
 
 import (
 	"encoding/base64"
@@ -12,6 +12,18 @@ import (
 type Column struct {
 	Type         fivetransdk.DataType
 	IsPrimaryKey bool
+}
+
+type MysqlColumn struct {
+	Name         string
+	Type         string
+	IsPrimaryKey bool
+}
+
+type SchemaBuilder interface {
+	OnKesypace(keyspaceName string)
+	OnTable(keyspaceName, tableName string)
+	OnColumn(keyspaceName, tableName, columnName, mysqlType string, isPrimaryKey bool)
 }
 
 // ConfiguredRequest is a grpc request that contains a Configuration in the payload.
