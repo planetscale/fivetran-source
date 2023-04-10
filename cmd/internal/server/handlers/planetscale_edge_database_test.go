@@ -8,7 +8,7 @@ import (
 	"vitess.io/vitess/go/vt/proto/query"
 
 	psdbconnect "github.com/planetscale/airbyte-source/proto/psdbconnect/v1alpha1"
-	fivetransdk "github.com/planetscale/fivetran-proto/proto/fivetransdk/v1alpha1"
+	fivetransdk "github.com/planetscale/fivetran-proto/go"
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/grpc"
 
