@@ -17,7 +17,7 @@ type MysqlColumn struct {
 type SchemaBuilder interface {
 	OnKesypace(keyspaceName string)
 	OnTable(keyspaceName, tableName string)
-	OnColumn(keyspaceName, tableName, columnName, mysqlType string, isPrimaryKey bool)
+	OnColumns(keyspaceName, tableName string, columns []MysqlColumn)
 }
 
 func (s SerializedCursor) SerializedCursorToTableCursor() (*psdbconnect.TableCursor, error) {

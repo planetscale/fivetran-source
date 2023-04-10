@@ -72,17 +72,19 @@ func (s *fivetranSchemaBuilder) getOrCreateTable(keyspaceName string, tableName 
 	return table
 }
 
-func (s *fivetranSchemaBuilder) OnColumn(keyspaceName, tableName, columnName, mysqlType string, isPrimaryKey bool) {
+func (s *fivetranSchemaBuilder) OnColumns(keyspaceName, tableName string, columns []lib.MysqlColumn) {
 	table := s.getOrCreateTable(keyspaceName, tableName)
 	if table.Columns == nil {
 		table.Columns = []*fivetransdk.Column{}
 	}
 
-	table.Columns = append(table.Columns, &fivetransdk.Column{
-		Name:       columnName,
-		Type:       getFivetranDataType(mysqlType, s.treatTinyIntAsBoolean),
-		PrimaryKey: isPrimaryKey,
-	})
+	for _, column := range columns {
+		table.Columns = append(table.Columns, &fivetransdk.Column{
+			Name:       column.Name,
+			Type:       getFivetranDataType(column.Type, s.treatTinyIntAsBoolean),
+			PrimaryKey: column.IsPrimaryKey,
+		})
+	}
 }
 
 func (s *fivetranSchemaBuilder) BuildResponse() (*fivetransdk.SchemaResponse, error) {

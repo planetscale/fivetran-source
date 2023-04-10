@@ -58,9 +58,8 @@ func (p mysqlClient) BuildSchema(ctx context.Context, psc PlanetScaleSource, sch
 			if err != nil {
 				return errors.Wrap(err, "Unable to build schema for database")
 			}
-			for _, column := range columns {
-				schemaBuilder.OnColumn(keyspaceName, tableName, column.Name, column.Type, column.IsPrimaryKey)
-			}
+
+			schemaBuilder.OnColumns(keyspaceName, tableName, columns)
 		}
 	}
 
