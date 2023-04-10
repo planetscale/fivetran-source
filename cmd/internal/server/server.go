@@ -7,6 +7,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/planetscale/fivetran-source/cmd/internal/server/handlers"
+
 	"github.com/planetscale/fivetran-source/lib"
 
 	"github.com/google/uuid"
@@ -16,7 +18,6 @@ import (
 
 	"github.com/pkg/errors"
 	fivetran_sdk "github.com/planetscale/fivetran-proto/proto/fivetransdk/v1alpha1"
-	"github.com/planetscale/fivetran-source/cmd/internal/server/handlers"
 )
 
 type connectorServer struct {
@@ -57,7 +58,7 @@ func (c *connectorServer) Test(ctx context.Context, request *fivetran_sdk.TestRe
 		return nil, status.Errorf(codes.InvalidArgument, "%s is not a valid test", request.Name)
 	}
 
-	psc, err := lib.SourceFromRequest(request)
+	psc, err := SourceFromRequest(request)
 	if err != nil {
 		return nil, errors.Wrap(err, "request did not contain a valid configuration")
 	}
@@ -79,7 +80,7 @@ func (c *connectorServer) Schema(ctx context.Context, request *fivetran_sdk.Sche
 	logger := newRequestLogger(newRequestID())
 
 	logger.Println("handling schema request")
-	psc, err := lib.SourceFromRequest(request)
+	psc, err := SourceFromRequest(request)
 	if err != nil {
 		return nil, errors.Wrap(err, "request did not contain a valid configuration")
 	}
@@ -127,7 +128,7 @@ func (c *connectorServer) Update(request *fivetran_sdk.UpdateRequest, server fiv
 	rLogger := newRequestLogger(requestId)
 
 	rLogger.Println("handling update request")
-	psc, err := lib.SourceFromRequest(request)
+	psc, err := SourceFromRequest(request)
 	if err != nil {
 		return status.Error(codes.InvalidArgument, "request did not contain a valid configuration")
 	}
@@ -163,7 +164,7 @@ func (c *connectorServer) Update(request *fivetran_sdk.UpdateRequest, server fiv
 		return status.Errorf(codes.InvalidArgument, "unable to list shards for this database : %q", err)
 	}
 	var state *lib.SyncState
-	state, err = handlers.StateFromRequest(request, *psc, shards, *schema)
+	state, err = StateFromRequest(request, *psc, shards, *schema)
 	if err != nil {
 		return status.Error(codes.InvalidArgument, fmt.Sprintf("request did not contain a valid stateJson : %q", err))
 	}
