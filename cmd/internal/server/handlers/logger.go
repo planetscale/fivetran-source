@@ -4,9 +4,10 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"github.com/planetscale/fivetran-source/lib"
 	"math"
 	"time"
+
+	"github.com/planetscale/fivetran-source/lib"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 
