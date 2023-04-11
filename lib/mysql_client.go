@@ -45,7 +45,7 @@ func (p mysqlClient) BuildSchema(ctx context.Context, psc PlanetScaleSource, sch
 	}
 
 	for _, keyspaceName := range keyspaces {
-		schemaBuilder.OnKesypace(keyspaceName)
+		schemaBuilder.OnKeyspace(keyspaceName)
 		tableNames, err := p.getKeyspaceTableNames(ctx, keyspaceName)
 		if err != nil {
 			return errors.Wrap(err, "Unable to build schema for database")
