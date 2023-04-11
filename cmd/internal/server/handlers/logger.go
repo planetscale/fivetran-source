@@ -7,19 +7,22 @@ import (
 	"math"
 	"time"
 
+	"github.com/planetscale/fivetran-source/lib"
+
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/pkg/errors"
 
-	fivetransdk "github.com/planetscale/fivetran-proto/proto/fivetransdk/v1alpha1"
+	fivetransdk "github.com/planetscale/fivetran-proto/go"
 	"vitess.io/vitess/go/sqltypes"
 	querypb "vitess.io/vitess/go/vt/proto/query"
 )
 
 type Logger interface {
+	Info(string)
 	Log(fivetransdk.LogLevel, string) error
 	Record(*sqltypes.Result, *fivetransdk.SchemaSelection, *fivetransdk.TableSelection) error
-	State(SyncState) error
+	State(lib.SyncState) error
 	Release()
 }
 
@@ -43,7 +46,11 @@ func NewLogger(sender LogSender, prefix string, serializeTinyIntAsBool bool) Log
 	}
 }
 
-func (l *logger) State(sc SyncState) error {
+func (l *logger) Info(msg string) {
+	l.Log(fivetransdk.LogLevel_INFO, msg)
+}
+
+func (l *logger) State(sc lib.SyncState) error {
 	state, err := json.Marshal(sc)
 	if err != nil {
 		return l.Log(fivetransdk.LogLevel_SEVERE, fmt.Sprintf("%q", err))
