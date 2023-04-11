@@ -1,7 +1,7 @@
 package handlers
 
 import (
-	fivetransdk "github.com/planetscale/fivetran-proto/proto/fivetransdk/v1alpha1"
+	fivetransdk "github.com/planetscale/fivetran-proto/go"
 	"github.com/planetscale/fivetran-source/lib"
 	"vitess.io/vitess/go/sqltypes"
 )

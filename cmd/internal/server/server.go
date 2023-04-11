@@ -17,7 +17,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/pkg/errors"
-	fivetran_sdk "github.com/planetscale/fivetran-proto/proto/fivetransdk/v1alpha1"
+	fivetran_sdk "github.com/planetscale/fivetran-proto/go"
 )
 
 type connectorServer struct {

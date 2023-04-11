@@ -8,6 +8,7 @@ import (
 	"vitess.io/vitess/go/vt/proto/query"
 
 	psdbconnect "github.com/planetscale/airbyte-source/proto/psdbconnect/v1alpha1"
+
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/grpc"
 
