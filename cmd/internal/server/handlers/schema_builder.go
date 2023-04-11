@@ -20,7 +20,7 @@ func NewSchemaBuilder(treatTinyIntAsBoolean bool) lib.SchemaBuilder {
 	}
 }
 
-func (s *fivetranSchemaBuilder) OnKesypace(keyspaceName string) {
+func (s *fivetranSchemaBuilder) OnKeyspace(keyspaceName string) {
 	schema := &fivetransdk.Schema{
 		Name:   keyspaceName,
 		Tables: []*fivetransdk.Table{},
@@ -39,7 +39,7 @@ func (s *fivetranSchemaBuilder) OnTable(keyspaceName, tableName string) {
 func (s *fivetranSchemaBuilder) getOrCreateTable(keyspaceName string, tableName string) *fivetransdk.Table {
 	_, ok := s.schemas[keyspaceName]
 	if !ok {
-		s.OnKesypace(keyspaceName)
+		s.OnKeyspace(keyspaceName)
 	}
 	var table *fivetransdk.Table
 	schema, ok := s.schemas[keyspaceName]

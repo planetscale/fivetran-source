@@ -15,7 +15,7 @@ type MysqlColumn struct {
 }
 
 type SchemaBuilder interface {
-	OnKesypace(keyspaceName string)
+	OnKeyspace(keyspaceName string)
 	OnTable(keyspaceName, tableName string)
 	OnColumns(keyspaceName, tableName string, columns []MysqlColumn)
 }
