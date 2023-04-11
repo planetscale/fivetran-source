@@ -24,6 +24,7 @@ type connectorServer struct {
 	sync              SyncHandler
 	checkConnection   CheckConnectionHandler
 	clientConstructor edgeClientConstructor
+	fivetran_sdk.UnimplementedConnectorServer
 }
 
 type edgeClientConstructor func() handlers.PlanetScaleDatabase
