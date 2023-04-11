@@ -4,13 +4,15 @@ import (
 	"context"
 	"testing"
 
+	"github.com/planetscale/fivetran-source/lib"
+
 	psdbconnect "github.com/planetscale/airbyte-source/proto/psdbconnect/v1alpha1"
 	fivetransdk "github.com/planetscale/fivetran-proto/go"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestCallsReadWithSelectedSchema(t *testing.T) {
-	psc := &PlanetScaleSource{}
+	psc := &lib.PlanetScaleSource{}
 	tl := &testLogger{}
 	schema := fivetransdk.SchemaSelection{
 		SchemaName: "SalesDB",
@@ -35,16 +37,16 @@ func TestCallsReadWithSelectedSchema(t *testing.T) {
 		},
 	}
 
-	readFn := func(ctx context.Context, logger DatabaseLogger, ps PlanetScaleSource, table *fivetransdk.TableSelection, tc *psdbconnect.TableCursor, onResult OnResult, onCursor OnCursor) (*SerializedCursor, error) {
-		assert.Equal(t, "customers", table.TableName)
+	readFn := func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor) (*lib.SerializedCursor, error) {
+		assert.Equal(t, "customers", tableName)
 		return nil, nil
 	}
 
-	db := NewTestConnectClient(readFn, blankDiscoverFn)
-	err := sync.Handle(psc, &db, tl, &SyncState{
-		Keyspaces: map[string]KeyspaceState{
+	db := lib.NewTestConnectClient(readFn)
+	err := sync.Handle(psc, &db, tl, &lib.SyncState{
+		Keyspaces: map[string]lib.KeyspaceState{
 			"SalesDB": {
-				Streams: map[string]ShardStates{
+				Streams: map[string]lib.ShardStates{
 					"SalesDB:customers": {},
 				},
 			},
