@@ -27,6 +27,7 @@ type connectorServer struct {
 	checkConnection        CheckConnectionHandler
 	clientConstructor      edgeClientConstructor
 	mysqlClientConstructor mysqlClientConstructor
+	fivetran_sdk.UnimplementedConnectorServer
 }
 
 type (
