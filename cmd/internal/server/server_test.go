@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/planetscale/fivetran-source/lib"
+
 	querypb "vitess.io/vitess/go/vt/proto/query"
 
 	"github.com/stretchr/testify/require"
@@ -111,9 +113,9 @@ func TestUpdateValidatesSchemaSelection(t *testing.T) {
 func TestUpdateValidatesState(t *testing.T) {
 	ctx := context.Background()
 
-	clientConstructor := func() handlers.PlanetScaleDatabase {
-		return &handlers.TestConnectClient{
-			ListVitessShardsFn: func(ctx context.Context, ps handlers.PlanetScaleSource) ([]string, error) {
+	clientConstructor := func() lib.ConnectClient {
+		return &lib.TestConnectClient{
+			ListVitessShardsFn: func(ctx context.Context, ps lib.PlanetScaleSource) ([]string, error) {
 				return []string{"-"}, nil
 			},
 		}
@@ -215,15 +217,15 @@ func TestUpdateReturnsRows(t *testing.T) {
 			},
 		},
 	}
-	clientConstructor := func() handlers.PlanetScaleDatabase {
-		return &handlers.TestConnectClient{
-			ListVitessShardsFn: func(ctx context.Context, ps handlers.PlanetScaleSource) ([]string, error) {
+	clientConstructor := func() lib.ConnectClient {
+		return &lib.TestConnectClient{
+			ListVitessShardsFn: func(ctx context.Context, ps lib.PlanetScaleSource) ([]string, error) {
 				return []string{"-", "-40"}, nil
 			},
-			CanConnectFn: func(ctx context.Context, ps handlers.PlanetScaleSource) error {
+			CanConnectFn: func(ctx context.Context, ps lib.PlanetScaleSource) error {
 				return nil
 			},
-			ReadFn: func(ctx context.Context, logger handlers.DatabaseLogger, ps handlers.PlanetScaleSource, table *fivetransdk.TableSelection, tc *psdbconnect.TableCursor, onResult handlers.OnResult, onCursor handlers.OnCursor) (*handlers.SerializedCursor, error) {
+			ReadFn: func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor) (*lib.SerializedCursor, error) {
 				onResult(allTypesResult)
 				return nil, nil
 			},
@@ -231,6 +233,33 @@ func TestUpdateReturnsRows(t *testing.T) {
 	}
 	client, closer := server(ctx, clientConstructor)
 	defer closer()
+	customerSelection := &fivetransdk.TableSelection{
+		Included:  true,
+		TableName: "customers",
+		Columns:   map[string]bool{},
+	}
+
+	for _, f := range allTypesResult.Fields {
+		customerSelection.Columns[f.Name] = true
+	}
+
+	selection := &fivetransdk.Selection_WithSchema{
+		WithSchema: &fivetransdk.TablesWithSchema{
+			Schemas: []*fivetransdk.SchemaSelection{
+				{
+					SchemaName: "SalesDB",
+					Included:   true,
+					Tables: []*fivetransdk.TableSelection{
+						customerSelection,
+						{
+							Included:  false,
+							TableName: "customer_secrets",
+						},
+					},
+				},
+			},
+		},
+	}
 	out, err := client.Update(ctx, &fivetransdk.UpdateRequest{
 		Configuration: map[string]string{
 			"host":     "earth.psdb",
@@ -239,26 +268,7 @@ func TestUpdateReturnsRows(t *testing.T) {
 			"database": "employees",
 		},
 		Selection: &fivetransdk.Selection{
-			Selection: &fivetransdk.Selection_WithSchema{
-				WithSchema: &fivetransdk.TablesWithSchema{
-					Schemas: []*fivetransdk.SchemaSelection{
-						{
-							SchemaName: "SalesDB",
-							Included:   true,
-							Tables: []*fivetransdk.TableSelection{
-								{
-									Included:  true,
-									TableName: "customers",
-								},
-								{
-									Included:  false,
-									TableName: "customer_secrets",
-								},
-							},
-						},
-					},
-				},
-			},
+			Selection: selection,
 		},
 	})
 	assert.NoError(t, err)
@@ -290,8 +300,8 @@ func TestUpdateReturnsRows(t *testing.T) {
 	assert.True(t, ok)
 	assert.NotNil(t, checkpoint)
 
-	syncState := handlers.SyncState{
-		Keyspaces: map[string]handlers.KeyspaceState{},
+	syncState := lib.SyncState{
+		Keyspaces: map[string]lib.KeyspaceState{},
 	}
 
 	fmt.Printf("checkpoint is %s", checkpoint.Checkpoint.StateJson)
@@ -313,15 +323,15 @@ func TestUpdateReturnsRows(t *testing.T) {
 
 func TestUpdateReturnsState(t *testing.T) {
 	ctx := context.Background()
-	clientConstructor := func() handlers.PlanetScaleDatabase {
-		return &handlers.TestConnectClient{
-			ListVitessShardsFn: func(ctx context.Context, ps handlers.PlanetScaleSource) ([]string, error) {
+	clientConstructor := func() lib.ConnectClient {
+		return &lib.TestConnectClient{
+			ListVitessShardsFn: func(ctx context.Context, ps lib.PlanetScaleSource) ([]string, error) {
 				return []string{"-"}, nil
 			},
-			CanConnectFn: func(ctx context.Context, ps handlers.PlanetScaleSource) error {
+			CanConnectFn: func(ctx context.Context, ps lib.PlanetScaleSource) error {
 				return nil
 			},
-			ReadFn: func(ctx context.Context, logger handlers.DatabaseLogger, ps handlers.PlanetScaleSource, table *fivetransdk.TableSelection, tc *psdbconnect.TableCursor, onResult handlers.OnResult, onCursor handlers.OnCursor) (*handlers.SerializedCursor, error) {
+			ReadFn: func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor) (*lib.SerializedCursor, error) {
 				onCursor(&psdbconnect.TableCursor{
 					Position: "THIS_IS_A_VALID_GTID",
 				})
@@ -383,9 +393,9 @@ func TestUpdateReturnsState(t *testing.T) {
 
 func TestCheckConnectionReturnsSuccess(t *testing.T) {
 	ctx := context.Background()
-	clientConstructor := func() handlers.PlanetScaleDatabase {
-		return &handlers.TestConnectClient{
-			CanConnectFn: func(ctx context.Context, ps handlers.PlanetScaleSource) error {
+	clientConstructor := func() lib.ConnectClient {
+		return &lib.TestConnectClient{
+			CanConnectFn: func(ctx context.Context, ps lib.PlanetScaleSource) error {
 				return nil
 			},
 		}
@@ -430,9 +440,9 @@ func TestCheckConnectionReturnsErrorIfNotEdgePassword(t *testing.T) {
 
 func TestCheckConnectionReturnsErrorIfCheckFails(t *testing.T) {
 	ctx := context.Background()
-	clientConstructor := func() handlers.PlanetScaleDatabase {
-		return &handlers.TestConnectClient{
-			CanConnectFn: func(ctx context.Context, ps handlers.PlanetScaleSource) error {
+	clientConstructor := func() lib.ConnectClient {
+		return &lib.TestConnectClient{
+			CanConnectFn: func(ctx context.Context, ps lib.PlanetScaleSource) error {
 				return fmt.Errorf("unable to connect to PlanetScale Database : %v", ps.Database)
 			},
 		}
@@ -457,9 +467,9 @@ func TestCheckConnectionReturnsErrorIfCheckFails(t *testing.T) {
 
 func TestSchemaChecksCredentials(t *testing.T) {
 	ctx := context.Background()
-	clientConstructor := func() handlers.PlanetScaleDatabase {
-		return &handlers.TestConnectClient{
-			CanConnectFn: func(ctx context.Context, ps handlers.PlanetScaleSource) error {
+	clientConstructor := func() lib.ConnectClient {
+		return &lib.TestConnectClient{
+			CanConnectFn: func(ctx context.Context, ps lib.PlanetScaleSource) error {
 				return fmt.Errorf("access denied for user : %v", ps.Username)
 			},
 		}
