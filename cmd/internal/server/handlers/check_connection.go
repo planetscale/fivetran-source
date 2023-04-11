@@ -3,12 +3,14 @@ package handlers
 import (
 	"context"
 
+	"github.com/planetscale/fivetran-source/lib"
+
 	fivetransdk "github.com/planetscale/fivetran-proto/go"
 )
 
 type CheckConnection struct{}
 
-func (CheckConnection) Handle(ctx context.Context, database PlanetScaleDatabase, s string, source *PlanetScaleSource) (*fivetransdk.TestResponse, error) {
+func (CheckConnection) Handle(ctx context.Context, database lib.ConnectClient, s string, source *lib.PlanetScaleSource) (*fivetransdk.TestResponse, error) {
 	resp := &fivetransdk.TestResponse{
 		Response: &fivetransdk.TestResponse_Success{
 			Success: true,
