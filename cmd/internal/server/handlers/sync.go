@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/planetscale/fivetran-source/lib"
+
 	psdbconnect "github.com/planetscale/airbyte-source/proto/psdbconnect/v1alpha1"
 	fivetransdk "github.com/planetscale/fivetran-proto/go"
 	"google.golang.org/grpc/codes"
@@ -13,7 +15,7 @@ import (
 
 type Sync struct{}
 
-func (s *Sync) Handle(psc *PlanetScaleSource, db *PlanetScaleDatabase, logger Logger, state *SyncState, schema *fivetransdk.Selection_WithSchema) error {
+func (s *Sync) Handle(psc *lib.PlanetScaleSource, db *lib.ConnectClient, logger Logger, state *lib.SyncState, schema *fivetransdk.Selection_WithSchema) error {
 	if state == nil {
 		return status.Error(codes.Internal, "syncState cannot be nil")
 	}
@@ -36,7 +38,7 @@ func (s *Sync) Handle(psc *PlanetScaleSource, db *PlanetScaleDatabase, logger Lo
 
 			for shardName, shardState := range streamState.Shards {
 				onCursor := func(cursor *psdbconnect.TableCursor) error {
-					sc, err := TableCursorToSerializedCursor(cursor)
+					sc, err := lib.TableCursorToSerializedCursor(cursor)
 					if err != nil {
 						return status.Error(codes.Internal, "unable to serialize table cursor")
 					}
@@ -47,7 +49,7 @@ func (s *Sync) Handle(psc *PlanetScaleSource, db *PlanetScaleDatabase, logger Lo
 				if err != nil {
 					return status.Error(codes.Internal, fmt.Sprintf("invalid cursor for stream %v, failed with [%v]", stateKey, err))
 				}
-				sc, err := (*db).Read(ctx, logger, *psc, table, tc, onRow, onCursor)
+				sc, err := (*db).Read(ctx, logger, *psc, table.TableName, tc, onRow, onCursor)
 				if err != nil {
 					return status.Error(codes.Internal, fmt.Sprintf("failed to download rows for table : %s", table.TableName))
 				}
