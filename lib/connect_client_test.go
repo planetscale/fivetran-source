@@ -1,4 +1,4 @@
-package handlers
+package lib
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 	"vitess.io/vitess/go/vt/proto/query"
 
 	psdbconnect "github.com/planetscale/airbyte-source/proto/psdbconnect/v1alpha1"
-	fivetransdk "github.com/planetscale/fivetran-proto/proto/fivetransdk/v1alpha1"
+
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/grpc"
 
@@ -17,7 +17,7 @@ import (
 
 func TestRead_CanPeekBeforeRead(t *testing.T) {
 	dbl := &dbLogger{}
-	ped := PlanetScaleEdgeDatabase{}
+	ped := connectClient{}
 	tc := &psdbconnect.TableCursor{
 		Shard:    "-",
 		Position: "THIS_IS_A_SHARD_GTID",
@@ -45,14 +45,13 @@ func TestRead_CanPeekBeforeRead(t *testing.T) {
 		return &cc, nil
 	}
 	ps := PlanetScaleSource{}
-	table := &fivetransdk.TableSelection{}
 	onRow := func(*sqltypes.Result) error {
 		return nil
 	}
 	onCursor := func(*psdbconnect.TableCursor) error {
 		return nil
 	}
-	sc, err := ped.Read(context.Background(), dbl, ps, table, tc, onRow, onCursor)
+	sc, err := ped.Read(context.Background(), dbl, ps, "customers", tc, onRow, onCursor)
 	assert.NoError(t, err)
 	esc, err := TableCursorToSerializedCursor(tc)
 	assert.NoError(t, err)
@@ -62,7 +61,7 @@ func TestRead_CanPeekBeforeRead(t *testing.T) {
 
 func TestRead_CanEarlyExitIfNoNewVGtidInPeek(t *testing.T) {
 	dbl := &dbLogger{}
-	ped := PlanetScaleEdgeDatabase{}
+	ped := connectClient{}
 	tc := &psdbconnect.TableCursor{
 		Shard:    "-",
 		Position: "THIS_IS_A_SHARD_GTID",
@@ -85,14 +84,13 @@ func TestRead_CanEarlyExitIfNoNewVGtidInPeek(t *testing.T) {
 		return &cc, nil
 	}
 	ps := PlanetScaleSource{}
-	table := &fivetransdk.TableSelection{}
 	onRow := func(*sqltypes.Result) error {
 		return nil
 	}
 	onCursor := func(*psdbconnect.TableCursor) error {
 		return nil
 	}
-	sc, err := ped.Read(context.Background(), dbl, ps, table, tc, onRow, onCursor)
+	sc, err := ped.Read(context.Background(), dbl, ps, "customers", tc, onRow, onCursor)
 	assert.NoError(t, err)
 	esc, err := TableCursorToSerializedCursor(tc)
 	assert.NoError(t, err)
@@ -103,7 +101,7 @@ func TestRead_CanEarlyExitIfNoNewVGtidInPeek(t *testing.T) {
 
 func TestRead_CanPickPrimaryForShardedKeyspaces(t *testing.T) {
 	dbl := &dbLogger{}
-	ped := PlanetScaleEdgeDatabase{}
+	ped := connectClient{}
 	tc := &psdbconnect.TableCursor{
 		Shard:    "40-80",
 		Position: "THIS_IS_A_SHARD_GTID",
@@ -128,14 +126,13 @@ func TestRead_CanPickPrimaryForShardedKeyspaces(t *testing.T) {
 	ps := PlanetScaleSource{
 		Database: "connect-test",
 	}
-	table := &fivetransdk.TableSelection{}
 	onRow := func(*sqltypes.Result) error {
 		return nil
 	}
 	onCursor := func(*psdbconnect.TableCursor) error {
 		return nil
 	}
-	sc, err := ped.Read(context.Background(), dbl, ps, table, tc, onRow, onCursor)
+	sc, err := ped.Read(context.Background(), dbl, ps, "customers", tc, onRow, onCursor)
 	assert.NoError(t, err)
 	esc, err := TableCursorToSerializedCursor(tc)
 	assert.NoError(t, err)
@@ -145,7 +142,7 @@ func TestRead_CanPickPrimaryForShardedKeyspaces(t *testing.T) {
 
 func TestRead_CanReturnNewCursorIfNewFound(t *testing.T) {
 	dbl := &dbLogger{}
-	ped := PlanetScaleEdgeDatabase{}
+	ped := connectClient{}
 	tc := &psdbconnect.TableCursor{
 		Shard:    "-",
 		Position: "THIS_IS_A_SHARD_GTID",
@@ -176,14 +173,13 @@ func TestRead_CanReturnNewCursorIfNewFound(t *testing.T) {
 	ps := PlanetScaleSource{
 		Database: "connect-test",
 	}
-	table := &fivetransdk.TableSelection{}
 	onRow := func(*sqltypes.Result) error {
 		return nil
 	}
 	onCursor := func(*psdbconnect.TableCursor) error {
 		return nil
 	}
-	sc, err := ped.Read(context.Background(), dbl, ps, table, tc, onRow, onCursor)
+	sc, err := ped.Read(context.Background(), dbl, ps, "customers", tc, onRow, onCursor)
 	assert.NoError(t, err)
 	esc, err := TableCursorToSerializedCursor(newTC)
 	assert.NoError(t, err)
@@ -193,7 +189,7 @@ func TestRead_CanReturnNewCursorIfNewFound(t *testing.T) {
 
 func TestRead_CanStopAtWellKnownCursor(t *testing.T) {
 	dbl := &dbLogger{}
-	ped := PlanetScaleEdgeDatabase{}
+	ped := connectClient{}
 
 	numResponses := 10
 	// when the client tries to get the "current" vgtid,
@@ -256,9 +252,6 @@ func TestRead_CanStopAtWellKnownCursor(t *testing.T) {
 	ps := PlanetScaleSource{
 		Database: "connect-test",
 	}
-	table := &fivetransdk.TableSelection{
-		TableName: "customers",
-	}
 	rowCounter := 0
 	onRow := func(*sqltypes.Result) error {
 		rowCounter += 1
@@ -267,7 +260,7 @@ func TestRead_CanStopAtWellKnownCursor(t *testing.T) {
 	onCursor := func(*psdbconnect.TableCursor) error {
 		return nil
 	}
-	sc, err := ped.Read(context.Background(), dbl, ps, table, responses[0].Cursor, onRow, onCursor)
+	sc, err := ped.Read(context.Background(), dbl, ps, "customers", responses[0].Cursor, onRow, onCursor)
 
 	assert.NoError(t, err)
 	// sync should start at the first vgtid
@@ -278,88 +271,4 @@ func TestRead_CanStopAtWellKnownCursor(t *testing.T) {
 
 	assert.Equal(t, "[connect-test:customers shard : -] Finished reading all rows for table [customers]", dbl.messages[len(dbl.messages)-1].message)
 	assert.Equal(t, 2*(nextVGtidPosition/3), rowCounter)
-}
-
-func TestSchema_CanPickRightFivetranType(t *testing.T) {
-	tests := []struct {
-		MysqlType             string
-		FivetranType          fivetransdk.DataType
-		TreatTinyIntAsBoolean bool
-	}{
-		{
-			MysqlType:    "int(32)",
-			FivetranType: fivetransdk.DataType_INT,
-		},
-		{
-			MysqlType:    "int unsigned",
-			FivetranType: fivetransdk.DataType_LONG,
-		},
-		{
-			MysqlType:             "tinyint(1)",
-			FivetranType:          fivetransdk.DataType_BOOLEAN,
-			TreatTinyIntAsBoolean: true,
-		},
-		{
-			MysqlType:             "tinyint(1)",
-			FivetranType:          fivetransdk.DataType_INT,
-			TreatTinyIntAsBoolean: false,
-		},
-		{
-			MysqlType:             "timestamp",
-			FivetranType:          fivetransdk.DataType_UTC_DATETIME,
-			TreatTinyIntAsBoolean: true,
-		},
-		{
-			MysqlType:             "time",
-			FivetranType:          fivetransdk.DataType_STRING,
-			TreatTinyIntAsBoolean: true,
-		},
-		{
-			MysqlType:    "bigint(16)",
-			FivetranType: fivetransdk.DataType_LONG,
-		},
-		{
-			MysqlType:    "bigint unsigned",
-			FivetranType: fivetransdk.DataType_LONG,
-		},
-		{
-			MysqlType:    "bigint zerofill",
-			FivetranType: fivetransdk.DataType_LONG,
-		},
-		{
-			MysqlType:    "datetime(3)",
-			FivetranType: fivetransdk.DataType_NAIVE_DATETIME,
-		},
-		{
-			MysqlType:    "date",
-			FivetranType: fivetransdk.DataType_NAIVE_DATE,
-		},
-		{
-			MysqlType:    "text",
-			FivetranType: fivetransdk.DataType_STRING,
-		},
-		{
-			MysqlType:    "varchar(256)",
-			FivetranType: fivetransdk.DataType_STRING,
-		},
-		{
-			MysqlType:    "decimal(12,5)",
-			FivetranType: fivetransdk.DataType_DECIMAL,
-		},
-		{
-			MysqlType:    "double",
-			FivetranType: fivetransdk.DataType_DOUBLE,
-		},
-		{
-			MysqlType:    "enum",
-			FivetranType: fivetransdk.DataType_STRING,
-		},
-	}
-
-	for _, typeTest := range tests {
-		t.Run(fmt.Sprintf("mysql_type_%v", typeTest.MysqlType), func(t *testing.T) {
-			p := getFivetranDataType(typeTest.MysqlType, typeTest.TreatTinyIntAsBoolean)
-			assert.Equal(t, typeTest.FivetranType, p)
-		})
-	}
 }
