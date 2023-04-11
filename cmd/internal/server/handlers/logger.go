@@ -13,7 +13,7 @@ import (
 
 	"github.com/pkg/errors"
 
-	fivetransdk "github.com/planetscale/fivetran-proto/proto/fivetransdk/v1alpha1"
+	fivetransdk "github.com/planetscale/fivetran-proto/go"
 	"vitess.io/vitess/go/sqltypes"
 	querypb "vitess.io/vitess/go/vt/proto/query"
 )

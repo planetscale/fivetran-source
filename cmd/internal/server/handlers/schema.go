@@ -5,7 +5,7 @@ import (
 
 	"github.com/planetscale/fivetran-source/lib"
 
-	fivetransdk "github.com/planetscale/fivetran-proto/proto/fivetransdk/v1alpha1"
+	fivetransdk "github.com/planetscale/fivetran-proto/go"
 )
 
 type Schema struct{}

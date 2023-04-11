@@ -7,7 +7,7 @@ import (
 	"github.com/planetscale/fivetran-source/lib"
 
 	psdbconnect "github.com/planetscale/airbyte-source/proto/psdbconnect/v1alpha1"
-	fivetransdk "github.com/planetscale/fivetran-proto/proto/fivetransdk/v1alpha1"
+	fivetransdk "github.com/planetscale/fivetran-proto/go"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"vitess.io/vitess/go/sqltypes"

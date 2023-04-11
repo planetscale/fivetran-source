@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	fivetransdk "github.com/planetscale/fivetran-proto/proto/fivetransdk/v1alpha1"
+	fivetransdk "github.com/planetscale/fivetran-proto/go"
 	"github.com/stretchr/testify/assert"
 )
 
