@@ -115,7 +115,7 @@ func TestUpdateValidatesState(t *testing.T) {
 
 	clientConstructor := func() lib.ConnectClient {
 		return &lib.TestConnectClient{
-			ListVitessShardsFn: func(ctx context.Context, ps lib.PlanetScaleSource) ([]string, error) {
+			ListShardsFn: func(ctx context.Context, ps lib.PlanetScaleSource) ([]string, error) {
 				return []string{"-"}, nil
 			},
 		}
@@ -219,7 +219,7 @@ func TestUpdateReturnsRows(t *testing.T) {
 	}
 	clientConstructor := func() lib.ConnectClient {
 		return &lib.TestConnectClient{
-			ListVitessShardsFn: func(ctx context.Context, ps lib.PlanetScaleSource) ([]string, error) {
+			ListShardsFn: func(ctx context.Context, ps lib.PlanetScaleSource) ([]string, error) {
 				return []string{"-", "-40"}, nil
 			},
 			CanConnectFn: func(ctx context.Context, ps lib.PlanetScaleSource) error {
@@ -325,7 +325,7 @@ func TestUpdateReturnsState(t *testing.T) {
 	ctx := context.Background()
 	clientConstructor := func() lib.ConnectClient {
 		return &lib.TestConnectClient{
-			ListVitessShardsFn: func(ctx context.Context, ps lib.PlanetScaleSource) ([]string, error) {
+			ListShardsFn: func(ctx context.Context, ps lib.PlanetScaleSource) ([]string, error) {
 				return []string{"-"}, nil
 			},
 			CanConnectFn: func(ctx context.Context, ps lib.PlanetScaleSource) error {
