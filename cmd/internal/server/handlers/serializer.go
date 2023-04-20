@@ -18,7 +18,7 @@ import (
 	querypb "vitess.io/vitess/go/vt/proto/query"
 )
 
-type Logger interface {
+type Serializer interface {
 	Info(string)
 	Log(fivetransdk.LogLevel, string) error
 	Record(*sqltypes.Result, *fivetransdk.SchemaSelection, *fivetransdk.TableSelection) error
@@ -30,7 +30,7 @@ type LogSender interface {
 	Send(*fivetransdk.UpdateResponse) error
 }
 
-type logger struct {
+type serializer struct {
 	prefix                 string
 	sender                 LogSender
 	recordResponseKey      string
@@ -38,19 +38,19 @@ type logger struct {
 	serializeTinyIntAsBool bool
 }
 
-func NewLogger(sender LogSender, prefix string, serializeTinyIntAsBool bool) Logger {
-	return &logger{
+func NewSerializer(sender LogSender, prefix string, serializeTinyIntAsBool bool) Serializer {
+	return &serializer{
 		prefix:                 prefix,
 		sender:                 sender,
 		serializeTinyIntAsBool: serializeTinyIntAsBool,
 	}
 }
 
-func (l *logger) Info(msg string) {
+func (l *serializer) Info(msg string) {
 	l.Log(fivetransdk.LogLevel_INFO, msg)
 }
 
-func (l *logger) State(sc lib.SyncState) error {
+func (l *serializer) State(sc lib.SyncState) error {
 	state, err := json.Marshal(sc)
 	if err != nil {
 		return l.Log(fivetransdk.LogLevel_SEVERE, fmt.Sprintf("%q", err))
@@ -68,7 +68,7 @@ func (l *logger) State(sc lib.SyncState) error {
 	})
 }
 
-func (l *logger) Log(level fivetransdk.LogLevel, s string) error {
+func (l *serializer) Log(level fivetransdk.LogLevel, s string) error {
 	return l.sender.Send(&fivetransdk.UpdateResponse{
 		Response: &fivetransdk.UpdateResponse_LogEntry{
 			LogEntry: &fivetransdk.LogEntry{
@@ -79,12 +79,12 @@ func (l *logger) Log(level fivetransdk.LogLevel, s string) error {
 	})
 }
 
-func (l *logger) Release() {
+func (l *serializer) Release() {
 	l.recordResponse = nil
 	l.sender = nil
 }
 
-func (l *logger) Record(result *sqltypes.Result, schema *fivetransdk.SchemaSelection, table *fivetransdk.TableSelection) error {
+func (l *serializer) Record(result *sqltypes.Result, schema *fivetransdk.SchemaSelection, table *fivetransdk.TableSelection) error {
 	// make one response type per schema + table combination
 	// so we can avoid instantiating one object per table, and instead
 	// make one object per schema + table combo

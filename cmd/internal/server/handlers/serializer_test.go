@@ -121,7 +121,7 @@ func TestCanSerializeRecord(t *testing.T) {
 	}
 
 	tl := &testLogSender{}
-	l := NewLogger(tl, "", false)
+	l := NewSerializer(tl, "", false)
 
 	schema := &fivetransdk.SchemaSelection{
 		SchemaName: "SalesDB",
@@ -195,7 +195,7 @@ func TestCanSkipColumns(t *testing.T) {
 	}
 
 	tl := &testLogSender{}
-	l := NewLogger(tl, "", false)
+	l := NewSerializer(tl, "", false)
 
 	schema := &fivetransdk.SchemaSelection{
 		SchemaName: "SalesDB",
@@ -250,7 +250,7 @@ func BenchmarkRecordSerialization(b *testing.B) {
 	}
 
 	tl := &testLogSender{}
-	l := NewLogger(tl, "", false)
+	l := NewSerializer(tl, "", false)
 
 	schema := &fivetransdk.SchemaSelection{
 		SchemaName: "SalesDB",
@@ -288,7 +288,7 @@ func BenchmarkValueConversion(b *testing.B) {
 	}
 
 	tl := &testLogSender{}
-	l := NewLogger(tl, "", false)
+	l := NewSerializer(tl, "", false)
 
 	schema := &fivetransdk.SchemaSelection{
 		SchemaName: "SalesDB",
