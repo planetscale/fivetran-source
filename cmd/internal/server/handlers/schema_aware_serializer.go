@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
+
 	"github.com/planetscale/fivetran-source/lib"
 
 	"github.com/pkg/errors"
@@ -193,7 +194,6 @@ func generateRecordSerializer(table *fivetransdk.TableSelection, selectedSchemaN
 	for _, schema := range schemaList.Schemas {
 		if schema.Name != selectedSchemaName {
 			continue
-
 		}
 		for _, tableWithSchema := range schema.Tables {
 			if tableWithSchema.Name == table.TableName {
