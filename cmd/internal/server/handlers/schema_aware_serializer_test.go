@@ -17,10 +17,10 @@ import (
 
 func TestCanSerializeRecord(t *testing.T) {
 	timestamp := "2006-01-02 15:04:05"
-	row, _, err := generateTestRecord()
+	row, s, err := generateTestRecord()
 	require.NoError(t, err)
 	tl := &testLogSender{}
-	l := NewSerializer(tl, "", false)
+	l := NewSchemaAwareSerializer(tl, "", false, &fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{s}})
 
 	schema := &fivetransdk.SchemaSelection{
 		SchemaName: "SalesDB",
@@ -331,13 +331,34 @@ func TestCanSkipColumns(t *testing.T) {
 	}
 
 	tl := &testLogSender{}
-	l := NewSerializer(tl, "", false)
+	l := NewSchemaAwareSerializer(tl, "", false, &fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{
+		{
+			Name: "SalesDB",
+			Tables: []*fivetransdk.Table{
+				{
+					Name: "Customers",
+					Columns: []*fivetransdk.Column{
+						{
+							Name: "customer_id",
+							Type: fivetransdk.DataType_SHORT,
+						},
+						{
+							Name: "name",
+							Type: fivetransdk.DataType_STRING,
+						},
+					},
+				},
+			},
+		},
+	}})
 
 	schema := &fivetransdk.SchemaSelection{
+		Included:   true,
 		SchemaName: "SalesDB",
 	}
 	table := &fivetransdk.TableSelection{
 		TableName: "Customers",
+		Included:  true,
 		Columns: map[string]bool{
 			"customer_id": true,
 			"name":        false,
@@ -362,31 +383,7 @@ func TestCanSkipColumns(t *testing.T) {
 	assert.False(t, found, "should not include unselected column in output")
 }
 
-func BenchmarkRecordSerialization_PerRowSwitch(b *testing.B) {
-	row, _, err := generateTestRecord()
-	if err != nil {
-		panic(err.Error())
-	}
-
-	tl := &testLogSender{}
-	l := NewSerializer(tl, "", false)
-
-	schema := &fivetransdk.SchemaSelection{
-		SchemaName: "SalesDB",
-	}
-	table := &fivetransdk.TableSelection{
-		TableName: "Customers",
-	}
-
-	for n := 0; n < b.N; n++ {
-		err := l.Record(row, schema, table)
-		if err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-func BenchmarkRecordSerialization_CachedSerializer(b *testing.B) {
+func BenchmarkRecordSerialization_Serializer(b *testing.B) {
 	row, s, err := generateTestRecord()
 	if err != nil {
 		panic(err.Error())
@@ -411,43 +408,5 @@ func BenchmarkRecordSerialization_CachedSerializer(b *testing.B) {
 		if err != nil {
 			b.Fatalf("failed with %v", err.Error())
 		}
-	}
-}
-
-func BenchmarkValueConversion(b *testing.B) {
-	row := &sqltypes.Result{
-		Fields: []*querypb.Field{
-			{
-				Name:         "Customer_ID",
-				Type:         querypb.Type_UINT64,
-				ColumnLength: 21,
-				Charset:      63,
-				Flags:        32928,
-			},
-		},
-		Rows: [][]sqltypes.Value{
-			{
-				sqltypes.NewInt32(1),
-				sqltypes.TestValue(sqltypes.Float32, "1.1"),
-				sqltypes.NewVarChar("value1"),
-				sqltypes.TestValue(sqltypes.Decimal, "123.45"),
-				sqltypes.TestValue(sqltypes.Uint32, "2147483647"),
-				sqltypes.NewUint64(9223372036854775807),
-			},
-		},
-	}
-
-	tl := &testLogSender{}
-	l := NewSerializer(tl, "", false)
-
-	schema := &fivetransdk.SchemaSelection{
-		SchemaName: "SalesDB",
-	}
-	table := &fivetransdk.TableSelection{
-		TableName: "Customers",
-	}
-
-	for n := 0; n < b.N; n++ {
-		l.Record(row, schema, table)
 	}
 }
