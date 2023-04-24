@@ -33,6 +33,11 @@ func (testLogger) Record(result *sqltypes.Result, selection *fivetransdk.SchemaS
 	panic("implement me")
 }
 
+func (testLogger) CachedSerializeRecord(result *sqltypes.Result, selection *fivetransdk.SchemaSelection, selection2 *fivetransdk.TableSelection) error {
+	// TODO implement me
+	panic("implement me")
+}
+
 func (testLogger) State(state lib.SyncState) error {
 	return nil
 }

@@ -138,21 +138,28 @@ func (c *connectorServer) Update(request *fivetran_sdk.UpdateRequest, server fiv
 		return status.Error(codes.InvalidArgument, "request did not contain a valid selection")
 	}
 
-	schema, ok := request.Selection.Selection.(*fivetran_sdk.Selection_WithSchema)
+	schemaSelection, ok := request.Selection.Selection.(*fivetran_sdk.Selection_WithSchema)
 	if !ok {
 		return status.Error(codes.InvalidArgument, "request did not contain a Selection_WithSchema")
 	}
 
-	logger := handlers.NewSerializer(server, requestId, psc.TreatTinyIntAsBoolean)
-	defer logger.Release()
-	var db lib.ConnectClient
-	if c.clientConstructor == nil {
-		mysql, err := lib.NewMySQL(psc)
+	var (
+		db          lib.ConnectClient
+		mysqlClient lib.MysqlClient
+	)
+
+	if c.mysqlClientConstructor == nil {
+		mysqlClient, err = lib.NewMySQL(psc)
 		if err != nil {
 			return status.Error(codes.InvalidArgument, "unable to open connection to PlanetScale database")
 		}
-		defer mysql.Close()
-		db = lib.NewConnectClient(&mysql)
+		defer mysqlClient.Close()
+	} else {
+		mysqlClient = c.mysqlClientConstructor()
+	}
+
+	if c.clientConstructor == nil {
+		db = lib.NewConnectClient(&mysqlClient)
 	} else {
 		db = c.clientConstructor()
 	}
@@ -160,12 +167,21 @@ func (c *connectorServer) Update(request *fivetran_sdk.UpdateRequest, server fiv
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
+	fmt.Println("Getting source schema now")
+	sourceSchema, err := c.schema.Handle(ctx, psc, &mysqlClient)
+	if err != nil {
+		return status.Errorf(codes.InvalidArgument, "unable get source schema for this database : %q", err)
+	}
+
+	logger := handlers.NewSchemaAwareSerializer(server, requestId, psc.TreatTinyIntAsBoolean, sourceSchema.GetWithSchema())
+	defer logger.Release()
+
 	shards, err := db.ListShards(ctx, *psc)
 	if err != nil {
 		return status.Errorf(codes.InvalidArgument, "unable to list shards for this database : %q", err)
 	}
 	var state *lib.SyncState
-	state, err = StateFromRequest(request, *psc, shards, *schema)
+	state, err = StateFromRequest(request, *psc, shards, *schemaSelection)
 	if err != nil {
 		return status.Error(codes.InvalidArgument, fmt.Sprintf("request did not contain a valid stateJson : %q", err))
 	}
@@ -181,7 +197,7 @@ func (c *connectorServer) Update(request *fivetran_sdk.UpdateRequest, server fiv
 		logger.Log(fivetran_sdk.LogLevel_SEVERE, fmt.Sprintf("unable to connect to PlanetScale database, failed with : %q", checkConn.GetFailure()))
 		return nil
 	}
-	return c.sync.Handle(psc, &db, logger, state, schema)
+	return c.sync.Handle(psc, &db, logger, state, schemaSelection)
 }
 
 func newRequestLogger(requestID string) *log.Logger {
