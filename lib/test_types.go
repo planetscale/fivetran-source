@@ -63,15 +63,26 @@ type (
 )
 
 func (t TestMysqlClient) BuildSchema(ctx context.Context, psc PlanetScaleSource, schemaBuilder SchemaBuilder) error {
-	return t.BuildSchemaFn(ctx, psc, schemaBuilder)
+	if t.BuildSchemaFn != nil {
+		return t.BuildSchemaFn(ctx, psc, schemaBuilder)
+	}
+
+	panic("BuildSchema is not implemented")
 }
 
 func (t TestMysqlClient) PingContext(ctx context.Context, source PlanetScaleSource) error {
-	return t.PingContextFn(ctx, source)
+	if t.PingContextFn != nil {
+		return t.PingContextFn(ctx, source)
+	}
+
+	panic("PingContext is not implemented")
 }
 
 func (t TestMysqlClient) GetVitessShards(ctx context.Context, psc PlanetScaleSource) ([]string, error) {
-	return t.GetVitessShardsFn(ctx, psc)
+	if t.GetVitessShardsFn != nil {
+		return t.GetVitessShardsFn(ctx, psc)
+	}
+	panic("GetvitessShards is not implemented")
 }
 
 func (t TestMysqlClient) Close() error {
