@@ -12,6 +12,18 @@ import (
 	"vitess.io/vitess/go/sqltypes"
 )
 
+type Serializer interface {
+	Info(string)
+	Log(fivetransdk.LogLevel, string) error
+	Record(*sqltypes.Result, *fivetransdk.SchemaSelection, *fivetransdk.TableSelection) error
+	State(lib.SyncState) error
+	Release()
+}
+
+type LogSender interface {
+	Send(*fivetransdk.UpdateResponse) error
+}
+
 type schemaAwareSerializer struct {
 	prefix                 string
 	sender                 LogSender
@@ -205,4 +217,8 @@ func generateRecordSerializer(table *fivetransdk.TableSelection, schema *fivetra
 		columnSelection: table.Columns,
 		columnWriters:   serializers,
 	}, nil
+}
+
+func responseKey(schema *fivetransdk.SchemaSelection, table *fivetransdk.TableSelection) string {
+	return schema.SchemaName + ":" + table.TableName
 }
