@@ -23,10 +23,12 @@ func TestCanSerializeRecord(t *testing.T) {
 	l := NewSchemaAwareSerializer(tl, "", false, &fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{s}})
 
 	schema := &fivetransdk.SchemaSelection{
-		SchemaName: "SalesDB",
+		Included:   true,
+		SchemaName: s.Name,
 	}
 	table := &fivetransdk.TableSelection{
 		TableName: "Customers",
+		Included:  true,
 		Columns:   map[string]bool{},
 	}
 

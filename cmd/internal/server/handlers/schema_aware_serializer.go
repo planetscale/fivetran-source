@@ -3,7 +3,6 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
-
 	"github.com/planetscale/fivetran-source/lib"
 
 	"github.com/pkg/errors"
@@ -31,7 +30,7 @@ type schemaAwareSerializer struct {
 	recordResponse         *fivetransdk.UpdateResponse
 	serializeTinyIntAsBool bool
 	serializers            map[string]*recordSerializer
-	schema                 *fivetransdk.Schema
+	schemaList             *fivetransdk.SchemaList
 }
 
 type recordSerializer interface {
@@ -88,7 +87,7 @@ func NewSchemaAwareSerializer(sender LogSender, prefix string, serializeTinyIntA
 		prefix:                 prefix,
 		sender:                 sender,
 		serializeTinyIntAsBool: serializeTinyIntAsBool,
-		schema:                 schemaList.Schemas[0],
+		schemaList:             schemaList,
 	}
 }
 
@@ -156,7 +155,7 @@ func (l *schemaAwareSerializer) Record(result *sqltypes.Result, schema *fivetran
 
 		if _, ok := l.serializers[l.recordResponseKey]; !ok {
 
-			rs, err := generateRecordSerializer(table, l.schema, l.serializeTinyIntAsBool)
+			rs, err := generateRecordSerializer(table, schema.SchemaName, l.schemaList, l.serializeTinyIntAsBool)
 			if err != nil {
 				return err
 			}
@@ -187,26 +186,32 @@ func (l *schemaAwareSerializer) Record(result *sqltypes.Result, schema *fivetran
 	return nil
 }
 
-func generateRecordSerializer(table *fivetransdk.TableSelection, schema *fivetransdk.Schema, serializeTinyIntAsBool bool) (recordSerializer, error) {
+func generateRecordSerializer(table *fivetransdk.TableSelection, selectedSchemaName string, schemaList *fivetransdk.SchemaList, serializeTinyIntAsBool bool) (recordSerializer, error) {
 	serializers := map[string]func(value sqltypes.Value) (*fivetransdk.ValueType, error){}
 	var err error
 	var tableSchema *fivetransdk.Table
-	for _, tableWithSchema := range schema.Tables {
-		if tableWithSchema.Name == table.TableName {
-			tableSchema = tableWithSchema
-		}
-	}
-	if tableSchema != nil {
-		for colName, included := range table.Columns {
-			if !included {
-				continue
-			}
+	for _, schema := range schemaList.Schemas {
+		if schema.Name != selectedSchemaName {
+			continue
 
-			for _, colunWithSchema := range tableSchema.Columns {
-				if colName == colunWithSchema.Name {
-					serializers[colName], err = GetConverter(colunWithSchema.Type, serializeTinyIntAsBool)
-					if err != nil {
-						return nil, err
+		}
+		for _, tableWithSchema := range schema.Tables {
+			if tableWithSchema.Name == table.TableName {
+				tableSchema = tableWithSchema
+			}
+		}
+		if tableSchema != nil {
+			for colName, included := range table.Columns {
+				if !included {
+					continue
+				}
+
+				for _, colunWithSchema := range tableSchema.Columns {
+					if colName == colunWithSchema.Name {
+						serializers[colName], err = GetConverter(colunWithSchema.Type, serializeTinyIntAsBool)
+						if err != nil {
+							return nil, err
+						}
 					}
 				}
 			}
