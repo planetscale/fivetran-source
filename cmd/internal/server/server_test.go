@@ -340,7 +340,6 @@ func TestUpdateReturnsRows(t *testing.T) {
 	}
 	assert.Len(t, rows, 3)
 	operation := rows[0].GetOperation()
-	fmt.Printf("rows[0] is %v", rows[0])
 	assert.NotNil(t, operation)
 	record, ok := operation.Op.(*fivetransdk.Operation_Record)
 	assert.True(t, ok)
