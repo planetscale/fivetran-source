@@ -8,6 +8,14 @@ import (
 	"github.com/planetscale/psdb/core/codec"
 )
 
+type Operation int64
+
+const (
+	Insert Operation = iota
+	Update
+	Delete
+)
+
 type MysqlColumn struct {
 	Name         string
 	Type         string

@@ -45,7 +45,7 @@ func TestRead_CanPeekBeforeRead(t *testing.T) {
 		return &cc, nil
 	}
 	ps := PlanetScaleSource{}
-	onRow := func(*sqltypes.Result) error {
+	onRow := func(*sqltypes.Result, Operation) error {
 		return nil
 	}
 	onCursor := func(*psdbconnect.TableCursor) error {
@@ -84,7 +84,7 @@ func TestRead_CanEarlyExitIfNoNewVGtidInPeek(t *testing.T) {
 		return &cc, nil
 	}
 	ps := PlanetScaleSource{}
-	onRow := func(*sqltypes.Result) error {
+	onRow := func(*sqltypes.Result, Operation) error {
 		return nil
 	}
 	onCursor := func(*psdbconnect.TableCursor) error {
@@ -126,7 +126,7 @@ func TestRead_CanPickPrimaryForShardedKeyspaces(t *testing.T) {
 	ps := PlanetScaleSource{
 		Database: "connect-test",
 	}
-	onRow := func(*sqltypes.Result) error {
+	onRow := func(*sqltypes.Result, Operation) error {
 		return nil
 	}
 	onCursor := func(*psdbconnect.TableCursor) error {
@@ -173,7 +173,7 @@ func TestRead_CanReturnNewCursorIfNewFound(t *testing.T) {
 	ps := PlanetScaleSource{
 		Database: "connect-test",
 	}
-	onRow := func(*sqltypes.Result) error {
+	onRow := func(*sqltypes.Result, Operation) error {
 		return nil
 	}
 	onCursor := func(*psdbconnect.TableCursor) error {
@@ -253,7 +253,7 @@ func TestRead_CanStopAtWellKnownCursor(t *testing.T) {
 		Database: "connect-test",
 	}
 	rowCounter := 0
-	onRow := func(*sqltypes.Result) error {
+	onRow := func(*sqltypes.Result, Operation) error {
 		rowCounter += 1
 		return nil
 	}

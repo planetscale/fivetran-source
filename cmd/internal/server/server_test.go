@@ -226,7 +226,7 @@ func TestUpdateReturnsRows(t *testing.T) {
 				return nil
 			},
 			ReadFn: func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor) (*lib.SerializedCursor, error) {
-				onResult(allTypesResult)
+				onResult(allTypesResult, lib.Insert)
 				return nil, nil
 			},
 		}
