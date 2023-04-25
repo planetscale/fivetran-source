@@ -23,6 +23,7 @@ type Serializer interface {
 	Log(fivetransdk.LogLevel, string) error
 	Record(*sqltypes.Result, *fivetransdk.SchemaSelection, *fivetransdk.TableSelection, lib.Operation) error
 	State(lib.SyncState) error
+	Update(*sqltypes.Result, *sqltypes.Result, *fivetransdk.SchemaSelection, *fivetransdk.TableSelection, lib.Operation) error
 }
 
 type LogSender interface {
@@ -127,6 +128,10 @@ func (l *schemaAwareSerializer) Log(level fivetransdk.LogLevel, s string) error 
 			},
 		},
 	})
+}
+
+func (l *schemaAwareSerializer) Update(*sqltypes.Result, *sqltypes.Result, *fivetransdk.SchemaSelection, *fivetransdk.TableSelection, lib.Operation) error {
+	return fmt.Errorf("%v is not implemented", "Update")
 }
 
 func (l *schemaAwareSerializer) Record(result *sqltypes.Result, schema *fivetransdk.SchemaSelection, table *fivetransdk.TableSelection, opType lib.Operation) error {
