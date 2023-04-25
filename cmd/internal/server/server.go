@@ -64,6 +64,7 @@ func (c *connectorServer) Test(ctx context.Context, request *fivetran_sdk.TestRe
 		return nil, errors.Wrap(err, "request did not contain a valid configuration")
 	}
 	mysql, err := lib.NewMySQL(psc)
+
 	if err != nil {
 		return nil, errors.Wrap(err, "unable to open connection to PlanetScale database")
 	}
@@ -153,10 +154,10 @@ func (c *connectorServer) Update(request *fivetran_sdk.UpdateRequest, server fiv
 		if err != nil {
 			return status.Error(codes.InvalidArgument, "unable to open connection to PlanetScale database")
 		}
-		defer mysqlClient.Close()
 	} else {
 		mysqlClient = c.mysqlClientConstructor()
 	}
+	defer mysqlClient.Close()
 
 	if c.clientConstructor == nil {
 		db = lib.NewConnectClient(&mysqlClient)
@@ -174,7 +175,6 @@ func (c *connectorServer) Update(request *fivetran_sdk.UpdateRequest, server fiv
 	}
 
 	logger := handlers.NewSchemaAwareSerializer(server, requestId, psc.TreatTinyIntAsBoolean, sourceSchema.GetWithSchema())
-	defer logger.Release()
 
 	shards, err := db.ListShards(ctx, *psc)
 	if err != nil {

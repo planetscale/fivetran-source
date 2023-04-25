@@ -17,7 +17,6 @@ type Serializer interface {
 	Log(fivetransdk.LogLevel, string) error
 	Record(*sqltypes.Result, *fivetransdk.SchemaSelection, *fivetransdk.TableSelection) error
 	State(lib.SyncState) error
-	Release()
 }
 
 type LogSender interface {
@@ -53,29 +52,32 @@ func (s *schemaAwareRecordSerializer) Serialize(result *sqltypes.Result) ([]map[
 	for _, row := range result.Rows {
 		record := make(map[string]*fivetransdk.ValueType)
 		for idx, val := range row {
-			if idx < len(columns) {
-
-				colName := columns[idx]
-				if selected := s.columnSelection[colName]; !selected {
-					continue
-				}
-				var (
-					fVal *fivetransdk.ValueType
-					err  error
-				)
-
-				writer, ok := s.columnWriters[colName]
-				if ok {
-					fVal, err = writer(val)
-				} else {
-					return nil, fmt.Errorf("no column writer available for %v", colName)
-				}
-
-				if err != nil {
-					return nil, errors.Wrap(err, "unable to serialize row")
-				}
-				record[colName] = fVal
+			if idx > len(columns) {
+				// if there's more values than columns, exit this loop
+				break
 			}
+
+			colName := columns[idx]
+			if selected := s.columnSelection[colName]; !selected {
+				continue
+			}
+			var (
+				fVal *fivetransdk.ValueType
+				err  error
+			)
+
+			writer, ok := s.columnWriters[colName]
+			if !ok {
+				return nil, fmt.Errorf("no column writer available for %v", colName)
+			}
+
+			fVal, err = writer(val)
+
+			if err != nil {
+				return nil, errors.Wrap(err, "unable to serialize row")
+			}
+			record[colName] = fVal
+
 		}
 		data = append(data, record)
 	}
@@ -89,6 +91,7 @@ func NewSchemaAwareSerializer(sender LogSender, prefix string, serializeTinyIntA
 		sender:                 sender,
 		serializeTinyIntAsBool: serializeTinyIntAsBool,
 		schemaList:             schemaList,
+		serializers:            map[string]*recordSerializer{},
 	}
 }
 
@@ -99,7 +102,7 @@ func (l *schemaAwareSerializer) Info(msg string) {
 func (l *schemaAwareSerializer) State(sc lib.SyncState) error {
 	state, err := json.Marshal(sc)
 	if err != nil {
-		return l.Log(fivetransdk.LogLevel_SEVERE, fmt.Sprintf("%q", err))
+		return l.Log(fivetransdk.LogLevel_SEVERE, fmt.Sprintf("marshal schema aware json serializer : %q", err))
 	}
 	return l.sender.Send(&fivetransdk.UpdateResponse{
 		Response: &fivetransdk.UpdateResponse_Operation{
@@ -125,11 +128,6 @@ func (l *schemaAwareSerializer) Log(level fivetransdk.LogLevel, s string) error 
 	})
 }
 
-func (l *schemaAwareSerializer) Release() {
-	l.recordResponse = nil
-	l.sender = nil
-}
-
 func (l *schemaAwareSerializer) Record(result *sqltypes.Result, schema *fivetransdk.SchemaSelection, table *fivetransdk.TableSelection) error {
 	// make one response type per schema + table combination
 	// so we can avoid instantiating one object per table, and instead
@@ -150,9 +148,6 @@ func (l *schemaAwareSerializer) Record(result *sqltypes.Result, schema *fivetran
 				},
 			},
 		}
-		if l.serializers == nil {
-			l.serializers = map[string]*recordSerializer{}
-		}
 
 		if _, ok := l.serializers[l.recordResponseKey]; !ok {
 
@@ -168,17 +163,17 @@ func (l *schemaAwareSerializer) Record(result *sqltypes.Result, schema *fivetran
 	rs := *l.serializers[l.recordResponseKey]
 	rows, err := rs.Serialize(result)
 	if err != nil {
-		return l.Log(fivetransdk.LogLevel_SEVERE, fmt.Sprintf("%q", err))
+		return l.Log(fivetransdk.LogLevel_SEVERE, fmt.Sprintf("record schema aware json serializer : %q", err))
 	}
 
 	for _, row := range rows {
 		operation, ok := l.recordResponse.Response.(*fivetransdk.UpdateResponse_Operation)
 		if !ok {
-			return l.Log(fivetransdk.LogLevel_SEVERE, "recordResponse Operation is not of type UpdateResponse_Operation")
+			return l.Log(fivetransdk.LogLevel_SEVERE, fmt.Sprintf("recordResponse Operation is of type %T, not UpdateResponse_Operation", l.recordResponse.Response))
 		}
 		operationRecord, ok := operation.Operation.Op.(*fivetransdk.Operation_Record)
 		if !ok {
-			return l.Log(fivetransdk.LogLevel_SEVERE, "recordResponse Operation.Op is not of type Operation_Record")
+			return l.Log(fivetransdk.LogLevel_SEVERE, fmt.Sprintf("recordResponse Operation.Op is of type %T not Operation_Record", operation.Operation.Op))
 		}
 		operationRecord.Record.Data = row
 		l.sender.Send(l.recordResponse)
@@ -200,22 +195,26 @@ func generateRecordSerializer(table *fivetransdk.TableSelection, selectedSchemaN
 				tableSchema = tableWithSchema
 			}
 		}
-		if tableSchema != nil {
-			for colName, included := range table.Columns {
-				if !included {
-					continue
-				}
 
-				for _, colunWithSchema := range tableSchema.Columns {
-					if colName == colunWithSchema.Name {
-						serializers[colName], err = GetConverter(colunWithSchema.Type, serializeTinyIntAsBool)
-						if err != nil {
-							return nil, err
-						}
+		if tableSchema == nil {
+			return nil, fmt.Errorf("cannot generate serializer, unable to find schema for table : %q", table.TableName)
+		}
+
+		for colName, included := range table.Columns {
+			if !included {
+				continue
+			}
+
+			for _, colunWithSchema := range tableSchema.Columns {
+				if colName == colunWithSchema.Name {
+					serializers[colName], err = GetConverter(colunWithSchema.Type, serializeTinyIntAsBool)
+					if err != nil {
+						return nil, err
 					}
 				}
 			}
 		}
+
 	}
 
 	return &schemaAwareRecordSerializer{
