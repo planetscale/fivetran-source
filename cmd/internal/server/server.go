@@ -64,7 +64,6 @@ func (c *connectorServer) Test(ctx context.Context, request *fivetran_sdk.TestRe
 		return nil, errors.Wrap(err, "request did not contain a valid configuration")
 	}
 	mysql, err := lib.NewMySQL(psc)
-
 	if err != nil {
 		return nil, errors.Wrap(err, "unable to open connection to PlanetScale database")
 	}
