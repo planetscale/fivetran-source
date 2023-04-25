@@ -50,7 +50,7 @@ func (s *Sync) Handle(psc *lib.PlanetScaleSource, db *lib.ConnectClient, logger 
 					return status.Error(codes.Internal, fmt.Sprintf("invalid cursor for stream %v, failed with [%v]", stateKey, err))
 				}
 				columns := includedColumns(table)
-				sc, err := (*db).Read(ctx, logger, *psc, table.TableName, columns, tc, onRow, onCursor)
+				sc, err := (*db).Read(ctx, logger, *psc, table.TableName, columns, tc, onRow, onCursor, nil)
 				if err != nil {
 					return status.Error(codes.Internal, fmt.Sprintf("failed to download rows for table : %s", table.TableName))
 				}

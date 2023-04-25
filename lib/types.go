@@ -3,6 +3,8 @@ package lib
 import (
 	"encoding/base64"
 
+	"vitess.io/vitess/go/vt/proto/query"
+
 	"github.com/pkg/errors"
 	psdbconnect "github.com/planetscale/airbyte-source/proto/psdbconnect/v1alpha1"
 	"github.com/planetscale/psdb/core/codec"
@@ -16,6 +18,10 @@ const (
 	OpType_Delete
 )
 
+type UpdatedRow struct {
+	Before *query.QueryResult
+	After  *query.QueryResult
+}
 type MysqlColumn struct {
 	Name         string
 	Type         string
