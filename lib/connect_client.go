@@ -26,7 +26,7 @@ import (
 
 type (
 	OnResult func(*sqltypes.Result, Operation) error
-	OnUpdate func(UpdatedRow) error
+	OnUpdate func(*UpdatedRow) error
 	OnCursor func(*psdbconnect.TableCursor) error
 )
 
