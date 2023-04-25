@@ -53,12 +53,10 @@ type (
 	BuildSchemaFunc     func(ctx context.Context, psc PlanetScaleSource, schemaBuilder SchemaBuilder) error
 	PingContextFunc     func(context.Context, PlanetScaleSource) error
 	GetVitessShardsFunc func(ctx context.Context, psc PlanetScaleSource) ([]string, error)
-	CloseFunc           func() error
 	TestMysqlClient     struct {
 		BuildSchemaFn     BuildSchemaFunc
 		PingContextFn     PingContextFunc
 		GetVitessShardsFn GetVitessShardsFunc
-		CloseFn           CloseFunc
 	}
 )
 
@@ -86,7 +84,7 @@ func (t TestMysqlClient) GetVitessShards(ctx context.Context, psc PlanetScaleSou
 }
 
 func (t TestMysqlClient) Close() error {
-	return t.CloseFn()
+	return nil
 }
 
 type (
