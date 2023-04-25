@@ -51,7 +51,7 @@ func TestRead_CanPeekBeforeRead(t *testing.T) {
 	onCursor := func(*psdbconnect.TableCursor) error {
 		return nil
 	}
-	sc, err := ped.Read(context.Background(), dbl, ps, "customers", tc, onRow, onCursor)
+	sc, err := ped.Read(context.Background(), dbl, ps, "customers", nil, tc, onRow, onCursor)
 	assert.NoError(t, err)
 	esc, err := TableCursorToSerializedCursor(tc)
 	assert.NoError(t, err)
@@ -90,7 +90,7 @@ func TestRead_CanEarlyExitIfNoNewVGtidInPeek(t *testing.T) {
 	onCursor := func(*psdbconnect.TableCursor) error {
 		return nil
 	}
-	sc, err := ped.Read(context.Background(), dbl, ps, "customers", tc, onRow, onCursor)
+	sc, err := ped.Read(context.Background(), dbl, ps, "customers", nil, tc, onRow, onCursor)
 	assert.NoError(t, err)
 	esc, err := TableCursorToSerializedCursor(tc)
 	assert.NoError(t, err)
@@ -132,7 +132,7 @@ func TestRead_CanPickPrimaryForShardedKeyspaces(t *testing.T) {
 	onCursor := func(*psdbconnect.TableCursor) error {
 		return nil
 	}
-	sc, err := ped.Read(context.Background(), dbl, ps, "customers", tc, onRow, onCursor)
+	sc, err := ped.Read(context.Background(), dbl, ps, "customers", nil, tc, onRow, onCursor)
 	assert.NoError(t, err)
 	esc, err := TableCursorToSerializedCursor(tc)
 	assert.NoError(t, err)
@@ -179,7 +179,7 @@ func TestRead_CanReturnNewCursorIfNewFound(t *testing.T) {
 	onCursor := func(*psdbconnect.TableCursor) error {
 		return nil
 	}
-	sc, err := ped.Read(context.Background(), dbl, ps, "customers", tc, onRow, onCursor)
+	sc, err := ped.Read(context.Background(), dbl, ps, "customers", nil, tc, onRow, onCursor)
 	assert.NoError(t, err)
 	esc, err := TableCursorToSerializedCursor(newTC)
 	assert.NoError(t, err)
@@ -260,7 +260,7 @@ func TestRead_CanStopAtWellKnownCursor(t *testing.T) {
 	onCursor := func(*psdbconnect.TableCursor) error {
 		return nil
 	}
-	sc, err := ped.Read(context.Background(), dbl, ps, "customers", responses[0].Cursor, onRow, onCursor)
+	sc, err := ped.Read(context.Background(), dbl, ps, "customers", nil, responses[0].Cursor, onRow, onCursor)
 
 	assert.NoError(t, err)
 	// sync should start at the first vgtid
