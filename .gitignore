@@ -1,5 +1,8 @@
 .DS_Store
 bin/*
 *.tar
+*.prof
+*.test
+*.out
 server/*
 sources/*
