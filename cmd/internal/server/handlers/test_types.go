@@ -30,7 +30,7 @@ func (testLogger) Log(level fivetransdk.LogLevel, s string) error {
 	panic("implement me")
 }
 
-func (testLogger) Update(lib.UpdatedRow, *fivetransdk.SchemaSelection, *fivetransdk.TableSelection, lib.Operation) error {
+func (testLogger) Update(*lib.UpdatedRow, *fivetransdk.SchemaSelection, *fivetransdk.TableSelection) error {
 	return fmt.Errorf("%v is not implemented", "Update")
 }
 

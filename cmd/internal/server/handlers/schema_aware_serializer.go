@@ -23,7 +23,7 @@ type Serializer interface {
 	Log(fivetransdk.LogLevel, string) error
 	Record(*sqltypes.Result, *fivetransdk.SchemaSelection, *fivetransdk.TableSelection, lib.Operation) error
 	State(lib.SyncState) error
-	Update(lib.UpdatedRow, *fivetransdk.SchemaSelection, *fivetransdk.TableSelection, lib.Operation) error
+	Update(*lib.UpdatedRow, *fivetransdk.SchemaSelection, *fivetransdk.TableSelection) error
 }
 
 type LogSender interface {
@@ -133,7 +133,7 @@ func (l *schemaAwareSerializer) Log(level fivetransdk.LogLevel, s string) error 
 // Update is responsible for creating a record that has the following values :
 // 1. Primary keys of the row that was updated.
 // 2. All changed values between the Before & After fields.
-func (l *schemaAwareSerializer) Update(lib.UpdatedRow, *fivetransdk.SchemaSelection, *fivetransdk.TableSelection, lib.Operation) error {
+func (l *schemaAwareSerializer) Update(*lib.UpdatedRow, *fivetransdk.SchemaSelection, *fivetransdk.TableSelection) error {
 	return fmt.Errorf("%v is not implemented", "Update")
 }
 
