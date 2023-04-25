@@ -599,6 +599,8 @@ github.com/pkg/errors v0.8.1/go.mod h1:bwawxfHBFNV+L2hUp1rHADufV3IMtnDRdf1r5NINE
 github.com/pkg/errors v0.9.1 h1:FEBLx1zS214owpjy7qsBeixbURkuhQAwrK5UwLGTwt4=
 github.com/pkg/errors v0.9.1/go.mod h1:bwawxfHBFNV+L2hUp1rHADufV3IMtnDRdf1r5NINEl0=
 github.com/pkg/profile v1.2.1/go.mod h1:hJw3o1OdXxsrSjjVksARp5W95eeEaEfptyVZyv6JUPA=
+github.com/planetscale/airbyte-source v1.16.0 h1:edgR8Vr99XQmCNaInHaAL+xN1a0+d3DjeEBerSUfQv8=
+github.com/planetscale/airbyte-source v1.16.0/go.mod h1:I4jdxCyHAJ/XmJCF7hQOZM2mvUK5FM7hKkUya5IVFDc=
 github.com/planetscale/fivetran-proto v0.0.0-20230410214623-a81ba896d0e0 h1:S4ziUF++0Da0kj/TfB9frrmzmvGzv8uEQ+xF4geYMjQ=
 github.com/planetscale/fivetran-proto v0.0.0-20230410214623-a81ba896d0e0/go.mod h1:jP6PXMux7WNsn+ylpKab+xIEQ6wstSnBA2KQDdkCrYc=
 github.com/planetscale/pargzip v0.0.0-20201116224723-90c7fc03ea8a h1:y0OpQ4+5tKxeh9+H+2cVgASl9yMZYV9CILinKOiKafA=
