@@ -11,9 +11,9 @@ import (
 type Operation int64
 
 const (
-	Insert Operation = iota
-	Update
-	Delete
+	OpType_Insert Operation = iota
+	OpType_Update
+	OpType_Delete
 )
 
 type MysqlColumn struct {

@@ -228,7 +228,7 @@ func TestUpdateReturnsRows(t *testing.T) {
 			ReadFn: func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string, tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor) (*lib.SerializedCursor, error) {
 				assert.Equal(t, "customers", tableName)
 				assert.NotNil(t, columns)
-				onResult(allTypesResult, lib.Insert)
+				onResult(allTypesResult, lib.OpType_Insert)
 				return nil, nil
 			},
 		}
