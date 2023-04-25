@@ -61,18 +61,13 @@ func (s *schemaAwareRecordSerializer) Serialize(result *sqltypes.Result) ([]map[
 			if selected := s.columnSelection[colName]; !selected {
 				continue
 			}
-			var (
-				fVal *fivetransdk.ValueType
-				err  error
-			)
 
 			writer, ok := s.columnWriters[colName]
 			if !ok {
 				return nil, fmt.Errorf("no column writer available for %v", colName)
 			}
 
-			fVal, err = writer(val)
-
+			fVal, err := writer(val)
 			if err != nil {
 				return nil, errors.Wrap(err, "unable to serialize row")
 			}
@@ -185,11 +180,12 @@ func (l *schemaAwareSerializer) Record(result *sqltypes.Result, schema *fivetran
 func generateRecordSerializer(table *fivetransdk.TableSelection, selectedSchemaName string, schemaList *fivetransdk.SchemaList, serializeTinyIntAsBool bool) (recordSerializer, error) {
 	serializers := map[string]func(value sqltypes.Value) (*fivetransdk.ValueType, error){}
 	var err error
-	var tableSchema *fivetransdk.Table
 	for _, schema := range schemaList.Schemas {
 		if schema.Name != selectedSchemaName {
 			continue
 		}
+
+		var tableSchema *fivetransdk.Table
 		for _, tableWithSchema := range schema.Tables {
 			if tableWithSchema.Name == table.TableName {
 				tableSchema = tableWithSchema
