@@ -35,7 +35,7 @@ type DatabaseLogger interface {
 // that defines all the data access methods needed for the PlanetScale Fivetran source to function.
 type ConnectClient interface {
 	CanConnect(ctx context.Context, ps PlanetScaleSource) error
-	Read(ctx context.Context, logger DatabaseLogger, ps PlanetScaleSource, tableName string, lastKnownPosition *psdbconnect.TableCursor, onResult OnResult, onCursor OnCursor) (*SerializedCursor, error)
+	Read(ctx context.Context, logger DatabaseLogger, ps PlanetScaleSource, tableName string, columns []string, lastKnownPosition *psdbconnect.TableCursor, onResult OnResult, onCursor OnCursor) (*SerializedCursor, error)
 	ListShards(ctx context.Context, ps PlanetScaleSource) ([]string, error)
 }
 
@@ -94,7 +94,7 @@ func (p connectClient) checkEdgePassword(ctx context.Context, psc PlanetScaleSou
 // 3. Ask vstream to stream from the last known vgtid
 // 4. When we reach the stopping point, read all rows available at this vgtid
 // 5. End the stream when (a) a vgtid newer than latest vgtid is encountered or (b) the timeout kicks in.
-func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps PlanetScaleSource, tableName string, lastKnownPosition *psdbconnect.TableCursor, onResult OnResult, onCursor OnCursor) (*SerializedCursor, error) {
+func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps PlanetScaleSource, tableName string, columns []string, lastKnownPosition *psdbconnect.TableCursor, onResult OnResult, onCursor OnCursor) (*SerializedCursor, error) {
 	var (
 		err                     error
 		sErr                    error

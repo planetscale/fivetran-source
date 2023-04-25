@@ -49,7 +49,8 @@ func (s *Sync) Handle(psc *lib.PlanetScaleSource, db *lib.ConnectClient, logger 
 				if err != nil {
 					return status.Error(codes.Internal, fmt.Sprintf("invalid cursor for stream %v, failed with [%v]", stateKey, err))
 				}
-				sc, err := (*db).Read(ctx, logger, *psc, table.TableName, tc, onRow, onCursor)
+				columns := includedColumns(table)
+				sc, err := (*db).Read(ctx, logger, *psc, table.TableName, columns, tc, onRow, onCursor)
 				if err != nil {
 					return status.Error(codes.Internal, fmt.Sprintf("failed to download rows for table : %s", table.TableName))
 				}
@@ -84,4 +85,14 @@ func includedTables(keyspace *fivetransdk.SchemaSelection) []*fivetransdk.TableS
 	}
 
 	return ts
+}
+
+func includedColumns(table *fivetransdk.TableSelection) []string {
+	var columns []string
+	for column, included := range table.Columns {
+		if included {
+			columns = append(columns, column)
+		}
+	}
+	return columns
 }
