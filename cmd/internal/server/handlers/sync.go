@@ -32,7 +32,7 @@ func (s *Sync) Handle(psc *lib.PlanetScaleSource, db *lib.ConnectClient, logger 
 			if !ok {
 				return status.Error(codes.Internal, fmt.Sprintf("Unable to read state for stream %v", stateKey))
 			}
-			onRow := func(res *sqltypes.Result) error {
+			onRow := func(res *sqltypes.Result, op lib.Operation) error {
 				return logger.Record(res, ks, table)
 			}
 
