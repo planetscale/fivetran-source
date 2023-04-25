@@ -7,7 +7,7 @@ require (
 	github.com/google/uuid v1.3.0
 	github.com/pkg/errors v0.9.1
 	github.com/planetscale/airbyte-source v1.16.0
-	github.com/planetscale/fivetran-proto v0.0.0-20230410214623-a81ba896d0e0
+	github.com/planetscale/fivetran-proto v0.0.0-20230411134822-1faa2911e96e
 	github.com/planetscale/psdb v0.0.0-20220429000526-e2a0e798aaf3
 	github.com/stretchr/testify v1.8.2
 	google.golang.org/grpc v1.53.0
@@ -31,7 +31,6 @@ require (
 	github.com/golang/snappy v0.0.4 // indirect
 	github.com/grpc-ecosystem/go-grpc-middleware v1.3.0 // indirect
 	github.com/grpc-ecosystem/go-grpc-prometheus v1.2.0 // indirect
-	github.com/klauspost/compress v1.15.15 // indirect
 	github.com/matttproud/golang_protobuf_extensions v1.0.2-0.20181231171920-c182affec369 // indirect
 	github.com/opentracing-contrib/go-grpc v0.0.0-20210225150812-73cb765af46e // indirect
 	github.com/opentracing/opentracing-go v1.2.0 // indirect
@@ -49,7 +48,7 @@ require (
 	github.com/uber/jaeger-lib v2.4.1+incompatible // indirect
 	go.uber.org/atomic v1.9.0 // indirect
 	golang.org/x/net v0.7.0 // indirect
-	golang.org/x/sys v0.5.0 // indirect
+	golang.org/x/sys v0.7.0 // indirect
 	golang.org/x/text v0.7.0 // indirect
 	golang.org/x/time v0.0.0-20220411224347-583f2d630306 // indirect
 	golang.org/x/xerrors v0.0.0-20220411194840-2f41105eb62f // indirect
@@ -59,5 +58,3 @@ require (
 	k8s.io/api v0.26.1 // indirect
 	k8s.io/apimachinery v0.26.1 // indirect
 )
-
-replace github.com/planetscale/airbyte-source => /Users/phaniraj/ps/airbyte-source
