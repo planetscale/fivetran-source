@@ -59,5 +59,3 @@ require (
 	k8s.io/api v0.26.1 // indirect
 	k8s.io/apimachinery v0.26.1 // indirect
 )
-
-replace github.com/planetscale/airbyte-source => /Users/phaniraj/ps/airbyte-source
