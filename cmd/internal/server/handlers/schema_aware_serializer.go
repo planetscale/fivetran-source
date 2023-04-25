@@ -12,6 +12,12 @@ import (
 	"vitess.io/vitess/go/sqltypes"
 )
 
+var fivetranOpMap = map[lib.Operation]fivetransdk.OpType{
+	lib.OpType_Insert: fivetransdk.OpType_UPSERT,
+	lib.OpType_Delete: fivetransdk.OpType_DELETE,
+	lib.OpType_Update: fivetransdk.OpType_UPDATE,
+}
+
 type Serializer interface {
 	Info(string)
 	Log(fivetransdk.LogLevel, string) error
@@ -123,7 +129,7 @@ func (l *schemaAwareSerializer) Log(level fivetransdk.LogLevel, s string) error 
 	})
 }
 
-func (l *schemaAwareSerializer) Record(result *sqltypes.Result, schema *fivetransdk.SchemaSelection, table *fivetransdk.TableSelection, operation lib.Operation) error {
+func (l *schemaAwareSerializer) Record(result *sqltypes.Result, schema *fivetransdk.SchemaSelection, table *fivetransdk.TableSelection, opType lib.Operation) error {
 	// make one response type per schema + table combination
 	// so we can avoid instantiating one object per table, and instead
 	// make one object per schema + table combo
@@ -171,6 +177,7 @@ func (l *schemaAwareSerializer) Record(result *sqltypes.Result, schema *fivetran
 			return l.Log(fivetransdk.LogLevel_SEVERE, fmt.Sprintf("recordResponse Operation.Op is of type %T not Operation_Record", operation.Operation.Op))
 		}
 		operationRecord.Record.Data = row
+		operationRecord.Record.Type = fivetranOpMap[opType]
 		l.sender.Send(l.recordResponse)
 	}
 
