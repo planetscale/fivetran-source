@@ -106,7 +106,7 @@ func (l *logger) Record(result *sqltypes.Result, schema *fivetransdk.SchemaSelec
 		}
 	}
 
-	rows, err := queryResultToData(result, l.serializeTinyIntAsBool)
+	rows, err := queryResultToData(result, l.serializeTinyIntAsBool, table)
 	if err != nil {
 		return l.Log(fivetransdk.LogLevel_SEVERE, fmt.Sprintf("%q", err))
 	}
@@ -131,7 +131,7 @@ func responseKey(schema *fivetransdk.SchemaSelection, table *fivetransdk.TableSe
 	return schema.SchemaName + ":" + table.TableName
 }
 
-func queryResultToData(result *sqltypes.Result, serializeTinyIntAsBool bool) ([]map[string]*fivetransdk.ValueType, error) {
+func queryResultToData(result *sqltypes.Result, serializeTinyIntAsBool bool, table *fivetransdk.TableSelection) ([]map[string]*fivetransdk.ValueType, error) {
 	data := make([]map[string]*fivetransdk.ValueType, 0, len(result.Rows))
 	columns := make([]string, 0, len(result.Fields))
 	for _, field := range result.Fields {
@@ -142,11 +142,17 @@ func queryResultToData(result *sqltypes.Result, serializeTinyIntAsBool bool) ([]
 		record := make(map[string]*fivetransdk.ValueType)
 		for idx, val := range row {
 			if idx < len(columns) {
+
+				colName := columns[idx]
+				if selected := table.Columns[colName]; !selected {
+					continue
+				}
+
 				val, err := sqlTypeToValueType(val, serializeTinyIntAsBool)
 				if err != nil {
 					return nil, errors.Wrap(err, "unable to serialize row")
 				}
-				record[columns[idx]] = val
+				record[colName] = val
 			}
 		}
 		data = append(data, record)
