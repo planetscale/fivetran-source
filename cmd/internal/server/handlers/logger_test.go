@@ -135,7 +135,7 @@ func TestCanSerializeRecord(t *testing.T) {
 		table.Columns[f.Name] = true
 	}
 
-	err = l.Record(row, schema, table)
+	err = l.Record(row, schema, table, 0)
 	assert.NoError(t, err)
 	assert.NotNil(t, tl.lastResponse)
 
@@ -208,7 +208,7 @@ func TestCanSkipColumns(t *testing.T) {
 		},
 	}
 
-	err := l.Record(row, schema, table)
+	err := l.Record(row, schema, table, 0)
 	assert.NoError(t, err)
 	assert.NotNil(t, tl.lastResponse)
 
@@ -260,7 +260,7 @@ func BenchmarkRecordSerialization(b *testing.B) {
 	}
 
 	for n := 0; n < b.N; n++ {
-		l.Record(row, schema, table)
+		l.Record(row, schema, table, 0)
 	}
 }
 
@@ -298,6 +298,6 @@ func BenchmarkValueConversion(b *testing.B) {
 	}
 
 	for n := 0; n < b.N; n++ {
-		l.Record(row, schema, table)
+		l.Record(row, schema, table, 0)
 	}
 }
