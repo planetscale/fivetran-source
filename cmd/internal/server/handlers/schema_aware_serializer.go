@@ -130,6 +130,9 @@ func (l *schemaAwareSerializer) Log(level fivetransdk.LogLevel, s string) error 
 	})
 }
 
+// Update is responsible for creating a record that has the following values :
+// 1. Primary keys of the row that was updated.
+// 2. All changed values between the Before & After fields.
 func (l *schemaAwareSerializer) Update(lib.UpdatedRow, *fivetransdk.SchemaSelection, *fivetransdk.TableSelection, lib.Operation) error {
 	return fmt.Errorf("%v is not implemented", "Update")
 }
