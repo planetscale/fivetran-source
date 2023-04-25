@@ -50,7 +50,7 @@ func (c *clientConnectionMock) Sync(ctx context.Context, in *psdbconnect.SyncReq
 }
 
 type (
-	ReadFunc             func(ctx context.Context, logger DatabaseLogger, ps PlanetScaleSource, tableName string, tc *psdbconnect.TableCursor, onResult OnResult, onCursor OnCursor) (*SerializedCursor, error)
+	ReadFunc             func(ctx context.Context, logger DatabaseLogger, ps PlanetScaleSource, tableName string, columns []string, tc *psdbconnect.TableCursor, onResult OnResult, onCursor OnCursor) (*SerializedCursor, error)
 	CanConnectFunc       func(ctx context.Context, ps PlanetScaleSource) error
 	ListVitessShardsFunc func(ctx context.Context, ps PlanetScaleSource) ([]string, error)
 
@@ -76,9 +76,9 @@ func (tcc *TestConnectClient) CanConnect(ctx context.Context, ps PlanetScaleSour
 	return errors.New("Unimplemented")
 }
 
-func (tcc *TestConnectClient) Read(ctx context.Context, logger DatabaseLogger, ps PlanetScaleSource, tableName string, lastKnownPosition *psdbconnect.TableCursor, onResult OnResult, onCursor OnCursor) (*SerializedCursor, error) {
+func (tcc *TestConnectClient) Read(ctx context.Context, logger DatabaseLogger, ps PlanetScaleSource, tableName string, columns []string, lastKnownPosition *psdbconnect.TableCursor, onResult OnResult, onCursor OnCursor) (*SerializedCursor, error) {
 	if tcc.ReadFn != nil {
-		return tcc.ReadFn(ctx, logger, ps, tableName, lastKnownPosition, onResult, onCursor)
+		return tcc.ReadFn(ctx, logger, ps, tableName, columns, lastKnownPosition, onResult, onCursor)
 	}
 
 	return nil, errors.New("Unimplemented")
