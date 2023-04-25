@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"vitess.io/vitess/go/vt/proto/query"
+
 	"github.com/pkg/errors"
 	psdbconnect "github.com/planetscale/airbyte-source/proto/psdbconnect/v1alpha1"
 	"github.com/planetscale/psdb/auth"
@@ -217,48 +219,15 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 		// if we get a newer vgtid.
 		watchForVgGtidChange = watchForVgGtidChange || tc.Position == stopPosition
 
-		if len(res.Result) > 0 {
-			for _, result := range res.Result {
-				qr := sqltypes.Proto3ToResult(result)
-				for _, row := range qr.Rows {
-					sqlResult := &sqltypes.Result{
-						Fields: result.Fields,
-					}
-					sqlResult.Rows = append(sqlResult.Rows, row)
-					if err := onResult(sqlResult, OpType_Insert); err != nil {
-						return tc, status.Error(codes.Internal, "unable to serialize row")
-					}
-				}
+		for _, insertedRow := range res.Result {
+			if err := serializeQueryResult(insertedRow, onResult, OpType_Delete); err != nil {
+				return tc, err
 			}
 		}
 
-		if len(res.Deletes) > 0 {
-			for _, result := range res.Deletes {
-				qr := sqltypes.Proto3ToResult(result.Result)
-				for _, row := range qr.Rows {
-					sqlResult := &sqltypes.Result{
-						Fields: result.Result.Fields,
-					}
-					sqlResult.Rows = append(sqlResult.Rows, row)
-					if err := onResult(sqlResult, OpType_Delete); err != nil {
-						return tc, status.Error(codes.Internal, "unable to serialize row")
-					}
-				}
-			}
-		}
-
-		if len(res.Updates) > 0 {
-			for _, result := range res.Updates {
-				qr := sqltypes.Proto3ToResult(result.Before)
-				for _, row := range qr.Rows {
-					sqlResult := &sqltypes.Result{
-						Fields: result.Before.Fields,
-					}
-					sqlResult.Rows = append(sqlResult.Rows, row)
-					if err := onResult(sqlResult, OpType_Delete); err != nil {
-						return tc, status.Error(codes.Internal, "unable to serialize row")
-					}
-				}
+		for _, deletedRow := range res.Deletes {
+			if err := serializeQueryResult(deletedRow.Result, onResult, OpType_Delete); err != nil {
+				return tc, err
 			}
 		}
 
@@ -269,6 +238,20 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 			return tc, io.EOF
 		}
 	}
+}
+
+func serializeQueryResult(result *query.QueryResult, onResult OnResult, opType Operation) error {
+	qr := sqltypes.Proto3ToResult(result)
+	for _, row := range qr.Rows {
+		sqlResult := &sqltypes.Result{
+			Fields: result.Fields,
+		}
+		sqlResult.Rows = append(sqlResult.Rows, row)
+		if err := onResult(sqlResult, opType); err != nil {
+			return status.Error(codes.Internal, "unable to serialize row")
+		}
+	}
+	return nil
 }
 
 func (p connectClient) getLatestCursorPosition(ctx context.Context, shard, keyspace string, tableName string, ps PlanetScaleSource, tabletType psdbconnect.TabletType) (string, error) {

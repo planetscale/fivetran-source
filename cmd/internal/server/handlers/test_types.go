@@ -28,7 +28,7 @@ func (testLogger) Log(level fivetransdk.LogLevel, s string) error {
 	panic("implement me")
 }
 
-func (testLogger) Record(result *sqltypes.Result, selection *fivetransdk.SchemaSelection, selection2 *fivetransdk.TableSelection) error {
+func (testLogger) Record(result *sqltypes.Result, selection *fivetransdk.SchemaSelection, selection2 *fivetransdk.TableSelection, operation lib.Operation) error {
 	// TODO implement me
 	panic("implement me")
 }

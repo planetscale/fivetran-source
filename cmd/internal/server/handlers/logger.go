@@ -18,10 +18,16 @@ import (
 	querypb "vitess.io/vitess/go/vt/proto/query"
 )
 
+var fivetranOpMap = map[lib.Operation]fivetransdk.OpType{
+	lib.OpType_Insert: fivetransdk.OpType_UPSERT,
+	lib.OpType_Delete: fivetransdk.OpType_DELETE,
+	lib.OpType_Update: fivetransdk.OpType_UPDATE,
+}
+
 type Logger interface {
 	Info(string)
 	Log(fivetransdk.LogLevel, string) error
-	Record(*sqltypes.Result, *fivetransdk.SchemaSelection, *fivetransdk.TableSelection) error
+	Record(*sqltypes.Result, *fivetransdk.SchemaSelection, *fivetransdk.TableSelection, lib.Operation) error
 	State(lib.SyncState) error
 	Release()
 }
@@ -84,7 +90,7 @@ func (l *logger) Release() {
 	l.sender = nil
 }
 
-func (l *logger) Record(result *sqltypes.Result, schema *fivetransdk.SchemaSelection, table *fivetransdk.TableSelection) error {
+func (l *logger) Record(result *sqltypes.Result, schema *fivetransdk.SchemaSelection, table *fivetransdk.TableSelection, opType lib.Operation) error {
 	// make one response type per schema + table combination
 	// so we can avoid instantiating one object per table, and instead
 	// make one object per schema + table combo
@@ -121,6 +127,7 @@ func (l *logger) Record(result *sqltypes.Result, schema *fivetransdk.SchemaSelec
 			return l.Log(fivetransdk.LogLevel_SEVERE, "recordResponse Operation.Op is not of type Operation_Record")
 		}
 		operationRecord.Record.Data = row
+		operationRecord.Record.Type = fivetranOpMap[opType]
 		l.sender.Send(l.recordResponse)
 	}
 
