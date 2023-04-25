@@ -24,7 +24,7 @@ type SchemaHandler interface {
 }
 
 type SyncHandler interface {
-	Handle(*lib.PlanetScaleSource, *lib.ConnectClient, handlers.Logger, *lib.SyncState, *fivetransdk.Selection_WithSchema) error
+	Handle(*lib.PlanetScaleSource, *lib.ConnectClient, handlers.Serializer, *lib.SyncState, *fivetransdk.Selection_WithSchema) error
 }
 
 func NewConfigurationFormHandler() ConfigurationFormHandler {

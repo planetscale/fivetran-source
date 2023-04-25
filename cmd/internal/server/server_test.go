@@ -29,13 +29,14 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 )
 
-func server(ctx context.Context, clientConstructor edgeClientConstructor) (fivetransdk.ConnectorClient, func()) {
+func server(ctx context.Context, clientConstructor edgeClientConstructor, mysqlConstructor mysqlClientConstructor) (fivetransdk.ConnectorClient, func()) {
 	buffer := 101024 * 1024
 	lis := bufconn.Listen(buffer)
 
 	baseServer := grpc.NewServer()
 	cs := NewConnectorServer()
 	cs.(*connectorServer).clientConstructor = clientConstructor
+	cs.(*connectorServer).mysqlClientConstructor = mysqlConstructor
 	fivetransdk.RegisterConnectorServer(baseServer, cs)
 	go func() {
 		if err := baseServer.Serve(lis); err != nil {
@@ -66,7 +67,7 @@ func server(ctx context.Context, clientConstructor edgeClientConstructor) (fivet
 func TestCanCallConfigurationForm(t *testing.T) {
 	ctx := context.Background()
 
-	client, closer := server(ctx, nil)
+	client, closer := server(ctx, nil, nil)
 	defer closer()
 
 	out, err := client.ConfigurationForm(ctx, &fivetransdk.ConfigurationFormRequest{})
@@ -80,7 +81,7 @@ func TestCanCallConfigurationForm(t *testing.T) {
 func TestUpdateValidatesConfiguration(t *testing.T) {
 	ctx := context.Background()
 
-	client, closer := server(ctx, nil)
+	client, closer := server(ctx, nil, nil)
 	defer closer()
 	out, err := client.Update(ctx, &fivetransdk.UpdateRequest{})
 	assert.NoError(t, err)
@@ -93,7 +94,7 @@ func TestUpdateValidatesConfiguration(t *testing.T) {
 func TestUpdateValidatesSchemaSelection(t *testing.T) {
 	ctx := context.Background()
 
-	client, closer := server(ctx, nil)
+	client, closer := server(ctx, nil, nil)
 	defer closer()
 	out, err := client.Update(ctx, &fivetransdk.UpdateRequest{
 		Configuration: map[string]string{
@@ -112,16 +113,24 @@ func TestUpdateValidatesSchemaSelection(t *testing.T) {
 
 func TestUpdateValidatesState(t *testing.T) {
 	ctx := context.Background()
-
+	mysqlClientConstructor := func() lib.MysqlClient {
+		return &lib.TestMysqlClient{
+			BuildSchemaFn: func(ctx context.Context, psc lib.PlanetScaleSource, schemaBuilder lib.SchemaBuilder) error {
+				schemaBuilder.OnKeyspace("SalesDB")
+				schemaBuilder.OnTable("SalesDB", "customers")
+				return nil
+			},
+		}
+	}
 	clientConstructor := func() lib.ConnectClient {
 		return &lib.TestConnectClient{
-			ListVitessShardsFn: func(ctx context.Context, ps lib.PlanetScaleSource) ([]string, error) {
+			ListShardsFn: func(ctx context.Context, ps lib.PlanetScaleSource) ([]string, error) {
 				return []string{"-"}, nil
 			},
 		}
 	}
 
-	client, closer := server(ctx, clientConstructor)
+	client, closer := server(ctx, clientConstructor, mysqlClientConstructor)
 	defer closer()
 	invalidJSON := "{name: value"
 	out, err := client.Update(ctx, &fivetransdk.UpdateRequest{
@@ -217,9 +226,53 @@ func TestUpdateReturnsRows(t *testing.T) {
 			},
 		},
 	}
+
+	mysqlClientConstructor := func() lib.MysqlClient {
+		return &lib.TestMysqlClient{
+			BuildSchemaFn: func(ctx context.Context, psc lib.PlanetScaleSource, schemaBuilder lib.SchemaBuilder) error {
+				schemaBuilder.OnKeyspace("SalesDB")
+				schemaBuilder.OnTable("SalesDB", "customers")
+				schemaBuilder.OnColumns("SalesDB", "customers",
+					[]lib.MysqlColumn{
+						{Name: "Type_INT8", Type: "int"},
+						{Name: "Type_UINT8", Type: "smallint"},
+						{Name: "Type_INT16", Type: "smallint"},
+						{Name: "Type_UINT16", Type: "int"},
+						{Name: "Type_INT24", Type: "int"},
+						{Name: "Type_UINT24", Type: "int"},
+						{Name: "Type_INT32", Type: "int"},
+						{Name: "Type_UINT32", Type: "unsigned int"},
+						{Name: "Type_INT64", Type: "bigint"},
+						{Name: "Type_UINT64", Type: "unsigned bigint"},
+						{Name: "Type_FLOAT32", Type: "float"},
+						{Name: "Type_FLOAT64", Type: "double"},
+						{Name: "Type_TIMESTAMP", Type: "timestamp"},
+						{Name: "Type_DATE", Type: "date"},
+						{Name: "Type_TIME", Type: "time"},
+						{Name: "Type_DATETIME", Type: "datetime"},
+						{Name: "Type_YEAR", Type: "year"},
+						{Name: "Type_DECIMAL", Type: "decimal"},
+						{Name: "Type_TEXT", Type: "varchar"},
+						{Name: "Type_BLOB", Type: "blob"},
+						{Name: "Type_VARCHAR", Type: "varchar"},
+						{Name: "Type_VARBINARY", Type: "geometry"},
+						{Name: "Type_CHAR", Type: "char"},
+						{Name: "Type_BINARY", Type: "binary"},
+						{Name: "Type_BIT", Type: "bit"},
+						{Name: "Type_ENUM", Type: "enum"},
+						{Name: "Type_SET", Type: "set"},
+						// Skip TUPLE, not possible in Result.
+						{Name: "Type_GEOMETRY", Type: "geometry"},
+						{Name: "Type_JSON", Type: "json"},
+					})
+				return nil
+			},
+		}
+	}
+
 	clientConstructor := func() lib.ConnectClient {
 		return &lib.TestConnectClient{
-			ListVitessShardsFn: func(ctx context.Context, ps lib.PlanetScaleSource) ([]string, error) {
+			ListShardsFn: func(ctx context.Context, ps lib.PlanetScaleSource) ([]string, error) {
 				return []string{"-", "-40"}, nil
 			},
 			CanConnectFn: func(ctx context.Context, ps lib.PlanetScaleSource) error {
@@ -233,7 +286,7 @@ func TestUpdateReturnsRows(t *testing.T) {
 			},
 		}
 	}
-	client, closer := server(ctx, clientConstructor)
+	client, closer := server(ctx, clientConstructor, mysqlClientConstructor)
 	defer closer()
 	customerSelection := &fivetransdk.TableSelection{
 		Included:  true,
@@ -282,6 +335,9 @@ func TestUpdateReturnsRows(t *testing.T) {
 		if errors.Is(err, io.EOF) {
 			break
 		}
+		if err != nil {
+			t.Fatalf("failed test with %q", err)
+		}
 		rows = append(rows, resp)
 	}
 	assert.Len(t, rows, 3)
@@ -294,7 +350,8 @@ func TestUpdateReturnsRows(t *testing.T) {
 	assert.Equal(t, "customers", record.Record.TableName)
 
 	for _, field := range allTypesResult.Fields {
-		assert.NotNil(t, record.Record.Data[field.Name], "expected value for %q field", field.Name)
+		assert.NotEmpty(t, record.Record.Data[field.Name].Inner, "expected value for %q field", field.Name)
+		assert.NotNil(t, record.Record.Data[field.Name].Inner, "expected value for %q field", field.Name)
 	}
 
 	operation = rows[len(rows)-1].GetOperation()
@@ -325,9 +382,18 @@ func TestUpdateReturnsRows(t *testing.T) {
 
 func TestUpdateReturnsState(t *testing.T) {
 	ctx := context.Background()
+	mysqlClientConstructor := func() lib.MysqlClient {
+		return &lib.TestMysqlClient{
+			BuildSchemaFn: func(ctx context.Context, psc lib.PlanetScaleSource, schemaBuilder lib.SchemaBuilder) error {
+				schemaBuilder.OnKeyspace("SalesDB")
+				schemaBuilder.OnTable("SalesDB", "customers")
+				return nil
+			},
+		}
+	}
 	clientConstructor := func() lib.ConnectClient {
 		return &lib.TestConnectClient{
-			ListVitessShardsFn: func(ctx context.Context, ps lib.PlanetScaleSource) ([]string, error) {
+			ListShardsFn: func(ctx context.Context, ps lib.PlanetScaleSource) ([]string, error) {
 				return []string{"-"}, nil
 			},
 			CanConnectFn: func(ctx context.Context, ps lib.PlanetScaleSource) error {
@@ -341,7 +407,7 @@ func TestUpdateReturnsState(t *testing.T) {
 			},
 		}
 	}
-	client, closer := server(ctx, clientConstructor)
+	client, closer := server(ctx, clientConstructor, mysqlClientConstructor)
 	defer closer()
 	out, err := client.Update(ctx, &fivetransdk.UpdateRequest{
 		Configuration: map[string]string{
@@ -382,6 +448,10 @@ func TestUpdateReturnsState(t *testing.T) {
 		if errors.Is(err, io.EOF) {
 			break
 		}
+
+		if err != nil {
+			t.Fatalf("failed test with %q", err)
+		}
 		rows = append(rows, resp)
 	}
 	assert.Len(t, rows, 2)
@@ -402,7 +472,7 @@ func TestCheckConnectionReturnsSuccess(t *testing.T) {
 			},
 		}
 	}
-	client, closer := server(ctx, clientConstructor)
+	client, closer := server(ctx, clientConstructor, nil)
 	defer closer()
 	resp, err := client.Test(ctx, &fivetransdk.TestRequest{
 		Name: handlers.CheckConnectionTestName,
@@ -422,7 +492,7 @@ func TestCheckConnectionReturnsSuccess(t *testing.T) {
 
 func TestCheckConnectionReturnsErrorIfNotEdgePassword(t *testing.T) {
 	ctx := context.Background()
-	client, closer := server(ctx, nil)
+	client, closer := server(ctx, nil, nil)
 	defer closer()
 	resp, err := client.Test(ctx, &fivetransdk.TestRequest{
 		Name: handlers.CheckConnectionTestName,
@@ -449,7 +519,7 @@ func TestCheckConnectionReturnsErrorIfCheckFails(t *testing.T) {
 			},
 		}
 	}
-	client, closer := server(ctx, clientConstructor)
+	client, closer := server(ctx, clientConstructor, nil)
 	defer closer()
 	resp, err := client.Test(ctx, &fivetransdk.TestRequest{
 		Name: handlers.CheckConnectionTestName,
@@ -476,7 +546,7 @@ func TestSchemaChecksCredentials(t *testing.T) {
 			},
 		}
 	}
-	client, closer := server(ctx, clientConstructor)
+	client, closer := server(ctx, clientConstructor, nil)
 	defer closer()
 	_, err := client.Schema(ctx, &fivetransdk.SchemaRequest{
 		Configuration: map[string]string{
