@@ -231,6 +231,36 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 			}
 		}
 
+		if len(res.Deletes) > 0 {
+			for _, result := range res.Deletes {
+				qr := sqltypes.Proto3ToResult(result.Result)
+				for _, row := range qr.Rows {
+					sqlResult := &sqltypes.Result{
+						Fields: result.Result.Fields,
+					}
+					sqlResult.Rows = append(sqlResult.Rows, row)
+					if err := onResult(sqlResult, Delete); err != nil {
+						return tc, status.Error(codes.Internal, "unable to serialize row")
+					}
+				}
+			}
+		}
+
+		if len(res.Updates) > 0 {
+			for _, result := range res.Updates {
+				qr := sqltypes.Proto3ToResult(result.Before)
+				for _, row := range qr.Rows {
+					sqlResult := &sqltypes.Result{
+						Fields: result.Before.Fields,
+					}
+					sqlResult.Rows = append(sqlResult.Rows, row)
+					if err := onResult(sqlResult, Update); err != nil {
+						return tc, status.Error(codes.Internal, "unable to serialize row")
+					}
+				}
+			}
+		}
+
 		if watchForVgGtidChange && tc.Position != stopPosition {
 			if err := onCursor(tc); err != nil {
 				return tc, status.Error(codes.Internal, "unable to serialize cursor")
