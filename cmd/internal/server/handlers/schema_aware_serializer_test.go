@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/planetscale/fivetran-source/lib"
+
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	fivetransdk "github.com/planetscale/fivetran-proto/go"
@@ -37,7 +39,7 @@ func TestCanSerializeRecord(t *testing.T) {
 	}
 
 	for i := 0; i < 3; i++ {
-		err = l.Record(row, schema, table, 0)
+		err = l.Record(row, schema, table, lib.OpType_Insert)
 		assert.NoError(t, err)
 		assert.NotNil(t, tl.lastResponse)
 	}

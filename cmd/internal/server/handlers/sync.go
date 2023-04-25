@@ -33,7 +33,7 @@ func (s *Sync) Handle(psc *lib.PlanetScaleSource, db *lib.ConnectClient, logger 
 				return status.Error(codes.Internal, fmt.Sprintf("Unable to read state for stream %v", stateKey))
 			}
 			onRow := func(res *sqltypes.Result, op lib.Operation) error {
-				return logger.Record(res, ks, table, 0)
+				return logger.Record(res, ks, table, op)
 			}
 
 			for shardName, shardState := range streamState.Shards {
