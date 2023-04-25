@@ -225,7 +225,7 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 						Fields: result.Fields,
 					}
 					sqlResult.Rows = append(sqlResult.Rows, row)
-					if err := onResult(sqlResult, Insert); err != nil {
+					if err := onResult(sqlResult, OpType_Insert); err != nil {
 						return tc, status.Error(codes.Internal, "unable to serialize row")
 					}
 				}
@@ -240,7 +240,7 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 						Fields: result.Result.Fields,
 					}
 					sqlResult.Rows = append(sqlResult.Rows, row)
-					if err := onResult(sqlResult, Delete); err != nil {
+					if err := onResult(sqlResult, OpType_Delete); err != nil {
 						return tc, status.Error(codes.Internal, "unable to serialize row")
 					}
 				}
@@ -255,7 +255,7 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 						Fields: result.Before.Fields,
 					}
 					sqlResult.Rows = append(sqlResult.Rows, row)
-					if err := onResult(sqlResult, Update); err != nil {
+					if err := onResult(sqlResult, OpType_Delete); err != nil {
 						return tc, status.Error(codes.Internal, "unable to serialize row")
 					}
 				}
