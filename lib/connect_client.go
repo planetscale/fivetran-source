@@ -120,7 +120,7 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 		logger.Info(fmt.Sprintf("new rows found, syncing rows for %v", readDuration))
 		logger.Info(fmt.Sprintf(preamble+"syncing rows with cursor [%v]", currentPosition))
 
-		currentPosition, err = p.sync(ctx, logger, tableName, currentPosition, latestCursorPosition, ps, tabletType, readDuration, onResult, onCursor)
+		currentPosition, err = p.sync(ctx, logger, tableName, columns, currentPosition, latestCursorPosition, ps, tabletType, readDuration, onResult, onCursor)
 		if currentPosition.Position != "" {
 			currentSerializedCursor, sErr = TableCursorToSerializedCursor(currentPosition)
 			if sErr != nil {
@@ -148,7 +148,7 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 	}
 }
 
-func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableName string, tc *psdbconnect.TableCursor, stopPosition string, ps PlanetScaleSource, tabletType psdbconnect.TabletType, readDuration time.Duration, onResult OnResult, onCursor OnCursor) (*psdbconnect.TableCursor, error) {
+func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableName string, columns []string, tc *psdbconnect.TableCursor, stopPosition string, ps PlanetScaleSource, tabletType psdbconnect.TabletType, readDuration time.Duration, onResult OnResult, onCursor OnCursor) (*psdbconnect.TableCursor, error) {
 	ctx, cancel := context.WithTimeout(ctx, readDuration)
 	defer cancel()
 
@@ -188,6 +188,7 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 		TableName:  tableName,
 		Cursor:     tc,
 		TabletType: tabletType,
+		Columns:    columns,
 	}
 
 	c, err := client.Sync(ctx, sReq)
