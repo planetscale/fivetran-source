@@ -17,7 +17,7 @@ import (
 	querypb "vitess.io/vitess/go/vt/proto/query"
 )
 
-func TestCanSerializeRecord(t *testing.T) {
+func TestCanSerializeInsert(t *testing.T) {
 	timestamp := "2006-01-02 15:04:05"
 	row, s, err := generateTestRecord()
 	require.NoError(t, err)
@@ -50,6 +50,7 @@ func TestCanSerializeRecord(t *testing.T) {
 	operationRecord, ok := operation.Operation.Op.(*fivetransdk.Operation_Record)
 	assert.Truef(t, ok, "recordResponse Operation.Op is not of type %s", "Operation_Record")
 
+	assert.Equal(t, fivetransdk.OpType_UPSERT, operationRecord.Record.Type)
 	data := operationRecord.Record.Data
 	assert.NotNil(t, data)
 
@@ -72,6 +73,46 @@ func TestCanSerializeRecord(t *testing.T) {
 	dt, err := time.Parse("2006-01-02 15:04:05", "2021-01-19 03:14:07.999999")
 	require.NoError(t, err)
 	assert.Equal(t, timestamppb.New(dt).Nanos, data["datetime_value"].GetNaiveDatetime().Nanos)
+}
+
+func TestCanSerializeDelete(t *testing.T) {
+	row, s, err := generateTestRecord()
+	require.NoError(t, err)
+	tl := &testLogSender{}
+	l := NewSchemaAwareSerializer(tl, "", false, &fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{s}})
+
+	schema := &fivetransdk.SchemaSelection{
+		Included:   true,
+		SchemaName: s.Name,
+	}
+	table := &fivetransdk.TableSelection{
+		TableName: "Customers",
+		Included:  true,
+		Columns:   map[string]bool{},
+	}
+
+	for _, f := range row.Fields {
+		table.Columns[f.Name] = true
+	}
+
+	for i := 0; i < 3; i++ {
+		err = l.Record(row, schema, table, lib.OpType_Delete)
+		assert.NoError(t, err)
+		assert.NotNil(t, tl.lastResponse)
+	}
+
+	operation, ok := tl.lastResponse.Response.(*fivetransdk.UpdateResponse_Operation)
+	require.Truef(t, ok, "recordResponse Operation is not of type %s", "UpdateResponse_Operation")
+
+	operationRecord, ok := operation.Operation.Op.(*fivetransdk.Operation_Record)
+	assert.Truef(t, ok, "recordResponse Operation.Op is not of type %s", "Operation_Record")
+
+	assert.Equal(t, fivetransdk.OpType_DELETE, operationRecord.Record.Type)
+	data := operationRecord.Record.Data
+	assert.NotNil(t, data)
+	assert.Equal(t, 2, len(data), "should serialize only primary keys for deleted rows")
+	assert.Equal(t, int32(123), data["customer_id"].GetShort())
+	assert.Equal(t, "string:\"PhaniRaj\"", data["name"].String())
 }
 
 func generateTestRecord() (*sqltypes.Result, *fivetransdk.Schema, error) {
@@ -231,12 +272,14 @@ func generateTestRecord() (*sqltypes.Result, *fivetransdk.Schema, error) {
 				Name: "Customers",
 				Columns: []*fivetransdk.Column{
 					{
-						Name: "customer_id",
-						Type: fivetransdk.DataType_SHORT,
+						Name:       "customer_id",
+						Type:       fivetransdk.DataType_SHORT,
+						PrimaryKey: true,
 					},
 					{
-						Name: "name",
-						Type: fivetransdk.DataType_STRING,
+						Name:       "name",
+						Type:       fivetransdk.DataType_STRING,
+						PrimaryKey: true,
 					},
 					{
 						Name: "first_name",
