@@ -88,7 +88,7 @@ func (t TestMysqlClient) Close() error {
 }
 
 type (
-	ReadFunc       func(ctx context.Context, logger DatabaseLogger, ps PlanetScaleSource, tableName string, columns []string, tc *psdbconnect.TableCursor, onResult OnResult, onCursor OnCursor) (*SerializedCursor, error)
+	ReadFunc       func(ctx context.Context, logger DatabaseLogger, ps PlanetScaleSource, tableName string, columns []string, tc *psdbconnect.TableCursor, onResult OnResult, onCursor OnCursor, onUpdate OnUpdate) (*SerializedCursor, error)
 	CanConnectFunc func(ctx context.Context, ps PlanetScaleSource) error
 	ListShardsFunc func(ctx context.Context, ps PlanetScaleSource) ([]string, error)
 
@@ -116,7 +116,7 @@ func (tcc *TestConnectClient) CanConnect(ctx context.Context, ps PlanetScaleSour
 
 func (tcc *TestConnectClient) Read(ctx context.Context, logger DatabaseLogger, ps PlanetScaleSource, tableName string, columns []string, lastKnownPosition *psdbconnect.TableCursor, onResult OnResult, onCursor OnCursor, onUpdate OnUpdate) (*SerializedCursor, error) {
 	if tcc.ReadFn != nil {
-		return tcc.ReadFn(ctx, logger, ps, tableName, columns, lastKnownPosition, onResult, onCursor)
+		return tcc.ReadFn(ctx, logger, ps, tableName, columns, lastKnownPosition, onResult, onCursor, onUpdate)
 	}
 
 	return nil, errors.New("Read is Unimplemented")
