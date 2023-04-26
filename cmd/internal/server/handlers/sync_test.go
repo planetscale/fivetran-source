@@ -37,7 +37,9 @@ func TestCallsReadWithSelectedSchema(t *testing.T) {
 		},
 	}
 
-	readFn := func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string, tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor) (*lib.SerializedCursor, error) {
+	readFn := func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string,
+		tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
+	) (*lib.SerializedCursor, error) {
 		assert.Equal(t, "customers", tableName)
 		return nil, nil
 	}

@@ -169,7 +169,9 @@ func TestUpdateReturnsInserts(t *testing.T) {
 			CanConnectFn: func(ctx context.Context, ps lib.PlanetScaleSource) error {
 				return nil
 			},
-			ReadFn: func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string, tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor) (*lib.SerializedCursor, error) {
+			ReadFn: func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string,
+				tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
+			) (*lib.SerializedCursor, error) {
 				assert.Equal(t, "customers", tableName)
 				assert.NotNil(t, columns)
 				onResult(allTypesResult, lib.OpType_Insert)
@@ -284,7 +286,9 @@ func TestUpdateReturnsDeletes(t *testing.T) {
 			CanConnectFn: func(ctx context.Context, ps lib.PlanetScaleSource) error {
 				return nil
 			},
-			ReadFn: func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string, tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor) (*lib.SerializedCursor, error) {
+			ReadFn: func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string,
+				tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
+			) (*lib.SerializedCursor, error) {
 				assert.Equal(t, "customers", tableName)
 				assert.NotNil(t, columns)
 				onResult(allTypesResult, lib.OpType_Delete)
@@ -359,6 +363,133 @@ func TestUpdateReturnsDeletes(t *testing.T) {
 	assert.Equal(t, 1, len(record.Record.Data))
 
 	assert.Equal(t, &fivetransdk.ValueType_Int{Int: 12}, record.Record.Data["Type_INT8"].Inner)
+
+	operation = rows[len(rows)-1].GetOperation()
+	checkpoint, ok := operation.Op.(*fivetransdk.Operation_Checkpoint)
+	assert.True(t, ok)
+	assert.NotNil(t, checkpoint)
+
+	syncState := lib.SyncState{
+		Keyspaces: map[string]lib.KeyspaceState{},
+	}
+
+	err = json.Unmarshal([]byte(checkpoint.Checkpoint.StateJson), &syncState)
+	require.NoError(t, err)
+
+	ks, ok := syncState.Keyspaces["SalesDB"]
+	assert.True(t, ok)
+	customers, ok := ks.Streams["SalesDB:customers"]
+	assert.True(t, ok)
+	defaultShard, ok := customers.Shards["-"]
+	assert.True(t, ok)
+	assert.Equal(t, "CgEtEgdTYWxlc0RC", defaultShard.Cursor)
+
+	customShard, ok := customers.Shards["-40"]
+	assert.True(t, ok)
+	assert.Equal(t, "CgMtNDASB1NhbGVzREI=", customShard.Cursor)
+}
+
+func TestUpdateReturnsUpdates(t *testing.T) {
+	ctx := context.Background()
+	beforeIntValue := strconv.AppendInt(nil, int64(int8(12)), 10)
+	beforeResult, mysqlClientConstructor := setupUpdateRowsTest(beforeIntValue)
+	afterIntValue := strconv.AppendInt(nil, int64(int8(17)), 10)
+	afterResult, mysqlClientConstructor := setupUpdateRowsTest(afterIntValue)
+
+	clientConstructor := func() lib.ConnectClient {
+		return &lib.TestConnectClient{
+			ListShardsFn: func(ctx context.Context, ps lib.PlanetScaleSource) ([]string, error) {
+				return []string{"-", "-40"}, nil
+			},
+			CanConnectFn: func(ctx context.Context, ps lib.PlanetScaleSource) error {
+				return nil
+			},
+			ReadFn: func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string, tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate) (*lib.SerializedCursor, error) {
+				assert.Equal(t, "customers", tableName)
+				assert.NotNil(t, columns)
+				onUpdate(&lib.UpdatedRow{
+					Before: beforeResult,
+					After:  afterResult,
+				})
+				return nil, nil
+			},
+		}
+	}
+	client, closer := server(ctx, clientConstructor, mysqlClientConstructor)
+	defer closer()
+	customerSelection := &fivetransdk.TableSelection{
+		Included:  true,
+		TableName: "customers",
+		Columns:   map[string]bool{},
+	}
+
+	for _, f := range beforeResult.Fields {
+		customerSelection.Columns[f.Name] = true
+	}
+
+	selection := &fivetransdk.Selection_WithSchema{
+		WithSchema: &fivetransdk.TablesWithSchema{
+			Schemas: []*fivetransdk.SchemaSelection{
+				{
+					SchemaName: "SalesDB",
+					Included:   true,
+					Tables: []*fivetransdk.TableSelection{
+						customerSelection,
+						{
+							Included:  false,
+							TableName: "customer_secrets",
+						},
+					},
+				},
+			},
+		},
+	}
+	out, err := client.Update(ctx, &fivetransdk.UpdateRequest{
+		Configuration: map[string]string{
+			"host":     "earth.psdb",
+			"username": "phanatic",
+			"password": "password",
+			"database": "employees",
+		},
+		Selection: &fivetransdk.Selection{
+			Selection: selection,
+		},
+	})
+	assert.NoError(t, err)
+	assert.NotNil(t, out)
+
+	rows := make([]*fivetransdk.UpdateResponse, 0, 3)
+	for {
+		resp, err := out.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("failed test with %q", err)
+		}
+		rows = append(rows, resp)
+	}
+	assert.Len(t, rows, 3)
+	operation := rows[0].GetOperation()
+	assert.NotNil(t, operation)
+	record, ok := operation.Op.(*fivetransdk.Operation_Record)
+	assert.True(t, ok)
+	assert.NotNil(t, record)
+	assert.Equal(t, "SalesDB", *record.Record.SchemaName)
+	assert.Equal(t, "customers", record.Record.TableName)
+
+	assert.Equal(t, record.Record.Type, fivetransdk.OpType_UPDATE)
+	assert.Equal(t, 10, len(record.Record.Data))
+
+	assert.Equal(t, &fivetransdk.ValueType_Int{Int: 17}, record.Record.Data["Type_INT8"].Inner)
+	assert.Equal(t, &fivetransdk.ValueType_Int{Int: 17}, record.Record.Data["Type_UINT8"].Inner)
+	assert.Equal(t, &fivetransdk.ValueType_Int{Int: 17}, record.Record.Data["Type_INT16"].Inner)
+	assert.Equal(t, &fivetransdk.ValueType_Int{Int: 17}, record.Record.Data["Type_UINT16"].Inner)
+	assert.Equal(t, &fivetransdk.ValueType_Int{Int: 17}, record.Record.Data["Type_INT24"].Inner)
+	assert.Equal(t, &fivetransdk.ValueType_Int{Int: 17}, record.Record.Data["Type_INT32"].Inner)
+	assert.Equal(t, &fivetransdk.ValueType_String_{String_: "17"}, record.Record.Data["Type_UINT32"].Inner)
+	assert.Equal(t, &fivetransdk.ValueType_Long{Long: 17}, record.Record.Data["Type_INT64"].Inner)
+	assert.Equal(t, &fivetransdk.ValueType_Long{Long: 17}, record.Record.Data["Type_INT64"].Inner)
 
 	operation = rows[len(rows)-1].GetOperation()
 	checkpoint, ok := operation.Op.(*fivetransdk.Operation_Checkpoint)
@@ -518,7 +649,10 @@ func TestUpdateReturnsState(t *testing.T) {
 			CanConnectFn: func(ctx context.Context, ps lib.PlanetScaleSource) error {
 				return nil
 			},
-			ReadFn: func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string, tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor) (*lib.SerializedCursor, error) {
+
+			ReadFn: func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string,
+				tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
+			) (*lib.SerializedCursor, error) {
 				onCursor(&psdbconnect.TableCursor{
 					Position: "THIS_IS_A_VALID_GTID",
 				})
