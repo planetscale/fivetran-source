@@ -61,41 +61,19 @@ func (s *schemaAwareRecordSerializer) Serialize(before *sqltypes.Result, after *
 		return nil, fmt.Errorf("unable to serialize update, found [%v] rows in before, [%v] in after", len(before.Rows), len(after.Rows))
 	}
 
+	var (
+		afterMap  map[string]sqltypes.Value
+		beforeMap map[string]sqltypes.Value
+	)
+
 	if opType == lib.OpType_Update {
-		beforeMap := convertRowToMap(&before.Rows[0], columns)
-		afterMap := convertRowToMap(&after.Rows[0], columns)
-		record := make(map[string]*fivetransdk.ValueType)
-		for colName, val := range afterMap {
-			writer, ok := s.columnWriters[colName]
-			if !ok {
-				return nil, fmt.Errorf("no column writer available for %v", colName)
-			}
-
-			writeColumn := false
-			// write all primary key values
-			_, writeColumn = s.primaryKeys[colName]
-
-			if !writeColumn {
-				// if this value has changed, write it out.
-				writeColumn = beforeMap[colName].String() != afterMap[colName].String()
-			}
-			if writeColumn {
-				fVal, err := writer(val)
-				if err != nil {
-					return nil, errors.Wrap(err, "unable to serialize row")
-				}
-				record[colName] = fVal
-			}
-		}
-
-		data = append(data, record)
-		return data, nil
+		beforeMap = convertRowToMap(&before.Rows[0], columns)
 	}
 
 	for _, row := range after.Rows {
 		record := make(map[string]*fivetransdk.ValueType)
-		columnMap := convertRowToMap(&row, columns)
-		for colName, val := range columnMap {
+		afterMap = convertRowToMap(&row, columns)
+		for colName, val := range afterMap {
 			if selected := s.columnSelection[colName]; !selected {
 				continue
 			}
@@ -104,19 +82,29 @@ func (s *schemaAwareRecordSerializer) Serialize(before *sqltypes.Result, after *
 			if !ok {
 				return nil, fmt.Errorf("no column writer available for %v", colName)
 			}
-			writeColumn := true
-			if opType == lib.OpType_Delete {
-				// only write primary keys for delete operations
-				_, writeColumn = s.primaryKeys[colName]
+
+			// Write out all columns for insert operations.
+			writeColumn := opType == lib.OpType_Insert
+
+			if !writeColumn {
+				// Write primary keys for delete & update operations
+				writeColumn = s.primaryKeys[colName]
 			}
 
-			if writeColumn {
-				fVal, err := writer(val)
-				if err != nil {
-					return nil, errors.Wrap(err, "unable to serialize row")
-				}
-				record[colName] = fVal
+			if !writeColumn && opType == lib.OpType_Update && beforeMap != nil {
+				// Only write changed values for update operations
+				writeColumn = beforeMap[colName].String() != afterMap[colName].String()
 			}
+
+			if !writeColumn {
+				continue
+			}
+
+			fVal, err := writer(val)
+			if err != nil {
+				return nil, errors.Wrap(err, "unable to serialize row")
+			}
+			record[colName] = fVal
 		}
 		data = append(data, record)
 	}
