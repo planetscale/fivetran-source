@@ -123,7 +123,7 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 		logger.Info(fmt.Sprintf("new rows found, syncing rows for %v", readDuration))
 		logger.Info(fmt.Sprintf(preamble+"syncing rows with cursor [%v]", currentPosition))
 
-		currentPosition, err = p.sync(ctx, logger, tableName, columns, currentPosition, latestCursorPosition, ps, tabletType, readDuration, onResult, onCursor)
+		currentPosition, err = p.sync(ctx, logger, tableName, columns, currentPosition, latestCursorPosition, ps, tabletType, readDuration, onResult, onCursor, onUpdate)
 		if currentPosition.Position != "" {
 			currentSerializedCursor, sErr = TableCursorToSerializedCursor(currentPosition)
 			if sErr != nil {
@@ -151,7 +151,7 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 	}
 }
 
-func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableName string, columns []string, tc *psdbconnect.TableCursor, stopPosition string, ps PlanetScaleSource, tabletType psdbconnect.TabletType, readDuration time.Duration, onResult OnResult, onCursor OnCursor) (*psdbconnect.TableCursor, error) {
+func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableName string, columns []string, tc *psdbconnect.TableCursor, stopPosition string, ps PlanetScaleSource, tabletType psdbconnect.TabletType, readDuration time.Duration, onResult OnResult, onCursor OnCursor, onUpdate OnUpdate) (*psdbconnect.TableCursor, error) {
 	ctx, cancel := context.WithTimeout(ctx, readDuration)
 	defer cancel()
 
@@ -201,7 +201,6 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 
 	// stop when we've reached the well known stop position for this sync session.
 	watchForVgGtidChange := false
-
 	for {
 
 		res, err := c.Recv()
@@ -221,14 +220,26 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 		watchForVgGtidChange = watchForVgGtidChange || tc.Position == stopPosition
 
 		for _, insertedRow := range res.Result {
-			if err := serializeQueryResult(insertedRow, onResult, OpType_Delete); err != nil {
-				return tc, err
+			result := serializeQueryResult(insertedRow)
+			if err := onResult(result, OpType_Insert); err != nil {
+				return nil, status.Error(codes.Internal, "unable to serialize insert")
+			}
+		}
+
+		for _, update := range res.Updates {
+			updatedRow := &UpdatedRow{
+				Before: serializeQueryResult(update.Before),
+				After:  serializeQueryResult(update.After),
+			}
+			if err := onUpdate(updatedRow); err != nil {
+				return nil, status.Error(codes.Internal, "unable to serialize update")
 			}
 		}
 
 		for _, deletedRow := range res.Deletes {
-			if err := serializeQueryResult(deletedRow.Result, onResult, OpType_Delete); err != nil {
-				return tc, err
+			result := serializeQueryResult(deletedRow.Result)
+			if err := onResult(result, OpType_Delete); err != nil {
+				return nil, status.Error(codes.Internal, "unable to serialize delete")
 			}
 		}
 
@@ -241,18 +252,16 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 	}
 }
 
-func serializeQueryResult(result *query.QueryResult, onResult OnResult, opType Operation) error {
+func serializeQueryResult(result *query.QueryResult) *sqltypes.Result {
 	qr := sqltypes.Proto3ToResult(result)
+	var sqlResult *sqltypes.Result
 	for _, row := range qr.Rows {
-		sqlResult := &sqltypes.Result{
+		sqlResult = &sqltypes.Result{
 			Fields: result.Fields,
 		}
 		sqlResult.Rows = append(sqlResult.Rows, row)
-		if err := onResult(sqlResult, opType); err != nil {
-			return status.Error(codes.Internal, "unable to serialize row")
-		}
 	}
-	return nil
+	return sqlResult
 }
 
 func (p connectClient) getLatestCursorPosition(ctx context.Context, shard, keyspace string, tableName string, ps PlanetScaleSource, tabletType psdbconnect.TabletType) (string, error) {

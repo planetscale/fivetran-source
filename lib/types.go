@@ -3,7 +3,7 @@ package lib
 import (
 	"encoding/base64"
 
-	"vitess.io/vitess/go/vt/proto/query"
+	"vitess.io/vitess/go/sqltypes"
 
 	"github.com/pkg/errors"
 	psdbconnect "github.com/planetscale/airbyte-source/proto/psdbconnect/v1alpha1"
@@ -19,8 +19,8 @@ const (
 )
 
 type UpdatedRow struct {
-	Before *query.QueryResult
-	After  *query.QueryResult
+	Before *sqltypes.Result
+	After  *sqltypes.Result
 }
 type MysqlColumn struct {
 	Name         string

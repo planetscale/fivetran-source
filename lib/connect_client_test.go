@@ -253,7 +253,8 @@ func TestRead_CanStopAtWellKnownCursor(t *testing.T) {
 		Database: "connect-test",
 	}
 	rowCounter := 0
-	onRow := func(*sqltypes.Result, Operation) error {
+	onRow := func(res *sqltypes.Result, op Operation) error {
+		fmt.Printf("\tserializing [%v] row : %q\n", op, res)
 		rowCounter += 1
 		return nil
 	}
