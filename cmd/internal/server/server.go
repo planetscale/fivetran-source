@@ -167,7 +167,6 @@ func (c *connectorServer) Update(request *fivetran_sdk.UpdateRequest, server fiv
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	fmt.Println("Getting source schema now")
 	sourceSchema, err := c.schema.Handle(ctx, psc, &mysqlClient)
 	if err != nil {
 		return status.Errorf(codes.InvalidArgument, "unable get source schema for this database : %q", err)
