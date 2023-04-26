@@ -191,6 +191,9 @@ func TestRead_CanStopAtWellKnownCursor(t *testing.T) {
 	dbl := &dbLogger{}
 	ped := connectClient{}
 
+	testFields := sqltypes.MakeTestFields(
+		"pid|description",
+		"int64|varbinary")
 	numResponses := 10
 	// when the client tries to get the "current" vgtid,
 	// we return the ante-penultimate element of the array.
@@ -202,30 +205,24 @@ func TestRead_CanStopAtWellKnownCursor(t *testing.T) {
 		// this simulates multiple events being returned, for the same vgtid, from vstream
 		for x := 0; x < 3; x++ {
 			var (
-				result  []*query.QueryResult
+				inserts []*query.QueryResult
 				deletes []*psdbconnect.DeletedRow
 			)
 			if x == 2 {
-				result = []*query.QueryResult{
-					sqltypes.ResultToProto3(sqltypes.MakeTestResult(sqltypes.MakeTestFields(
-						"pid|description",
-						"int64|varbinary"),
+				inserts = []*query.QueryResult{
+					sqltypes.ResultToProto3(sqltypes.MakeTestResult(testFields,
 						fmt.Sprintf("%v|keyboard", i+1),
 						fmt.Sprintf("%v|monitor", i+2),
 					)),
 				}
 				deletes = []*psdbconnect.DeletedRow{
 					{
-						Result: sqltypes.ResultToProto3(sqltypes.MakeTestResult(sqltypes.MakeTestFields(
-							"pid|description",
-							"int64|varbinary"),
+						Result: sqltypes.ResultToProto3(sqltypes.MakeTestResult(testFields,
 							fmt.Sprintf("%v|deleted_monitor", i+12),
 						)),
 					},
 					{
-						Result: sqltypes.ResultToProto3(sqltypes.MakeTestResult(sqltypes.MakeTestFields(
-							"pid|description",
-							"int64|varbinary"),
+						Result: sqltypes.ResultToProto3(sqltypes.MakeTestResult(testFields,
 							fmt.Sprintf("%v|deleted_monitor", i+12),
 						)),
 					},
@@ -239,7 +236,7 @@ func TestRead_CanStopAtWellKnownCursor(t *testing.T) {
 					Keyspace: "connect-test",
 					Position: vgtid,
 				},
-				Result:  result,
+				Result:  inserts,
 				Deletes: deletes,
 			})
 		}
