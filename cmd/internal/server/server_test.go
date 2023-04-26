@@ -356,11 +356,10 @@ func TestUpdateReturnsDeletes(t *testing.T) {
 	assert.Equal(t, "customers", record.Record.TableName)
 
 	assert.Equal(t, record.Record.Type, fivetransdk.OpType_DELETE)
-	for _, field := range allTypesResult.Fields {
-		assert.NotEmpty(t, record.Record.Data[field.Name].Inner, "expected value for %q field", field.Name)
-		assert.NotNil(t, record.Record.Data[field.Name].Inner, "expected value for %q field", field.Name)
-	}
+	assert.Equal(t, 1, len(record.Record.Data))
 
+	assert.Equal(t, &fivetransdk.ValueType_Int{Int: 12}, record.Record.Data["Type_INT8"].Inner)
+	
 	operation = rows[len(rows)-1].GetOperation()
 	checkpoint, ok := operation.Op.(*fivetransdk.Operation_Checkpoint)
 	assert.True(t, ok)
@@ -462,7 +461,7 @@ func setupUpdateRowsTest(intValue []byte) (*sqltypes.Result, func() lib.MysqlCli
 				schemaBuilder.OnTable("SalesDB", "customers")
 				schemaBuilder.OnColumns("SalesDB", "customers",
 					[]lib.MysqlColumn{
-						{Name: "Type_INT8", Type: "int"},
+						{Name: "Type_INT8", Type: "int", IsPrimaryKey: true},
 						{Name: "Type_UINT8", Type: "smallint"},
 						{Name: "Type_INT16", Type: "smallint"},
 						{Name: "Type_UINT16", Type: "int"},
