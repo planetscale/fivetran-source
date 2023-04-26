@@ -19,7 +19,7 @@ import (
 
 func TestCanSerializeInsert(t *testing.T) {
 	timestamp := "2006-01-02 15:04:05"
-	row, s, err := generateTestRecord()
+	row, s, err := generateTestRecord("PhaniRaj")
 	require.NoError(t, err)
 	tl := &testLogSender{}
 	l := NewSchemaAwareSerializer(tl, "", false, &fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{s}})
@@ -76,7 +76,7 @@ func TestCanSerializeInsert(t *testing.T) {
 }
 
 func TestCanSerializeDelete(t *testing.T) {
-	row, s, err := generateTestRecord()
+	row, s, err := generateTestRecord("PhaniRaj")
 	require.NoError(t, err)
 	tl := &testLogSender{}
 	l := NewSchemaAwareSerializer(tl, "", false, &fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{s}})
@@ -115,7 +115,54 @@ func TestCanSerializeDelete(t *testing.T) {
 	assert.Equal(t, "string:\"PhaniRaj\"", data["name"].String())
 }
 
-func generateTestRecord() (*sqltypes.Result, *fivetransdk.Schema, error) {
+func TestCanSerializeUpdate(t *testing.T) {
+	before, s, err := generateTestRecord("PhaniRaj")
+
+	require.NoError(t, err)
+	tl := &testLogSender{}
+	l := NewSchemaAwareSerializer(tl, "", false, &fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{s}})
+
+	schema := &fivetransdk.SchemaSelection{
+		Included:   true,
+		SchemaName: s.Name,
+	}
+	table := &fivetransdk.TableSelection{
+		TableName: "Customers",
+		Included:  true,
+		Columns:   map[string]bool{},
+	}
+
+	for _, f := range before.Fields {
+		table.Columns[f.Name] = true
+	}
+
+	after, s, err := generateTestRecord("YayavaramNarasimha")
+
+	for i := 0; i < 3; i++ {
+		err = l.Update(&lib.UpdatedRow{
+			Before: before,
+			After:  after,
+		}, schema, table)
+
+		assert.NoError(t, err)
+		assert.NotNil(t, tl.lastResponse)
+	}
+
+	operation, ok := tl.lastResponse.Response.(*fivetransdk.UpdateResponse_Operation)
+	require.Truef(t, ok, "recordResponse Operation is not of type %s", "UpdateResponse_Operation")
+
+	operationRecord, ok := operation.Operation.Op.(*fivetransdk.Operation_Record)
+	assert.Truef(t, ok, "recordResponse Operation.Op is not of type %s", "Operation_Record")
+
+	assert.Equal(t, fivetransdk.OpType_UPDATE, operationRecord.Record.Type)
+	data := operationRecord.Record.Data
+	assert.NotNil(t, data)
+	assert.Equal(t, 2, len(data))
+	assert.Equal(t, int32(123), data["customer_id"].GetShort())
+	assert.Equal(t, "string:\"YayavaramNarasimha\"", data["name"].String())
+}
+
+func generateTestRecord(name string) (*sqltypes.Result, *fivetransdk.Schema, error) {
 	notes, err := sqltypes.NewValue(querypb.Type_TEXT, []byte("Something great comes this way"))
 	if err != nil {
 		return nil, nil, err
@@ -245,7 +292,7 @@ func generateTestRecord() (*sqltypes.Result, *fivetransdk.Schema, error) {
 		Rows: [][]sqltypes.Value{
 			{
 				sqltypes.NewInt32(123),
-				sqltypes.NewVarChar("PhaniRaj"),
+				sqltypes.NewVarChar(name),
 				sqltypes.NewVarChar("PhaniRaj"),
 				sqltypes.NewVarChar("PhaniRaj"),
 				sqltypes.NewVarChar("PhaniRaj"),
@@ -431,7 +478,7 @@ func TestCanSkipColumns(t *testing.T) {
 }
 
 func BenchmarkRecordSerialization_Serializer(b *testing.B) {
-	row, s, err := generateTestRecord()
+	row, s, err := generateTestRecord("PhaniRaj")
 	if err != nil {
 		panic(err.Error())
 	}
