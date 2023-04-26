@@ -278,7 +278,9 @@ func TestUpdateReturnsRows(t *testing.T) {
 			CanConnectFn: func(ctx context.Context, ps lib.PlanetScaleSource) error {
 				return nil
 			},
-			ReadFn: func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor) (*lib.SerializedCursor, error) {
+			ReadFn: func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string, tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor) (*lib.SerializedCursor, error) {
+				assert.Equal(t, "customers", tableName)
+				assert.NotNil(t, columns)
 				onResult(allTypesResult)
 				return nil, nil
 			},
@@ -397,7 +399,7 @@ func TestUpdateReturnsState(t *testing.T) {
 			CanConnectFn: func(ctx context.Context, ps lib.PlanetScaleSource) error {
 				return nil
 			},
-			ReadFn: func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor) (*lib.SerializedCursor, error) {
+			ReadFn: func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string, tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor) (*lib.SerializedCursor, error) {
 				onCursor(&psdbconnect.TableCursor{
 					Position: "THIS_IS_A_VALID_GTID",
 				})
