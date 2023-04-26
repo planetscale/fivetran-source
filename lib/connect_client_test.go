@@ -201,7 +201,10 @@ func TestRead_CanStopAtWellKnownCursor(t *testing.T) {
 	for i := 0; i < numResponses; i++ {
 		// this simulates multiple events being returned, for the same vgtid, from vstream
 		for x := 0; x < 3; x++ {
-			var result []*query.QueryResult
+			var (
+				result  []*query.QueryResult
+				deletes []*psdbconnect.DeletedRow
+			)
 			if x == 2 {
 				result = []*query.QueryResult{
 					sqltypes.ResultToProto3(sqltypes.MakeTestResult(sqltypes.MakeTestFields(
@@ -210,6 +213,22 @@ func TestRead_CanStopAtWellKnownCursor(t *testing.T) {
 						fmt.Sprintf("%v|keyboard", i+1),
 						fmt.Sprintf("%v|monitor", i+2),
 					)),
+				}
+				deletes = []*psdbconnect.DeletedRow{
+					{
+						Result: sqltypes.ResultToProto3(sqltypes.MakeTestResult(sqltypes.MakeTestFields(
+							"pid|description",
+							"int64|varbinary"),
+							fmt.Sprintf("%v|deleted_monitor", i+12),
+						)),
+					},
+					{
+						Result: sqltypes.ResultToProto3(sqltypes.MakeTestResult(sqltypes.MakeTestFields(
+							"pid|description",
+							"int64|varbinary"),
+							fmt.Sprintf("%v|deleted_monitor", i+12),
+						)),
+					},
 				}
 			}
 
@@ -220,7 +239,8 @@ func TestRead_CanStopAtWellKnownCursor(t *testing.T) {
 					Keyspace: "connect-test",
 					Position: vgtid,
 				},
-				Result: result,
+				Result:  result,
+				Deletes: deletes,
 			})
 		}
 	}
@@ -252,10 +272,15 @@ func TestRead_CanStopAtWellKnownCursor(t *testing.T) {
 	ps := PlanetScaleSource{
 		Database: "connect-test",
 	}
-	rowCounter := 0
+	insertedRowCounter := 0
+	deletedRowCounter := 0
 	onRow := func(res *sqltypes.Result, op Operation) error {
-		fmt.Printf("\tserializing [%v] row : %q\n", op, res)
-		rowCounter += 1
+		if op == OpType_Insert {
+			insertedRowCounter += 1
+		}
+		if op == OpType_Delete {
+			deletedRowCounter += 1
+		}
 		return nil
 	}
 	onCursor := func(*psdbconnect.TableCursor) error {
@@ -271,5 +296,6 @@ func TestRead_CanStopAtWellKnownCursor(t *testing.T) {
 	assert.Equal(t, 2, cc.syncFnInvokedCount)
 
 	assert.Equal(t, "[connect-test:customers shard : -] Finished reading all rows for table [customers]", dbl.messages[len(dbl.messages)-1].message)
-	assert.Equal(t, 2*(nextVGtidPosition/3), rowCounter)
+	assert.Equal(t, 2*(nextVGtidPosition/3), insertedRowCounter)
+	assert.Equal(t, 2*(nextVGtidPosition/3), deletedRowCounter)
 }
