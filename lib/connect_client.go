@@ -220,9 +220,15 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 		watchForVgGtidChange = watchForVgGtidChange || tc.Position == stopPosition
 
 		for _, insertedRow := range res.Result {
-			result := serializeQueryResult(insertedRow)
-			if err := onResult(result, OpType_Insert); err != nil {
-				return nil, status.Error(codes.Internal, "unable to serialize insert")
+			qr := sqltypes.Proto3ToResult(insertedRow)
+			for _, row := range qr.Rows {
+				sqlResult := &sqltypes.Result{
+					Fields: insertedRow.Fields,
+				}
+				sqlResult.Rows = append(sqlResult.Rows, row)
+				if err := onResult(sqlResult, OpType_Insert); err != nil {
+					return tc, status.Error(codes.Internal, "unable to serialize row")
+				}
 			}
 		}
 
@@ -237,9 +243,15 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 		}
 
 		for _, deletedRow := range res.Deletes {
-			result := serializeQueryResult(deletedRow.Result)
-			if err := onResult(result, OpType_Delete); err != nil {
-				return nil, status.Error(codes.Internal, "unable to serialize delete")
+			qr := sqltypes.Proto3ToResult(deletedRow.Result)
+			for _, row := range qr.Rows {
+				sqlResult := &sqltypes.Result{
+					Fields: deletedRow.Result.Fields,
+				}
+				sqlResult.Rows = append(sqlResult.Rows, row)
+				if err := onResult(sqlResult, OpType_Delete); err != nil {
+					return nil, status.Error(codes.Internal, "unable to serialize row")
+				}
 			}
 		}
 
