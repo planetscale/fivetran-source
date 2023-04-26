@@ -3,11 +3,25 @@ package lib
 import (
 	"encoding/base64"
 
+	"vitess.io/vitess/go/sqltypes"
+
 	"github.com/pkg/errors"
 	psdbconnect "github.com/planetscale/airbyte-source/proto/psdbconnect/v1alpha1"
 	"github.com/planetscale/psdb/core/codec"
 )
 
+type Operation int64
+
+const (
+	OpType_Insert Operation = iota
+	OpType_Update
+	OpType_Delete
+)
+
+type UpdatedRow struct {
+	Before *sqltypes.Result
+	After  *sqltypes.Result
+}
 type MysqlColumn struct {
 	Name         string
 	Type         string
