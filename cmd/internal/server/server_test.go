@@ -156,9 +156,237 @@ func TestUpdateValidatesState(t *testing.T) {
 	assert.ErrorContains(t, err, "request did not contain a valid stateJson")
 }
 
-func TestUpdateReturnsRows(t *testing.T) {
+func TestUpdateReturnsInserts(t *testing.T) {
 	ctx := context.Background()
 	intValue := strconv.AppendInt(nil, int64(int8(12)), 10)
+	allTypesResult, mysqlClientConstructor := setupUpdateRowsTest(intValue)
+
+	clientConstructor := func() lib.ConnectClient {
+		return &lib.TestConnectClient{
+			ListShardsFn: func(ctx context.Context, ps lib.PlanetScaleSource) ([]string, error) {
+				return []string{"-", "-40"}, nil
+			},
+			CanConnectFn: func(ctx context.Context, ps lib.PlanetScaleSource) error {
+				return nil
+			},
+			ReadFn: func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string, tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor) (*lib.SerializedCursor, error) {
+				assert.Equal(t, "customers", tableName)
+				assert.NotNil(t, columns)
+				onResult(allTypesResult, lib.OpType_Insert)
+				return nil, nil
+			},
+		}
+	}
+	client, closer := server(ctx, clientConstructor, mysqlClientConstructor)
+	defer closer()
+	customerSelection := &fivetransdk.TableSelection{
+		Included:  true,
+		TableName: "customers",
+		Columns:   map[string]bool{},
+	}
+
+	for _, f := range allTypesResult.Fields {
+		customerSelection.Columns[f.Name] = true
+	}
+
+	selection := &fivetransdk.Selection_WithSchema{
+		WithSchema: &fivetransdk.TablesWithSchema{
+			Schemas: []*fivetransdk.SchemaSelection{
+				{
+					SchemaName: "SalesDB",
+					Included:   true,
+					Tables: []*fivetransdk.TableSelection{
+						customerSelection,
+						{
+							Included:  false,
+							TableName: "customer_secrets",
+						},
+					},
+				},
+			},
+		},
+	}
+	out, err := client.Update(ctx, &fivetransdk.UpdateRequest{
+		Configuration: map[string]string{
+			"host":     "earth.psdb",
+			"username": "phanatic",
+			"password": "password",
+			"database": "employees",
+		},
+		Selection: &fivetransdk.Selection{
+			Selection: selection,
+		},
+	})
+	assert.NoError(t, err)
+	assert.NotNil(t, out)
+
+	rows := make([]*fivetransdk.UpdateResponse, 0, 3)
+	for {
+		resp, err := out.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("failed test with %q", err)
+		}
+		rows = append(rows, resp)
+	}
+	assert.Len(t, rows, 3)
+	operation := rows[0].GetOperation()
+	assert.NotNil(t, operation)
+	record, ok := operation.Op.(*fivetransdk.Operation_Record)
+	assert.True(t, ok)
+	assert.NotNil(t, record)
+	assert.Equal(t, "SalesDB", *record.Record.SchemaName)
+	assert.Equal(t, "customers", record.Record.TableName)
+
+	assert.Equal(t, record.Record.Type, fivetransdk.OpType_UPSERT)
+	for _, field := range allTypesResult.Fields {
+		assert.NotEmpty(t, record.Record.Data[field.Name].Inner, "expected value for %q field", field.Name)
+		assert.NotNil(t, record.Record.Data[field.Name].Inner, "expected value for %q field", field.Name)
+	}
+
+	operation = rows[len(rows)-1].GetOperation()
+	checkpoint, ok := operation.Op.(*fivetransdk.Operation_Checkpoint)
+	assert.True(t, ok)
+	assert.NotNil(t, checkpoint)
+
+	syncState := lib.SyncState{
+		Keyspaces: map[string]lib.KeyspaceState{},
+	}
+
+	err = json.Unmarshal([]byte(checkpoint.Checkpoint.StateJson), &syncState)
+	require.NoError(t, err)
+
+	ks, ok := syncState.Keyspaces["SalesDB"]
+	assert.True(t, ok)
+	customers, ok := ks.Streams["SalesDB:customers"]
+	assert.True(t, ok)
+	defaultShard, ok := customers.Shards["-"]
+	assert.True(t, ok)
+	assert.Equal(t, "CgEtEgdTYWxlc0RC", defaultShard.Cursor)
+
+	customShard, ok := customers.Shards["-40"]
+	assert.True(t, ok)
+	assert.Equal(t, "CgMtNDASB1NhbGVzREI=", customShard.Cursor)
+}
+
+func TestUpdateReturnsDeletes(t *testing.T) {
+	ctx := context.Background()
+	intValue := strconv.AppendInt(nil, int64(int8(12)), 10)
+	allTypesResult, mysqlClientConstructor := setupUpdateRowsTest(intValue)
+
+	clientConstructor := func() lib.ConnectClient {
+		return &lib.TestConnectClient{
+			ListShardsFn: func(ctx context.Context, ps lib.PlanetScaleSource) ([]string, error) {
+				return []string{"-", "-40"}, nil
+			},
+			CanConnectFn: func(ctx context.Context, ps lib.PlanetScaleSource) error {
+				return nil
+			},
+			ReadFn: func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string, tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor) (*lib.SerializedCursor, error) {
+				assert.Equal(t, "customers", tableName)
+				assert.NotNil(t, columns)
+				onResult(allTypesResult, lib.OpType_Delete)
+				return nil, nil
+			},
+		}
+	}
+	client, closer := server(ctx, clientConstructor, mysqlClientConstructor)
+	defer closer()
+	customerSelection := &fivetransdk.TableSelection{
+		Included:  true,
+		TableName: "customers",
+		Columns:   map[string]bool{},
+	}
+
+	for _, f := range allTypesResult.Fields {
+		customerSelection.Columns[f.Name] = true
+	}
+
+	selection := &fivetransdk.Selection_WithSchema{
+		WithSchema: &fivetransdk.TablesWithSchema{
+			Schemas: []*fivetransdk.SchemaSelection{
+				{
+					SchemaName: "SalesDB",
+					Included:   true,
+					Tables: []*fivetransdk.TableSelection{
+						customerSelection,
+						{
+							Included:  false,
+							TableName: "customer_secrets",
+						},
+					},
+				},
+			},
+		},
+	}
+	out, err := client.Update(ctx, &fivetransdk.UpdateRequest{
+		Configuration: map[string]string{
+			"host":     "earth.psdb",
+			"username": "phanatic",
+			"password": "password",
+			"database": "employees",
+		},
+		Selection: &fivetransdk.Selection{
+			Selection: selection,
+		},
+	})
+	assert.NoError(t, err)
+	assert.NotNil(t, out)
+
+	rows := make([]*fivetransdk.UpdateResponse, 0, 3)
+	for {
+		resp, err := out.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("failed test with %q", err)
+		}
+		rows = append(rows, resp)
+	}
+	assert.Len(t, rows, 3)
+	operation := rows[0].GetOperation()
+	assert.NotNil(t, operation)
+	record, ok := operation.Op.(*fivetransdk.Operation_Record)
+	assert.True(t, ok)
+	assert.NotNil(t, record)
+	assert.Equal(t, "SalesDB", *record.Record.SchemaName)
+	assert.Equal(t, "customers", record.Record.TableName)
+
+	assert.Equal(t, record.Record.Type, fivetransdk.OpType_DELETE)
+	for _, field := range allTypesResult.Fields {
+		assert.NotEmpty(t, record.Record.Data[field.Name].Inner, "expected value for %q field", field.Name)
+		assert.NotNil(t, record.Record.Data[field.Name].Inner, "expected value for %q field", field.Name)
+	}
+
+	operation = rows[len(rows)-1].GetOperation()
+	checkpoint, ok := operation.Op.(*fivetransdk.Operation_Checkpoint)
+	assert.True(t, ok)
+	assert.NotNil(t, checkpoint)
+
+	syncState := lib.SyncState{
+		Keyspaces: map[string]lib.KeyspaceState{},
+	}
+
+	err = json.Unmarshal([]byte(checkpoint.Checkpoint.StateJson), &syncState)
+	require.NoError(t, err)
+
+	ks, ok := syncState.Keyspaces["SalesDB"]
+	assert.True(t, ok)
+	customers, ok := ks.Streams["SalesDB:customers"]
+	assert.True(t, ok)
+	defaultShard, ok := customers.Shards["-"]
+	assert.True(t, ok)
+	assert.Equal(t, "CgEtEgdTYWxlc0RC", defaultShard.Cursor)
+
+	customShard, ok := customers.Shards["-40"]
+	assert.True(t, ok)
+	assert.Equal(t, "CgMtNDASB1NhbGVzREI=", customShard.Cursor)
+}
+
+func setupUpdateRowsTest(intValue []byte) (*sqltypes.Result, func() lib.MysqlClient) {
 	allTypesResult := &sqltypes.Result{
 		Fields: []*querypb.Field{
 			{Name: "Type_INT8", Type: querypb.Type_INT8},
@@ -269,115 +497,7 @@ func TestUpdateReturnsRows(t *testing.T) {
 			},
 		}
 	}
-
-	clientConstructor := func() lib.ConnectClient {
-		return &lib.TestConnectClient{
-			ListShardsFn: func(ctx context.Context, ps lib.PlanetScaleSource) ([]string, error) {
-				return []string{"-", "-40"}, nil
-			},
-			CanConnectFn: func(ctx context.Context, ps lib.PlanetScaleSource) error {
-				return nil
-			},
-			ReadFn: func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string, tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor) (*lib.SerializedCursor, error) {
-				assert.Equal(t, "customers", tableName)
-				assert.NotNil(t, columns)
-				onResult(allTypesResult, lib.OpType_Insert)
-				return nil, nil
-			},
-		}
-	}
-	client, closer := server(ctx, clientConstructor, mysqlClientConstructor)
-	defer closer()
-	customerSelection := &fivetransdk.TableSelection{
-		Included:  true,
-		TableName: "customers",
-		Columns:   map[string]bool{},
-	}
-
-	for _, f := range allTypesResult.Fields {
-		customerSelection.Columns[f.Name] = true
-	}
-
-	selection := &fivetransdk.Selection_WithSchema{
-		WithSchema: &fivetransdk.TablesWithSchema{
-			Schemas: []*fivetransdk.SchemaSelection{
-				{
-					SchemaName: "SalesDB",
-					Included:   true,
-					Tables: []*fivetransdk.TableSelection{
-						customerSelection,
-						{
-							Included:  false,
-							TableName: "customer_secrets",
-						},
-					},
-				},
-			},
-		},
-	}
-	out, err := client.Update(ctx, &fivetransdk.UpdateRequest{
-		Configuration: map[string]string{
-			"host":     "earth.psdb",
-			"username": "phanatic",
-			"password": "password",
-			"database": "employees",
-		},
-		Selection: &fivetransdk.Selection{
-			Selection: selection,
-		},
-	})
-	assert.NoError(t, err)
-	assert.NotNil(t, out)
-
-	rows := make([]*fivetransdk.UpdateResponse, 0, 3)
-	for {
-		resp, err := out.Recv()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			t.Fatalf("failed test with %q", err)
-		}
-		rows = append(rows, resp)
-	}
-	assert.Len(t, rows, 3)
-	operation := rows[0].GetOperation()
-	assert.NotNil(t, operation)
-	record, ok := operation.Op.(*fivetransdk.Operation_Record)
-	assert.True(t, ok)
-	assert.NotNil(t, record)
-	assert.Equal(t, "SalesDB", *record.Record.SchemaName)
-	assert.Equal(t, "customers", record.Record.TableName)
-
-	for _, field := range allTypesResult.Fields {
-		assert.NotEmpty(t, record.Record.Data[field.Name].Inner, "expected value for %q field", field.Name)
-		assert.NotNil(t, record.Record.Data[field.Name].Inner, "expected value for %q field", field.Name)
-	}
-
-	operation = rows[len(rows)-1].GetOperation()
-	checkpoint, ok := operation.Op.(*fivetransdk.Operation_Checkpoint)
-	assert.True(t, ok)
-	assert.NotNil(t, checkpoint)
-
-	syncState := lib.SyncState{
-		Keyspaces: map[string]lib.KeyspaceState{},
-	}
-
-	fmt.Printf("checkpoint is %s", checkpoint.Checkpoint.StateJson)
-	err = json.Unmarshal([]byte(checkpoint.Checkpoint.StateJson), &syncState)
-	require.NoError(t, err)
-
-	ks, ok := syncState.Keyspaces["SalesDB"]
-	assert.True(t, ok)
-	customers, ok := ks.Streams["SalesDB:customers"]
-	assert.True(t, ok)
-	defaultShard, ok := customers.Shards["-"]
-	assert.True(t, ok)
-	assert.Equal(t, "CgEtEgdTYWxlc0RC", defaultShard.Cursor)
-
-	customShard, ok := customers.Shards["-40"]
-	assert.True(t, ok)
-	assert.Equal(t, "CgMtNDASB1NhbGVzREI=", customShard.Cursor)
+	return allTypesResult, mysqlClientConstructor
 }
 
 func TestUpdateReturnsState(t *testing.T) {
