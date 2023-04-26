@@ -136,7 +136,8 @@ func TestCanSerializeUpdate(t *testing.T) {
 		table.Columns[f.Name] = true
 	}
 
-	after, s, err := generateTestRecord("YayavaramNarasimha")
+	after, _, err := generateTestRecord("YayavaramNarasimha")
+	assert.NoError(t, err)
 
 	for i := 0; i < 3; i++ {
 		err = l.Update(&lib.UpdatedRow{

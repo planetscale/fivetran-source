@@ -392,7 +392,7 @@ func TestUpdateReturnsDeletes(t *testing.T) {
 func TestUpdateReturnsUpdates(t *testing.T) {
 	ctx := context.Background()
 	beforeIntValue := strconv.AppendInt(nil, int64(int8(12)), 10)
-	beforeResult, mysqlClientConstructor := setupUpdateRowsTest(beforeIntValue)
+	beforeResult, _ := setupUpdateRowsTest(beforeIntValue)
 	afterIntValue := strconv.AppendInt(nil, int64(int8(17)), 10)
 	afterResult, mysqlClientConstructor := setupUpdateRowsTest(afterIntValue)
 
