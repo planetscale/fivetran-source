@@ -359,7 +359,7 @@ func TestUpdateReturnsDeletes(t *testing.T) {
 	assert.Equal(t, 1, len(record.Record.Data))
 
 	assert.Equal(t, &fivetransdk.ValueType_Int{Int: 12}, record.Record.Data["Type_INT8"].Inner)
-	
+
 	operation = rows[len(rows)-1].GetOperation()
 	checkpoint, ok := operation.Op.(*fivetransdk.Operation_Checkpoint)
 	assert.True(t, ok)
