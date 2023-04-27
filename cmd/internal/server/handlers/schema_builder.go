@@ -57,6 +57,7 @@ func (s *fivetranSchemaBuilder) getOrCreateTable(keyspaceName string, tableName 
 			Name:    tableName,
 			Columns: []*fivetransdk.Column{},
 		}
+		schema.Tables = append(schema.Tables, table)
 	}
 
 	if s.tables == nil {
@@ -67,7 +68,6 @@ func (s *fivetranSchemaBuilder) getOrCreateTable(keyspaceName string, tableName 
 		s.tables[keyspaceName] = map[string]*fivetransdk.Table{}
 	}
 
-	schema.Tables = append(schema.Tables, table)
 	s.tables[keyspaceName][tableName] = table
 	return table
 }
