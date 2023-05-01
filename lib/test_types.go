@@ -114,7 +114,7 @@ func (tcc *TestConnectClient) CanConnect(ctx context.Context, ps PlanetScaleSour
 	return errors.New("CanConnect is Unimplemented")
 }
 
-func (tcc *TestConnectClient) Read(ctx context.Context, logger DatabaseLogger, ps PlanetScaleSource, tableName string, columns []string, lastKnownPosition *psdbconnect.TableCursor, onResult OnResult, onCursor OnCursor) (*SerializedCursor, error) {
+func (tcc *TestConnectClient) Read(ctx context.Context, logger DatabaseLogger, ps PlanetScaleSource, tableName string, columns []string, lastKnownPosition *psdbconnect.TableCursor, onResult OnResult, onCursor OnCursor, onUpdate OnUpdate) (*SerializedCursor, error) {
 	if tcc.ReadFn != nil {
 		return tcc.ReadFn(ctx, logger, ps, tableName, columns, lastKnownPosition, onResult, onCursor)
 	}
