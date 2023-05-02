@@ -46,6 +46,7 @@ func TestSchema_CanPickRightFivetranType(t *testing.T) {
 		MysqlType             string
 		FivetranType          fivetransdk.DataType
 		TreatTinyIntAsBoolean bool
+		DecimalParams         *fivetransdk.DecimalParams
 	}{
 		{
 			MysqlType:    "int(32)",
@@ -106,6 +107,10 @@ func TestSchema_CanPickRightFivetranType(t *testing.T) {
 		{
 			MysqlType:    "decimal(12,5)",
 			FivetranType: fivetransdk.DataType_DECIMAL,
+			DecimalParams: &fivetransdk.DecimalParams{
+				Precision: 12,
+				Scale:     5,
+			},
 		},
 		{
 			MysqlType:    "double",
@@ -119,8 +124,42 @@ func TestSchema_CanPickRightFivetranType(t *testing.T) {
 
 	for _, typeTest := range tests {
 		t.Run(fmt.Sprintf("mysql_type_%v", typeTest.MysqlType), func(t *testing.T) {
-			p := getFivetranDataType(typeTest.MysqlType, typeTest.TreatTinyIntAsBoolean)
+			p, d := getFivetranDataType(typeTest.MysqlType, typeTest.TreatTinyIntAsBoolean)
 			assert.Equal(t, typeTest.FivetranType, p)
+			if typeTest.DecimalParams != nil {
+				assert.Equal(t, typeTest.DecimalParams, d)
+			}
+		})
+	}
+}
+
+func TestCanDetectDecimalPrecision(t *testing.T) {
+	tests := []struct {
+		MysqlType string
+		Precision uint32
+		Scale     uint32
+	}{
+		{
+			MysqlType: "Decimal",
+			Precision: 10,
+			Scale:     0,
+		},
+		{
+			MysqlType: "Decimal(32)",
+			Precision: 32,
+			Scale:     0,
+		},
+		{
+			MysqlType: "Decimal(32,4)",
+			Precision: 32,
+			Scale:     4,
+		},
+	}
+	for _, typeTest := range tests {
+		t.Run(fmt.Sprintf("decimal_precision%v", typeTest.MysqlType), func(t *testing.T) {
+			p := getDecimalParams(typeTest.MysqlType)
+			assert.Equal(t, typeTest.Precision, p.Precision)
+			assert.Equal(t, typeTest.Scale, p.Scale)
 		})
 	}
 }
