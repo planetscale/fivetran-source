@@ -32,8 +32,12 @@ func (s *Sync) Handle(psc *lib.PlanetScaleSource, db *lib.ConnectClient, logger 
 			if !ok {
 				return status.Error(codes.Internal, fmt.Sprintf("Unable to read state for stream %v", stateKey))
 			}
-			onRow := func(res *sqltypes.Result, opType lib.Operation) error {
-				return logger.Record(res, ks, table)
+			onRow := func(res *sqltypes.Result, op lib.Operation) error {
+				return logger.Record(res, ks, table, op)
+			}
+
+			onUpdate := func(upd *lib.UpdatedRow) error {
+				return logger.Update(upd, ks, table)
 			}
 
 			for shardName, shardState := range streamState.Shards {
@@ -50,7 +54,7 @@ func (s *Sync) Handle(psc *lib.PlanetScaleSource, db *lib.ConnectClient, logger 
 					return status.Error(codes.Internal, fmt.Sprintf("invalid cursor for stream %v, failed with [%v]", stateKey, err))
 				}
 				columns := includedColumns(table)
-				sc, err := (*db).Read(ctx, logger, *psc, table.TableName, columns, tc, onRow, onCursor, nil)
+				sc, err := (*db).Read(ctx, logger, *psc, table.TableName, columns, tc, onRow, onCursor, onUpdate)
 				if err != nil {
 					return status.Error(codes.Internal, fmt.Sprintf("failed to download rows for table : %s", table.TableName))
 				}
