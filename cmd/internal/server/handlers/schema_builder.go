@@ -222,7 +222,6 @@ func getFivetranDataType(mType string, treatTinyIntAsBoolean bool) (fivetransdk.
 // getDecimalParams parses the mysql type declaration for a column
 // and returns a type compatible with fivetran's SDK
 func getDecimalParams(mysqlType string) *fivetransdk.DecimalParams {
-
 	// From : https://dev.mysql.com/doc/refman/5.7/en/precision-math-decimal-characteristics.html
 	// The declaration syntax for a DECIMAL column is DECIMAL(M,D). The ranges of values for the arguments are as follows:
 	// M is the maximum number of digits (the precision). It has a range of 1 to 65.
