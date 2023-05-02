@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/planetscale/fivetran-source/lib"
+
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	fivetransdk "github.com/planetscale/fivetran-proto/go"
@@ -15,9 +17,9 @@ import (
 	querypb "vitess.io/vitess/go/vt/proto/query"
 )
 
-func TestCanSerializeRecord(t *testing.T) {
+func TestCanSerializeInsert(t *testing.T) {
 	timestamp := "2006-01-02 15:04:05"
-	row, s, err := generateTestRecord()
+	row, s, err := generateTestRecord("PhaniRaj")
 	require.NoError(t, err)
 	tl := &testLogSender{}
 	l := NewSchemaAwareSerializer(tl, "", false, &fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{s}})
@@ -37,7 +39,7 @@ func TestCanSerializeRecord(t *testing.T) {
 	}
 
 	for i := 0; i < 3; i++ {
-		err = l.Record(row, schema, table)
+		err = l.Record(row, schema, table, lib.OpType_Insert)
 		assert.NoError(t, err)
 		assert.NotNil(t, tl.lastResponse)
 	}
@@ -48,6 +50,7 @@ func TestCanSerializeRecord(t *testing.T) {
 	operationRecord, ok := operation.Operation.Op.(*fivetransdk.Operation_Record)
 	assert.Truef(t, ok, "recordResponse Operation.Op is not of type %s", "Operation_Record")
 
+	assert.Equal(t, fivetransdk.OpType_UPSERT, operationRecord.Record.Type)
 	data := operationRecord.Record.Data
 	assert.NotNil(t, data)
 
@@ -72,7 +75,95 @@ func TestCanSerializeRecord(t *testing.T) {
 	assert.Equal(t, timestamppb.New(dt).Nanos, data["datetime_value"].GetNaiveDatetime().Nanos)
 }
 
-func generateTestRecord() (*sqltypes.Result, *fivetransdk.Schema, error) {
+func TestCanSerializeDelete(t *testing.T) {
+	row, s, err := generateTestRecord("PhaniRaj")
+	require.NoError(t, err)
+	tl := &testLogSender{}
+	l := NewSchemaAwareSerializer(tl, "", false, &fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{s}})
+
+	schema := &fivetransdk.SchemaSelection{
+		Included:   true,
+		SchemaName: s.Name,
+	}
+	table := &fivetransdk.TableSelection{
+		TableName: "Customers",
+		Included:  true,
+		Columns:   map[string]bool{},
+	}
+
+	for _, f := range row.Fields {
+		table.Columns[f.Name] = true
+	}
+
+	for i := 0; i < 3; i++ {
+		err = l.Record(row, schema, table, lib.OpType_Delete)
+		assert.NoError(t, err)
+		assert.NotNil(t, tl.lastResponse)
+	}
+
+	operation, ok := tl.lastResponse.Response.(*fivetransdk.UpdateResponse_Operation)
+	require.Truef(t, ok, "recordResponse Operation is not of type %s", "UpdateResponse_Operation")
+
+	operationRecord, ok := operation.Operation.Op.(*fivetransdk.Operation_Record)
+	assert.Truef(t, ok, "recordResponse Operation.Op is not of type %s", "Operation_Record")
+
+	assert.Equal(t, fivetransdk.OpType_DELETE, operationRecord.Record.Type)
+	data := operationRecord.Record.Data
+	assert.NotNil(t, data)
+	assert.Equal(t, 2, len(data), "should serialize only primary keys for deleted rows")
+	assert.Equal(t, int32(123), data["customer_id"].GetShort())
+	assert.Equal(t, "string:\"PhaniRaj\"", data["name"].String())
+}
+
+func TestCanSerializeUpdate(t *testing.T) {
+	before, s, err := generateTestRecord("PhaniRaj")
+
+	require.NoError(t, err)
+	tl := &testLogSender{}
+	l := NewSchemaAwareSerializer(tl, "", false, &fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{s}})
+
+	schema := &fivetransdk.SchemaSelection{
+		Included:   true,
+		SchemaName: s.Name,
+	}
+	table := &fivetransdk.TableSelection{
+		TableName: "Customers",
+		Included:  true,
+		Columns:   map[string]bool{},
+	}
+
+	for _, f := range before.Fields {
+		table.Columns[f.Name] = true
+	}
+
+	after, _, err := generateTestRecord("YayavaramNarasimha")
+	assert.NoError(t, err)
+
+	for i := 0; i < 3; i++ {
+		err = l.Update(&lib.UpdatedRow{
+			Before: before,
+			After:  after,
+		}, schema, table)
+
+		assert.NoError(t, err)
+		assert.NotNil(t, tl.lastResponse)
+	}
+
+	operation, ok := tl.lastResponse.Response.(*fivetransdk.UpdateResponse_Operation)
+	require.Truef(t, ok, "recordResponse Operation is not of type %s", "UpdateResponse_Operation")
+
+	operationRecord, ok := operation.Operation.Op.(*fivetransdk.Operation_Record)
+	assert.Truef(t, ok, "recordResponse Operation.Op is not of type %s", "Operation_Record")
+
+	assert.Equal(t, fivetransdk.OpType_UPDATE, operationRecord.Record.Type)
+	data := operationRecord.Record.Data
+	assert.NotNil(t, data)
+	assert.Equal(t, 2, len(data))
+	assert.Equal(t, int32(123), data["customer_id"].GetShort())
+	assert.Equal(t, "string:\"YayavaramNarasimha\"", data["name"].String())
+}
+
+func generateTestRecord(name string) (*sqltypes.Result, *fivetransdk.Schema, error) {
 	notes, err := sqltypes.NewValue(querypb.Type_TEXT, []byte("Something great comes this way"))
 	if err != nil {
 		return nil, nil, err
@@ -202,7 +293,7 @@ func generateTestRecord() (*sqltypes.Result, *fivetransdk.Schema, error) {
 		Rows: [][]sqltypes.Value{
 			{
 				sqltypes.NewInt32(123),
-				sqltypes.NewVarChar("PhaniRaj"),
+				sqltypes.NewVarChar(name),
 				sqltypes.NewVarChar("PhaniRaj"),
 				sqltypes.NewVarChar("PhaniRaj"),
 				sqltypes.NewVarChar("PhaniRaj"),
@@ -229,12 +320,14 @@ func generateTestRecord() (*sqltypes.Result, *fivetransdk.Schema, error) {
 				Name: "Customers",
 				Columns: []*fivetransdk.Column{
 					{
-						Name: "customer_id",
-						Type: fivetransdk.DataType_SHORT,
+						Name:       "customer_id",
+						Type:       fivetransdk.DataType_SHORT,
+						PrimaryKey: true,
 					},
 					{
-						Name: "name",
-						Type: fivetransdk.DataType_STRING,
+						Name:       "name",
+						Type:       fivetransdk.DataType_STRING,
+						PrimaryKey: true,
 					},
 					{
 						Name: "first_name",
@@ -367,7 +460,7 @@ func TestCanSkipColumns(t *testing.T) {
 		},
 	}
 
-	err := l.Record(row, schema, table)
+	err := l.Record(row, schema, table, 0)
 	assert.NoError(t, err)
 	assert.NotNil(t, tl.lastResponse)
 
@@ -386,7 +479,7 @@ func TestCanSkipColumns(t *testing.T) {
 }
 
 func BenchmarkRecordSerialization_Serializer(b *testing.B) {
-	row, s, err := generateTestRecord()
+	row, s, err := generateTestRecord("PhaniRaj")
 	if err != nil {
 		panic(err.Error())
 	}
@@ -406,7 +499,7 @@ func BenchmarkRecordSerialization_Serializer(b *testing.B) {
 	}
 
 	for n := 0; n < b.N; n++ {
-		err := l.Record(row, schema, table)
+		err := l.Record(row, schema, table, 0)
 		if err != nil {
 			b.Fatalf("failed with %v", err.Error())
 		}

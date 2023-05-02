@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"fmt"
+
 	fivetransdk "github.com/planetscale/fivetran-proto/go"
 	"github.com/planetscale/fivetran-source/lib"
 	"vitess.io/vitess/go/sqltypes"
@@ -28,7 +30,11 @@ func (testLogger) Log(level fivetransdk.LogLevel, s string) error {
 	panic("implement me")
 }
 
-func (testLogger) Record(result *sqltypes.Result, selection *fivetransdk.SchemaSelection, selection2 *fivetransdk.TableSelection) error {
+func (testLogger) Update(*lib.UpdatedRow, *fivetransdk.SchemaSelection, *fivetransdk.TableSelection) error {
+	return fmt.Errorf("%v is not implemented", "Update")
+}
+
+func (testLogger) Record(result *sqltypes.Result, selection *fivetransdk.SchemaSelection, selection2 *fivetransdk.TableSelection, operation lib.Operation) error {
 	// TODO implement me
 	panic("implement me")
 }
