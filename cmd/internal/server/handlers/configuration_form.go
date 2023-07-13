@@ -15,7 +15,7 @@ func (ConfigurationForm) Handle(ctx context.Context, _ *fivetransdk.Configuratio
 		Fields: []*fivetransdk.FormField{
 			{
 				Name:  "host",
-				Label: "The host name of the database",
+				Label: "Database host name",
 				Type: &fivetransdk.FormField_TextField{
 					TextField: fivetransdk.TextField_PlainText,
 				},
@@ -23,7 +23,7 @@ func (ConfigurationForm) Handle(ctx context.Context, _ *fivetransdk.Configuratio
 			},
 			{
 				Name:  "database",
-				Label: "The PlanetScale database name",
+				Label: "Database name",
 				Type: &fivetransdk.FormField_TextField{
 					TextField: fivetransdk.TextField_PlainText,
 				},
@@ -31,7 +31,7 @@ func (ConfigurationForm) Handle(ctx context.Context, _ *fivetransdk.Configuratio
 			},
 			{
 				Name:  "username",
-				Label: "The username which is used to access the database",
+				Label: "Database username",
 				Type: &fivetransdk.FormField_TextField{
 					TextField: fivetransdk.TextField_PlainText,
 				},
@@ -39,7 +39,7 @@ func (ConfigurationForm) Handle(ctx context.Context, _ *fivetransdk.Configuratio
 			},
 			{
 				Name:  "password",
-				Label: "The password associated with the username",
+				Label: "Database password",
 				Type: &fivetransdk.FormField_TextField{
 					TextField: fivetransdk.TextField_Password,
 				},
@@ -47,14 +47,14 @@ func (ConfigurationForm) Handle(ctx context.Context, _ *fivetransdk.Configuratio
 			},
 			{
 				Name:  "shards",
-				Label: "A comma-separated list of shards you'd like to sync; by default all shards are synced",
+				Label: "(Optional) Comma-separated list of shards to sync",
 				Type: &fivetransdk.FormField_TextField{
 					TextField: fivetransdk.TextField_PlainText,
 				},
 			},
 			{
-				Name:  "do_not_treat_tiny_int_as_boolean",
-				Label: "Do not treat tinyint(1) as boolean",
+				Name:  "treat_tiny_int_as_boolean",
+				Label: "Treat tinyint(1) as boolean",
 				Type: &fivetransdk.FormField_DropdownField{
 					DropdownField: &fivetransdk.DropdownField{
 						DropdownField: []string{
