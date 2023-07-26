@@ -10,6 +10,7 @@ import (
 	"github.com/planetscale/fivetran-source/lib"
 
 	fivetransdk "github.com/planetscale/fivetran-proto/go"
+	fivetransdk_v2 "github.com/planetscale/fivetran-sdk-grpc/go"
 )
 
 type fivetranSchemaBuilder struct {
@@ -110,7 +111,7 @@ func (s *fivetranSchemaBuilder) BuildResponse() (*fivetransdk.SchemaResponse, er
 }
 
 // Convert columnType to fivetran type
-func getFivetranDataType(mType string, treatTinyIntAsBoolean bool) (fivetransdk.DataType, *fivetransdk.DecimalParams) {
+func getFivetranDataType(mType string, treatTinyIntAsBoolean bool) (fivetransdk_v2.DataType, *fivetransdk.DecimalParams) {
 	mysqlType := strings.ToLower(mType)
 	if strings.HasPrefix(mysqlType, "tinyint") {
 		if treatTinyIntAsBoolean {
@@ -123,7 +124,7 @@ func getFivetranDataType(mType string, treatTinyIntAsBoolean bool) (fivetransdk.
 	// A BIT(n) type can have a length of 1 to 64
 	// we serialize these as a LONG : int64 value when serializing rows.
 	if strings.HasPrefix(mysqlType, "bit") {
-		return fivetransdk.DataType_LONG, nil
+		return fivetransdk_v2.DataType_INT, nil
 	}
 
 	if strings.HasPrefix(mysqlType, "varbinary") {
