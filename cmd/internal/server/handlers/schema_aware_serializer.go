@@ -8,50 +8,50 @@ import (
 
 	"github.com/pkg/errors"
 
-	fivetransdk "github.com/planetscale/fivetran-proto/go"
+	fivetransdk_v2 "github.com/planetscale/fivetran-sdk-grpc/go"
 	"vitess.io/vitess/go/sqltypes"
 )
 
-var fivetranOpMap = map[lib.Operation]fivetransdk.OpType{
-	lib.OpType_Insert: fivetransdk.OpType_UPSERT,
-	lib.OpType_Delete: fivetransdk.OpType_DELETE,
-	lib.OpType_Update: fivetransdk.OpType_UPDATE,
+var fivetranOpMap = map[lib.Operation]fivetransdk_v2.OpType{
+	lib.OpType_Insert: fivetransdk_v2.OpType_UPSERT,
+	lib.OpType_Delete: fivetransdk_v2.OpType_DELETE,
+	lib.OpType_Update: fivetransdk_v2.OpType_UPDATE,
 }
 
 type Serializer interface {
 	Info(string)
-	Log(fivetransdk.LogLevel, string) error
-	Record(*sqltypes.Result, *fivetransdk.SchemaSelection, *fivetransdk.TableSelection, lib.Operation) error
+	Log(fivetransdk_v2.LogLevel, string) error
+	Record(*sqltypes.Result, *fivetransdk_v2.SchemaSelection, *fivetransdk_v2.TableSelection, lib.Operation) error
 	State(lib.SyncState) error
-	Update(*lib.UpdatedRow, *fivetransdk.SchemaSelection, *fivetransdk.TableSelection) error
+	Update(*lib.UpdatedRow, *fivetransdk_v2.SchemaSelection, *fivetransdk_v2.TableSelection) error
 }
 
 type LogSender interface {
-	Send(*fivetransdk.UpdateResponse) error
+	Send(*fivetransdk_v2.UpdateResponse) error
 }
 
 type schemaAwareSerializer struct {
 	prefix                 string
 	sender                 LogSender
 	recordResponseKey      string
-	recordResponse         *fivetransdk.UpdateResponse
+	recordResponse         *fivetransdk_v2.UpdateResponse
 	serializeTinyIntAsBool bool
 	serializers            map[string]*recordSerializer
-	schemaList             *fivetransdk.SchemaList
+	schemaList             *fivetransdk_v2.SchemaList
 }
 
 type recordSerializer interface {
-	Serialize(before *sqltypes.Result, after *sqltypes.Result, opType lib.Operation) ([]map[string]*fivetransdk.ValueType, error)
+	Serialize(before *sqltypes.Result, after *sqltypes.Result, opType lib.Operation) ([]map[string]*fivetransdk_v2.ValueType, error)
 }
 
 type schemaAwareRecordSerializer struct {
 	columnSelection map[string]bool
 	primaryKeys     map[string]bool
-	columnWriters   map[string]func(value sqltypes.Value) (*fivetransdk.ValueType, error)
+	columnWriters   map[string]func(value sqltypes.Value) (*fivetransdk_v2.ValueType, error)
 }
 
-func (s *schemaAwareRecordSerializer) Serialize(before *sqltypes.Result, after *sqltypes.Result, opType lib.Operation) ([]map[string]*fivetransdk.ValueType, error) {
-	data := make([]map[string]*fivetransdk.ValueType, 0, len(after.Rows))
+func (s *schemaAwareRecordSerializer) Serialize(before *sqltypes.Result, after *sqltypes.Result, opType lib.Operation) ([]map[string]*fivetransdk_v2.ValueType, error) {
+	data := make([]map[string]*fivetransdk_v2.ValueType, 0, len(after.Rows))
 	columns := make([]string, 0, len(after.Fields))
 	for _, field := range after.Fields {
 		columns = append(columns, field.Name)
@@ -71,7 +71,7 @@ func (s *schemaAwareRecordSerializer) Serialize(before *sqltypes.Result, after *
 	}
 
 	for _, row := range after.Rows {
-		record := make(map[string]*fivetransdk.ValueType)
+		record := make(map[string]*fivetransdk_v2.ValueType)
 		afterMap = convertRowToMap(&row, columns)
 		for colName, val := range afterMap {
 			if selected := s.columnSelection[colName]; !selected {
@@ -126,7 +126,7 @@ func convertRowToMap(row *sqltypes.Row, columns []string) map[string]sqltypes.Va
 	return record
 }
 
-func NewSchemaAwareSerializer(sender LogSender, prefix string, serializeTinyIntAsBool bool, schemaList *fivetransdk.SchemaList) Serializer {
+func NewSchemaAwareSerializer(sender LogSender, prefix string, serializeTinyIntAsBool bool, schemaList *fivetransdk_v2.SchemaList) Serializer {
 	return &schemaAwareSerializer{
 		prefix:                 prefix,
 		sender:                 sender,
@@ -137,19 +137,19 @@ func NewSchemaAwareSerializer(sender LogSender, prefix string, serializeTinyIntA
 }
 
 func (l *schemaAwareSerializer) Info(msg string) {
-	l.Log(fivetransdk.LogLevel_INFO, msg)
+	l.Log(fivetransdk_v2.LogLevel_INFO, msg)
 }
 
 func (l *schemaAwareSerializer) State(sc lib.SyncState) error {
 	state, err := json.Marshal(sc)
 	if err != nil {
-		return l.Log(fivetransdk.LogLevel_SEVERE, fmt.Sprintf("marshal schema aware json serializer : %q", err))
+		return l.Log(fivetransdk_v2.LogLevel_SEVERE, fmt.Sprintf("marshal schema aware json serializer : %q", err))
 	}
-	return l.sender.Send(&fivetransdk.UpdateResponse{
-		Response: &fivetransdk.UpdateResponse_Operation{
-			Operation: &fivetransdk.Operation{
-				Op: &fivetransdk.Operation_Checkpoint{
-					Checkpoint: &fivetransdk.Checkpoint{
+	return l.sender.Send(&fivetransdk_v2.UpdateResponse{
+		Response: &fivetransdk_v2.UpdateResponse_Operation{
+			Operation: &fivetransdk_v2.Operation{
+				Op: &fivetransdk_v2.Operation_Checkpoint{
+					Checkpoint: &fivetransdk_v2.Checkpoint{
 						StateJson: string(state),
 					},
 				},
@@ -158,10 +158,10 @@ func (l *schemaAwareSerializer) State(sc lib.SyncState) error {
 	})
 }
 
-func (l *schemaAwareSerializer) Log(level fivetransdk.LogLevel, s string) error {
-	return l.sender.Send(&fivetransdk.UpdateResponse{
-		Response: &fivetransdk.UpdateResponse_LogEntry{
-			LogEntry: &fivetransdk.LogEntry{
+func (l *schemaAwareSerializer) Log(level fivetransdk_v2.LogLevel, s string) error {
+	return l.sender.Send(&fivetransdk_v2.UpdateResponse{
+		Response: &fivetransdk_v2.UpdateResponse_LogEntry{
+			LogEntry: &fivetransdk_v2.LogEntry{
 				Message: l.prefix + " " + s,
 				Level:   level,
 			},
@@ -172,28 +172,28 @@ func (l *schemaAwareSerializer) Log(level fivetransdk.LogLevel, s string) error 
 // Update is responsible for creating a record that has the following values :
 // 1. Primary keys of the row that was updated.
 // 2. All changed values between the Before & After fields.
-func (l *schemaAwareSerializer) Update(updatedRow *lib.UpdatedRow, schema *fivetransdk.SchemaSelection, table *fivetransdk.TableSelection) error {
+func (l *schemaAwareSerializer) Update(updatedRow *lib.UpdatedRow, schema *fivetransdk_v2.SchemaSelection, table *fivetransdk_v2.TableSelection) error {
 	return l.serializeResult(updatedRow.Before, updatedRow.After, schema, table, lib.OpType_Update)
 }
 
-func (l *schemaAwareSerializer) Record(result *sqltypes.Result, schema *fivetransdk.SchemaSelection, table *fivetransdk.TableSelection, opType lib.Operation) error {
+func (l *schemaAwareSerializer) Record(result *sqltypes.Result, schema *fivetransdk_v2.SchemaSelection, table *fivetransdk_v2.TableSelection, opType lib.Operation) error {
 	return l.serializeResult(nil, result, schema, table, opType)
 }
 
-func (l *schemaAwareSerializer) serializeResult(before *sqltypes.Result, after *sqltypes.Result, schema *fivetransdk.SchemaSelection, table *fivetransdk.TableSelection, opType lib.Operation) error {
+func (l *schemaAwareSerializer) serializeResult(before *sqltypes.Result, after *sqltypes.Result, schema *fivetransdk_v2.SchemaSelection, table *fivetransdk_v2.TableSelection, opType lib.Operation) error {
 	// make one response type per schema + table combination
 	// so we can avoid instantiating one object per table, and instead
 	// make one object per schema + table combo
 	if responseKey(schema, table) != l.recordResponseKey {
 		l.recordResponseKey = responseKey(schema, table)
-		l.recordResponse = &fivetransdk.UpdateResponse{
-			Response: &fivetransdk.UpdateResponse_Operation{
-				Operation: &fivetransdk.Operation{
-					Op: &fivetransdk.Operation_Record{
-						Record: &fivetransdk.Record{
+		l.recordResponse = &fivetransdk_v2.UpdateResponse{
+			Response: &fivetransdk_v2.UpdateResponse_Operation{
+				Operation: &fivetransdk_v2.Operation{
+					Op: &fivetransdk_v2.Operation_Record{
+						Record: &fivetransdk_v2.Record{
 							SchemaName: &schema.SchemaName,
 							TableName:  table.TableName,
-							Type:       fivetransdk.OpType_UPSERT,
+							Type:       fivetransdk_v2.OpType_UPSERT,
 							Data:       nil,
 						},
 					},
@@ -215,17 +215,17 @@ func (l *schemaAwareSerializer) serializeResult(before *sqltypes.Result, after *
 	rs := *l.serializers[l.recordResponseKey]
 	rows, err := rs.Serialize(before, after, opType)
 	if err != nil {
-		return l.Log(fivetransdk.LogLevel_SEVERE, fmt.Sprintf("record schema aware json serializer : %q", err))
+		return l.Log(fivetransdk_v2.LogLevel_SEVERE, fmt.Sprintf("record schema aware json serializer : %q", err))
 	}
 
 	for _, row := range rows {
-		operation, ok := l.recordResponse.Response.(*fivetransdk.UpdateResponse_Operation)
+		operation, ok := l.recordResponse.Response.(*fivetransdk_v2.UpdateResponse_Operation)
 		if !ok {
-			return l.Log(fivetransdk.LogLevel_SEVERE, fmt.Sprintf("recordResponse Operation is of type %T, not UpdateResponse_Operation", l.recordResponse.Response))
+			return l.Log(fivetransdk_v2.LogLevel_SEVERE, fmt.Sprintf("recordResponse Operation is of type %T, not UpdateResponse_Operation", l.recordResponse.Response))
 		}
-		operationRecord, ok := operation.Operation.Op.(*fivetransdk.Operation_Record)
+		operationRecord, ok := operation.Operation.Op.(*fivetransdk_v2.Operation_Record)
 		if !ok {
-			return l.Log(fivetransdk.LogLevel_SEVERE, fmt.Sprintf("recordResponse Operation.Op is of type %T not Operation_Record", operation.Operation.Op))
+			return l.Log(fivetransdk_v2.LogLevel_SEVERE, fmt.Sprintf("recordResponse Operation.Op is of type %T not Operation_Record", operation.Operation.Op))
 		}
 		operationRecord.Record.Data = row
 		operationRecord.Record.Type = fivetranOpMap[opType]
@@ -235,8 +235,8 @@ func (l *schemaAwareSerializer) serializeResult(before *sqltypes.Result, after *
 	return nil
 }
 
-func generateRecordSerializer(table *fivetransdk.TableSelection, selectedSchemaName string, schemaList *fivetransdk.SchemaList, serializeTinyIntAsBool bool) (recordSerializer, error) {
-	serializers := map[string]func(value sqltypes.Value) (*fivetransdk.ValueType, error){}
+func generateRecordSerializer(table *fivetransdk_v2.TableSelection, selectedSchemaName string, schemaList *fivetransdk_v2.SchemaList, serializeTinyIntAsBool bool) (recordSerializer, error) {
+	serializers := map[string]func(value sqltypes.Value) (*fivetransdk_v2.ValueType, error){}
 	var err error
 	pks := map[string]bool{}
 	for _, schema := range schemaList.Schemas {
@@ -244,7 +244,7 @@ func generateRecordSerializer(table *fivetransdk.TableSelection, selectedSchemaN
 			continue
 		}
 
-		var tableSchema *fivetransdk.Table
+		var tableSchema *fivetransdk_v2.Table
 		for _, tableWithSchema := range schema.Tables {
 			if tableWithSchema.Name == table.TableName {
 				tableSchema = tableWithSchema
@@ -283,6 +283,6 @@ func generateRecordSerializer(table *fivetransdk.TableSelection, selectedSchemaN
 	}, nil
 }
 
-func responseKey(schema *fivetransdk.SchemaSelection, table *fivetransdk.TableSelection) string {
+func responseKey(schema *fivetransdk_v2.SchemaSelection, table *fivetransdk_v2.TableSelection) string {
 	return schema.SchemaName + ":" + table.TableName
 }

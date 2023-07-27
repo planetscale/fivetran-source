@@ -6,7 +6,8 @@ import (
 	"log"
 	"net"
 
-	fivetransdk "github.com/planetscale/fivetran-proto/go"
+	fivetransdk_v2 "github.com/planetscale/fivetran-sdk-grpc/go"
+
 	"github.com/planetscale/fivetran-source/cmd/internal/server"
 	"google.golang.org/grpc"
 )
@@ -21,7 +22,7 @@ func main() {
 		log.Fatalf("failed to listen: %v", err)
 	}
 	s := grpc.NewServer()
-	fivetransdk.RegisterConnectorServer(s, ss)
+	fivetransdk_v2.RegisterConnectorServer(s, ss)
 	fmt.Printf("server listening at %v\n", lis.Addr())
 	if err := s.Serve(lis); err != nil {
 		log.Fatalf("failed to serve: %v", err)

@@ -3,17 +3,18 @@ package handlers
 import (
 	"fmt"
 
-	fivetransdk "github.com/planetscale/fivetran-proto/go"
+	fivetransdk_v2 "github.com/planetscale/fivetran-sdk-grpc/go"
+
 	"github.com/planetscale/fivetran-source/lib"
 	"vitess.io/vitess/go/sqltypes"
 )
 
 type testLogSender struct {
 	sendError    error
-	lastResponse *fivetransdk.UpdateResponse
+	lastResponse *fivetransdk_v2.UpdateResponse
 }
 
-func (l *testLogSender) Send(response *fivetransdk.UpdateResponse) error {
+func (l *testLogSender) Send(response *fivetransdk_v2.UpdateResponse) error {
 	l.lastResponse = response
 	return l.sendError
 }
@@ -25,16 +26,16 @@ func (testLogger) Info(s string) {
 	panic("implement me")
 }
 
-func (testLogger) Log(level fivetransdk.LogLevel, s string) error {
+func (testLogger) Log(level fivetransdk_v2.LogLevel, s string) error {
 	// TODO implement me
 	panic("implement me")
 }
 
-func (testLogger) Update(*lib.UpdatedRow, *fivetransdk.SchemaSelection, *fivetransdk.TableSelection) error {
+func (testLogger) Update(*lib.UpdatedRow, *fivetransdk_v2.SchemaSelection, *fivetransdk_v2.TableSelection) error {
 	return fmt.Errorf("%v is not implemented", "Update")
 }
 
-func (testLogger) Record(result *sqltypes.Result, selection *fivetransdk.SchemaSelection, selection2 *fivetransdk.TableSelection, operation lib.Operation) error {
+func (testLogger) Record(result *sqltypes.Result, selection *fivetransdk_v2.SchemaSelection, selection2 *fivetransdk_v2.TableSelection, operation lib.Operation) error {
 	// TODO implement me
 	panic("implement me")
 }

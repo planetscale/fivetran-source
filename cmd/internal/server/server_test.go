@@ -22,14 +22,15 @@ import (
 
 	"vitess.io/vitess/go/sqltypes"
 
-	fivetransdk "github.com/planetscale/fivetran-proto/go"
+	fivetransdk_v2 "github.com/planetscale/fivetran-sdk-grpc/go"
+
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
 )
 
-func server(ctx context.Context, clientConstructor edgeClientConstructor, mysqlConstructor mysqlClientConstructor) (fivetransdk.ConnectorClient, func()) {
+func server(ctx context.Context, clientConstructor edgeClientConstructor, mysqlConstructor mysqlClientConstructor) (fivetransdk_v2.ConnectorClient, func()) {
 	buffer := 101024 * 1024
 	lis := bufconn.Listen(buffer)
 
@@ -37,7 +38,7 @@ func server(ctx context.Context, clientConstructor edgeClientConstructor, mysqlC
 	cs := NewConnectorServer()
 	cs.(*connectorServer).clientConstructor = clientConstructor
 	cs.(*connectorServer).mysqlClientConstructor = mysqlConstructor
-	fivetransdk.RegisterConnectorServer(baseServer, cs)
+	fivetransdk_v2.RegisterConnectorServer(baseServer, cs)
 	go func() {
 		if err := baseServer.Serve(lis); err != nil {
 			log.Printf("error serving server: %v", err)
@@ -59,7 +60,7 @@ func server(ctx context.Context, clientConstructor edgeClientConstructor, mysqlC
 		baseServer.Stop()
 	}
 
-	client := fivetransdk.NewConnectorClient(conn)
+	client := fivetransdk_v2.NewConnectorClient(conn)
 
 	return client, closer
 }
@@ -70,7 +71,7 @@ func TestCanCallConfigurationForm(t *testing.T) {
 	client, closer := server(ctx, nil, nil)
 	defer closer()
 
-	out, err := client.ConfigurationForm(ctx, &fivetransdk.ConfigurationFormRequest{})
+	out, err := client.ConfigurationForm(ctx, &fivetransdk_v2.ConfigurationFormRequest{})
 	assert.NoError(t, err)
 	assert.NotNil(t, out)
 
@@ -83,7 +84,7 @@ func TestUpdateValidatesConfiguration(t *testing.T) {
 
 	client, closer := server(ctx, nil, nil)
 	defer closer()
-	out, err := client.Update(ctx, &fivetransdk.UpdateRequest{})
+	out, err := client.Update(ctx, &fivetransdk_v2.UpdateRequest{})
 	assert.NoError(t, err)
 	assert.NotNil(t, out)
 
@@ -96,7 +97,7 @@ func TestUpdateValidatesSchemaSelection(t *testing.T) {
 
 	client, closer := server(ctx, nil, nil)
 	defer closer()
-	out, err := client.Update(ctx, &fivetransdk.UpdateRequest{
+	out, err := client.Update(ctx, &fivetransdk_v2.UpdateRequest{
 		Configuration: map[string]string{
 			"host":     "earth.psdb",
 			"username": "phanatic",
@@ -133,17 +134,17 @@ func TestUpdateValidatesState(t *testing.T) {
 	client, closer := server(ctx, clientConstructor, mysqlClientConstructor)
 	defer closer()
 	invalidJSON := "{name: value"
-	out, err := client.Update(ctx, &fivetransdk.UpdateRequest{
+	out, err := client.Update(ctx, &fivetransdk_v2.UpdateRequest{
 		Configuration: map[string]string{
 			"host":     "earth.psdb",
 			"username": "phanatic",
 			"password": "password",
 			"database": "employees",
 		},
-		Selection: &fivetransdk.Selection{
-			Selection: &fivetransdk.Selection_WithSchema{
-				WithSchema: &fivetransdk.TablesWithSchema{
-					Schemas: []*fivetransdk.SchemaSelection{},
+		Selection: &fivetransdk_v2.Selection{
+			Selection: &fivetransdk_v2.Selection_WithSchema{
+				WithSchema: &fivetransdk_v2.TablesWithSchema{
+					Schemas: []*fivetransdk_v2.SchemaSelection{},
 				},
 			},
 		},
@@ -181,7 +182,7 @@ func TestUpdateReturnsInserts(t *testing.T) {
 	}
 	client, closer := server(ctx, clientConstructor, mysqlClientConstructor)
 	defer closer()
-	customerSelection := &fivetransdk.TableSelection{
+	customerSelection := &fivetransdk_v2.TableSelection{
 		Included:  true,
 		TableName: "customers",
 		Columns:   map[string]bool{},
@@ -191,13 +192,13 @@ func TestUpdateReturnsInserts(t *testing.T) {
 		customerSelection.Columns[f.Name] = true
 	}
 
-	selection := &fivetransdk.Selection_WithSchema{
-		WithSchema: &fivetransdk.TablesWithSchema{
-			Schemas: []*fivetransdk.SchemaSelection{
+	selection := &fivetransdk_v2.Selection_WithSchema{
+		WithSchema: &fivetransdk_v2.TablesWithSchema{
+			Schemas: []*fivetransdk_v2.SchemaSelection{
 				{
 					SchemaName: "SalesDB",
 					Included:   true,
-					Tables: []*fivetransdk.TableSelection{
+					Tables: []*fivetransdk_v2.TableSelection{
 						customerSelection,
 						{
 							Included:  false,
@@ -208,21 +209,21 @@ func TestUpdateReturnsInserts(t *testing.T) {
 			},
 		},
 	}
-	out, err := client.Update(ctx, &fivetransdk.UpdateRequest{
+	out, err := client.Update(ctx, &fivetransdk_v2.UpdateRequest{
 		Configuration: map[string]string{
 			"host":     "earth.psdb",
 			"username": "phanatic",
 			"password": "password",
 			"database": "employees",
 		},
-		Selection: &fivetransdk.Selection{
+		Selection: &fivetransdk_v2.Selection{
 			Selection: selection,
 		},
 	})
 	assert.NoError(t, err)
 	assert.NotNil(t, out)
 
-	rows := make([]*fivetransdk.UpdateResponse, 0, 3)
+	rows := make([]*fivetransdk_v2.UpdateResponse, 0, 3)
 	for {
 		resp, err := out.Recv()
 		if errors.Is(err, io.EOF) {
@@ -236,20 +237,20 @@ func TestUpdateReturnsInserts(t *testing.T) {
 	assert.Len(t, rows, 3)
 	operation := rows[0].GetOperation()
 	assert.NotNil(t, operation)
-	record, ok := operation.Op.(*fivetransdk.Operation_Record)
+	record, ok := operation.Op.(*fivetransdk_v2.Operation_Record)
 	assert.True(t, ok)
 	assert.NotNil(t, record)
 	assert.Equal(t, "SalesDB", *record.Record.SchemaName)
 	assert.Equal(t, "customers", record.Record.TableName)
 
-	assert.Equal(t, record.Record.Type, fivetransdk.OpType_UPSERT)
+	assert.Equal(t, record.Record.Type, fivetransdk_v2.OpType_UPSERT)
 	for _, field := range allTypesResult.Fields {
 		assert.NotEmpty(t, record.Record.Data[field.Name].Inner, "expected value for %q field", field.Name)
 		assert.NotNil(t, record.Record.Data[field.Name].Inner, "expected value for %q field", field.Name)
 	}
 
 	operation = rows[len(rows)-1].GetOperation()
-	checkpoint, ok := operation.Op.(*fivetransdk.Operation_Checkpoint)
+	checkpoint, ok := operation.Op.(*fivetransdk_v2.Operation_Checkpoint)
 	assert.True(t, ok)
 	assert.NotNil(t, checkpoint)
 
@@ -298,7 +299,7 @@ func TestUpdateReturnsDeletes(t *testing.T) {
 	}
 	client, closer := server(ctx, clientConstructor, mysqlClientConstructor)
 	defer closer()
-	customerSelection := &fivetransdk.TableSelection{
+	customerSelection := &fivetransdk_v2.TableSelection{
 		Included:  true,
 		TableName: "customers",
 		Columns:   map[string]bool{},
@@ -308,13 +309,13 @@ func TestUpdateReturnsDeletes(t *testing.T) {
 		customerSelection.Columns[f.Name] = true
 	}
 
-	selection := &fivetransdk.Selection_WithSchema{
-		WithSchema: &fivetransdk.TablesWithSchema{
-			Schemas: []*fivetransdk.SchemaSelection{
+	selection := &fivetransdk_v2.Selection_WithSchema{
+		WithSchema: &fivetransdk_v2.TablesWithSchema{
+			Schemas: []*fivetransdk_v2.SchemaSelection{
 				{
 					SchemaName: "SalesDB",
 					Included:   true,
-					Tables: []*fivetransdk.TableSelection{
+					Tables: []*fivetransdk_v2.TableSelection{
 						customerSelection,
 						{
 							Included:  false,
@@ -325,21 +326,21 @@ func TestUpdateReturnsDeletes(t *testing.T) {
 			},
 		},
 	}
-	out, err := client.Update(ctx, &fivetransdk.UpdateRequest{
+	out, err := client.Update(ctx, &fivetransdk_v2.UpdateRequest{
 		Configuration: map[string]string{
 			"host":     "earth.psdb",
 			"username": "phanatic",
 			"password": "password",
 			"database": "employees",
 		},
-		Selection: &fivetransdk.Selection{
+		Selection: &fivetransdk_v2.Selection{
 			Selection: selection,
 		},
 	})
 	assert.NoError(t, err)
 	assert.NotNil(t, out)
 
-	rows := make([]*fivetransdk.UpdateResponse, 0, 3)
+	rows := make([]*fivetransdk_v2.UpdateResponse, 0, 3)
 	for {
 		resp, err := out.Recv()
 		if errors.Is(err, io.EOF) {
@@ -353,19 +354,19 @@ func TestUpdateReturnsDeletes(t *testing.T) {
 	assert.Len(t, rows, 3)
 	operation := rows[0].GetOperation()
 	assert.NotNil(t, operation)
-	record, ok := operation.Op.(*fivetransdk.Operation_Record)
+	record, ok := operation.Op.(*fivetransdk_v2.Operation_Record)
 	assert.True(t, ok)
 	assert.NotNil(t, record)
 	assert.Equal(t, "SalesDB", *record.Record.SchemaName)
 	assert.Equal(t, "customers", record.Record.TableName)
 
-	assert.Equal(t, record.Record.Type, fivetransdk.OpType_DELETE)
+	assert.Equal(t, record.Record.Type, fivetransdk_v2.OpType_DELETE)
 	assert.Equal(t, 1, len(record.Record.Data))
 
-	assert.Equal(t, &fivetransdk.ValueType_Int{Int: 12}, record.Record.Data["Type_INT8"].Inner)
+	assert.Equal(t, &fivetransdk_v2.ValueType_Int{Int: 12}, record.Record.Data["Type_INT8"].Inner)
 
 	operation = rows[len(rows)-1].GetOperation()
-	checkpoint, ok := operation.Op.(*fivetransdk.Operation_Checkpoint)
+	checkpoint, ok := operation.Op.(*fivetransdk_v2.Operation_Checkpoint)
 	assert.True(t, ok)
 	assert.NotNil(t, checkpoint)
 
@@ -417,7 +418,7 @@ func TestUpdateReturnsUpdates(t *testing.T) {
 	}
 	client, closer := server(ctx, clientConstructor, mysqlClientConstructor)
 	defer closer()
-	customerSelection := &fivetransdk.TableSelection{
+	customerSelection := &fivetransdk_v2.TableSelection{
 		Included:  true,
 		TableName: "customers",
 		Columns:   map[string]bool{},
@@ -427,13 +428,13 @@ func TestUpdateReturnsUpdates(t *testing.T) {
 		customerSelection.Columns[f.Name] = true
 	}
 
-	selection := &fivetransdk.Selection_WithSchema{
-		WithSchema: &fivetransdk.TablesWithSchema{
-			Schemas: []*fivetransdk.SchemaSelection{
+	selection := &fivetransdk_v2.Selection_WithSchema{
+		WithSchema: &fivetransdk_v2.TablesWithSchema{
+			Schemas: []*fivetransdk_v2.SchemaSelection{
 				{
 					SchemaName: "SalesDB",
 					Included:   true,
-					Tables: []*fivetransdk.TableSelection{
+					Tables: []*fivetransdk_v2.TableSelection{
 						customerSelection,
 						{
 							Included:  false,
@@ -444,21 +445,21 @@ func TestUpdateReturnsUpdates(t *testing.T) {
 			},
 		},
 	}
-	out, err := client.Update(ctx, &fivetransdk.UpdateRequest{
+	out, err := client.Update(ctx, &fivetransdk_v2.UpdateRequest{
 		Configuration: map[string]string{
 			"host":     "earth.psdb",
 			"username": "phanatic",
 			"password": "password",
 			"database": "employees",
 		},
-		Selection: &fivetransdk.Selection{
+		Selection: &fivetransdk_v2.Selection{
 			Selection: selection,
 		},
 	})
 	assert.NoError(t, err)
 	assert.NotNil(t, out)
 
-	rows := make([]*fivetransdk.UpdateResponse, 0, 3)
+	rows := make([]*fivetransdk_v2.UpdateResponse, 0, 3)
 	for {
 		resp, err := out.Recv()
 		if errors.Is(err, io.EOF) {
@@ -472,27 +473,27 @@ func TestUpdateReturnsUpdates(t *testing.T) {
 	assert.Len(t, rows, 3)
 	operation := rows[0].GetOperation()
 	assert.NotNil(t, operation)
-	record, ok := operation.Op.(*fivetransdk.Operation_Record)
+	record, ok := operation.Op.(*fivetransdk_v2.Operation_Record)
 	assert.True(t, ok)
 	assert.NotNil(t, record)
 	assert.Equal(t, "SalesDB", *record.Record.SchemaName)
 	assert.Equal(t, "customers", record.Record.TableName)
 
-	assert.Equal(t, record.Record.Type, fivetransdk.OpType_UPDATE)
+	assert.Equal(t, record.Record.Type, fivetransdk_v2.OpType_UPDATE)
 	assert.Equal(t, 10, len(record.Record.Data))
 
-	assert.Equal(t, &fivetransdk.ValueType_Int{Int: 17}, record.Record.Data["Type_INT8"].Inner)
-	assert.Equal(t, &fivetransdk.ValueType_Int{Int: 17}, record.Record.Data["Type_UINT8"].Inner)
-	assert.Equal(t, &fivetransdk.ValueType_Int{Int: 17}, record.Record.Data["Type_INT16"].Inner)
-	assert.Equal(t, &fivetransdk.ValueType_Int{Int: 17}, record.Record.Data["Type_UINT16"].Inner)
-	assert.Equal(t, &fivetransdk.ValueType_Int{Int: 17}, record.Record.Data["Type_INT24"].Inner)
-	assert.Equal(t, &fivetransdk.ValueType_Int{Int: 17}, record.Record.Data["Type_INT32"].Inner)
-	assert.Equal(t, &fivetransdk.ValueType_String_{String_: "17"}, record.Record.Data["Type_UINT32"].Inner)
-	assert.Equal(t, &fivetransdk.ValueType_Long{Long: 17}, record.Record.Data["Type_INT64"].Inner)
-	assert.Equal(t, &fivetransdk.ValueType_Long{Long: 17}, record.Record.Data["Type_INT64"].Inner)
+	assert.Equal(t, &fivetransdk_v2.ValueType_Int{Int: 17}, record.Record.Data["Type_INT8"].Inner)
+	assert.Equal(t, &fivetransdk_v2.ValueType_Int{Int: 17}, record.Record.Data["Type_UINT8"].Inner)
+	assert.Equal(t, &fivetransdk_v2.ValueType_Int{Int: 17}, record.Record.Data["Type_INT16"].Inner)
+	assert.Equal(t, &fivetransdk_v2.ValueType_Int{Int: 17}, record.Record.Data["Type_UINT16"].Inner)
+	assert.Equal(t, &fivetransdk_v2.ValueType_Int{Int: 17}, record.Record.Data["Type_INT24"].Inner)
+	assert.Equal(t, &fivetransdk_v2.ValueType_Int{Int: 17}, record.Record.Data["Type_INT32"].Inner)
+	assert.Equal(t, &fivetransdk_v2.ValueType_String_{String_: "17"}, record.Record.Data["Type_UINT32"].Inner)
+	assert.Equal(t, &fivetransdk_v2.ValueType_Long{Long: 17}, record.Record.Data["Type_INT64"].Inner)
+	assert.Equal(t, &fivetransdk_v2.ValueType_Long{Long: 17}, record.Record.Data["Type_INT64"].Inner)
 
 	operation = rows[len(rows)-1].GetOperation()
-	checkpoint, ok := operation.Op.(*fivetransdk.Operation_Checkpoint)
+	checkpoint, ok := operation.Op.(*fivetransdk_v2.Operation_Checkpoint)
 	assert.True(t, ok)
 	assert.NotNil(t, checkpoint)
 
@@ -662,21 +663,21 @@ func TestUpdateReturnsState(t *testing.T) {
 	}
 	client, closer := server(ctx, clientConstructor, mysqlClientConstructor)
 	defer closer()
-	out, err := client.Update(ctx, &fivetransdk.UpdateRequest{
+	out, err := client.Update(ctx, &fivetransdk_v2.UpdateRequest{
 		Configuration: map[string]string{
 			"host":     "earth.psdb",
 			"username": "phanatic",
 			"password": "password",
 			"database": "employees",
 		},
-		Selection: &fivetransdk.Selection{
-			Selection: &fivetransdk.Selection_WithSchema{
-				WithSchema: &fivetransdk.TablesWithSchema{
-					Schemas: []*fivetransdk.SchemaSelection{
+		Selection: &fivetransdk_v2.Selection{
+			Selection: &fivetransdk_v2.Selection_WithSchema{
+				WithSchema: &fivetransdk_v2.TablesWithSchema{
+					Schemas: []*fivetransdk_v2.SchemaSelection{
 						{
 							SchemaName: "SalesDB",
 							Included:   true,
-							Tables: []*fivetransdk.TableSelection{
+							Tables: []*fivetransdk_v2.TableSelection{
 								{
 									Included:  true,
 									TableName: "customers",
@@ -695,7 +696,7 @@ func TestUpdateReturnsState(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, out)
 
-	rows := make([]*fivetransdk.UpdateResponse, 0, 2)
+	rows := make([]*fivetransdk_v2.UpdateResponse, 0, 2)
 	for {
 		resp, err := out.Recv()
 		if errors.Is(err, io.EOF) {
@@ -710,7 +711,7 @@ func TestUpdateReturnsState(t *testing.T) {
 	assert.Len(t, rows, 2)
 	operation := rows[0].GetOperation()
 	assert.NotNil(t, operation)
-	checkpoint, ok := operation.Op.(*fivetransdk.Operation_Checkpoint)
+	checkpoint, ok := operation.Op.(*fivetransdk_v2.Operation_Checkpoint)
 	require.True(t, ok)
 	assert.NotNil(t, checkpoint)
 	assert.Equal(t, "{\"keyspaces\":{\"SalesDB\":{\"streams\":{\"SalesDB:customers\":{\"shards\":{\"-\":{\"cursor\":\"GhRUSElTX0lTX0FfVkFMSURfR1RJRA==\"}}}}}}}", checkpoint.Checkpoint.StateJson)
@@ -727,7 +728,7 @@ func TestCheckConnectionReturnsSuccess(t *testing.T) {
 	}
 	client, closer := server(ctx, clientConstructor, nil)
 	defer closer()
-	resp, err := client.Test(ctx, &fivetransdk.TestRequest{
+	resp, err := client.Test(ctx, &fivetransdk_v2.TestRequest{
 		Name: handlers.CheckConnectionTestName,
 		Configuration: map[string]string{
 			"host":     "earth.psdb",
@@ -738,7 +739,7 @@ func TestCheckConnectionReturnsSuccess(t *testing.T) {
 	})
 
 	assert.NoError(t, err)
-	success, ok := resp.Response.(*fivetransdk.TestResponse_Success)
+	success, ok := resp.Response.(*fivetransdk_v2.TestResponse_Success)
 	assert.True(t, ok, "response should be a TestResponse_Success")
 	assert.True(t, success.Success, "response should be a success status")
 }
@@ -747,7 +748,7 @@ func TestCheckConnectionReturnsErrorIfNotEdgePassword(t *testing.T) {
 	ctx := context.Background()
 	client, closer := server(ctx, nil, nil)
 	defer closer()
-	resp, err := client.Test(ctx, &fivetransdk.TestRequest{
+	resp, err := client.Test(ctx, &fivetransdk_v2.TestRequest{
 		Name: handlers.CheckConnectionTestName,
 		Configuration: map[string]string{
 			"host":     "earth.psdb",
@@ -758,7 +759,7 @@ func TestCheckConnectionReturnsErrorIfNotEdgePassword(t *testing.T) {
 	})
 
 	assert.NoError(t, err)
-	fail, ok := resp.Response.(*fivetransdk.TestResponse_Failure)
+	fail, ok := resp.Response.(*fivetransdk_v2.TestResponse_Failure)
 	assert.True(t, ok, "response should be a TestResponse_Failure")
 	assert.Equal(t, fail.Failure, "Unable to initialize Connect Session: This password is not connect-enabled, please ensure that your organization is enrolled in the Connect beta.")
 }
@@ -774,7 +775,7 @@ func TestCheckConnectionReturnsErrorIfCheckFails(t *testing.T) {
 	}
 	client, closer := server(ctx, clientConstructor, nil)
 	defer closer()
-	resp, err := client.Test(ctx, &fivetransdk.TestRequest{
+	resp, err := client.Test(ctx, &fivetransdk_v2.TestRequest{
 		Name: handlers.CheckConnectionTestName,
 		Configuration: map[string]string{
 			"host":     "earth.psdb",
@@ -785,7 +786,7 @@ func TestCheckConnectionReturnsErrorIfCheckFails(t *testing.T) {
 	})
 
 	assert.NoError(t, err)
-	fail, ok := resp.Response.(*fivetransdk.TestResponse_Failure)
+	fail, ok := resp.Response.(*fivetransdk_v2.TestResponse_Failure)
 	assert.True(t, ok, "response should be a TestResponse_Failure")
 	assert.Equal(t, fail.Failure, "unable to connect to PlanetScale Database : employees")
 }
@@ -801,7 +802,7 @@ func TestSchemaChecksCredentials(t *testing.T) {
 	}
 	client, closer := server(ctx, clientConstructor, nil)
 	defer closer()
-	_, err := client.Schema(ctx, &fivetransdk.SchemaRequest{
+	_, err := client.Schema(ctx, &fivetransdk_v2.SchemaRequest{
 		Configuration: map[string]string{
 			"host":     "earth.psdb",
 			"username": "phanatic",

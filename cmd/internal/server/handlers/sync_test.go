@@ -4,20 +4,20 @@ import (
 	"context"
 	"testing"
 
+	fivetransdk_v2 "github.com/planetscale/fivetran-sdk-grpc/go"
 	"github.com/planetscale/fivetran-source/lib"
 
 	psdbconnect "github.com/planetscale/airbyte-source/proto/psdbconnect/v1alpha1"
-	fivetransdk "github.com/planetscale/fivetran-proto/go"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestCallsReadWithSelectedSchema(t *testing.T) {
 	psc := &lib.PlanetScaleSource{}
 	tl := &testLogger{}
-	schema := fivetransdk.SchemaSelection{
+	schema := fivetransdk_v2.SchemaSelection{
 		SchemaName: "SalesDB",
 		Included:   true,
-		Tables: []*fivetransdk.TableSelection{
+		Tables: []*fivetransdk_v2.TableSelection{
 			{
 				Included:  true,
 				TableName: "customers",
@@ -29,9 +29,9 @@ func TestCallsReadWithSelectedSchema(t *testing.T) {
 		},
 	}
 	sync := Sync{}
-	schemaSelection := &fivetransdk.Selection_WithSchema{
-		WithSchema: &fivetransdk.TablesWithSchema{
-			Schemas: []*fivetransdk.SchemaSelection{
+	schemaSelection := &fivetransdk_v2.Selection_WithSchema{
+		WithSchema: &fivetransdk_v2.TablesWithSchema{
+			Schemas: []*fivetransdk_v2.SchemaSelection{
 				&schema,
 			},
 		},
