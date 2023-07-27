@@ -7,7 +7,8 @@ import (
 	"github.com/planetscale/fivetran-source/lib"
 
 	psdbconnect "github.com/planetscale/airbyte-source/proto/psdbconnect/v1alpha1"
-	fivetransdk "github.com/planetscale/fivetran-proto/go"
+	fivetransdk_v2 "github.com/planetscale/fivetran-sdk-grpc/go"
+
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"vitess.io/vitess/go/sqltypes"
@@ -15,7 +16,7 @@ import (
 
 type Sync struct{}
 
-func (s *Sync) Handle(psc *lib.PlanetScaleSource, db *lib.ConnectClient, logger Serializer, state *lib.SyncState, schema *fivetransdk.Selection_WithSchema) error {
+func (s *Sync) Handle(psc *lib.PlanetScaleSource, db *lib.ConnectClient, logger Serializer, state *lib.SyncState, schema *fivetransdk_v2.Selection_WithSchema) error {
 	if state == nil {
 		return status.Error(codes.Internal, "syncState cannot be nil")
 	}
@@ -69,8 +70,8 @@ func (s *Sync) Handle(psc *lib.PlanetScaleSource, db *lib.ConnectClient, logger 
 	return logger.State(*state)
 }
 
-func includedKeyspaces(schema *fivetransdk.Selection_WithSchema) []*fivetransdk.SchemaSelection {
-	var ks []*fivetransdk.SchemaSelection
+func includedKeyspaces(schema *fivetransdk_v2.Selection_WithSchema) []*fivetransdk_v2.SchemaSelection {
+	var ks []*fivetransdk_v2.SchemaSelection
 	for _, keyspace := range schema.WithSchema.Schemas {
 		if keyspace.Included {
 			ks = append(ks, keyspace)
@@ -80,8 +81,8 @@ func includedKeyspaces(schema *fivetransdk.Selection_WithSchema) []*fivetransdk.
 	return ks
 }
 
-func includedTables(keyspace *fivetransdk.SchemaSelection) []*fivetransdk.TableSelection {
-	var ts []*fivetransdk.TableSelection
+func includedTables(keyspace *fivetransdk_v2.SchemaSelection) []*fivetransdk_v2.TableSelection {
+	var ts []*fivetransdk_v2.TableSelection
 	for _, table := range keyspace.Tables {
 		if table.Included {
 			ts = append(ts, table)
@@ -91,7 +92,7 @@ func includedTables(keyspace *fivetransdk.SchemaSelection) []*fivetransdk.TableS
 	return ts
 }
 
-func includedColumns(table *fivetransdk.TableSelection) []string {
+func includedColumns(table *fivetransdk_v2.TableSelection) []string {
 	var columns []string
 	for column, included := range table.Columns {
 		if included {
