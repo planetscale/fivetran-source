@@ -9,13 +9,12 @@ import (
 
 	"github.com/planetscale/fivetran-source/lib"
 
-	fivetransdk "github.com/planetscale/fivetran-proto/go"
 	fivetransdk_v2 "github.com/planetscale/fivetran-sdk-grpc/go"
 )
 
 type fivetranSchemaBuilder struct {
-	schemas               map[string]*fivetransdk.Schema
-	tables                map[string]map[string]*fivetransdk.Table
+	schemas               map[string]*fivetransdk_v2.Schema
+	tables                map[string]map[string]*fivetransdk_v2.Table
 	treatTinyIntAsBoolean bool
 }
 
@@ -26,12 +25,12 @@ func NewSchemaBuilder(treatTinyIntAsBoolean bool) lib.SchemaBuilder {
 }
 
 func (s *fivetranSchemaBuilder) OnKeyspace(keyspaceName string) {
-	schema := &fivetransdk.Schema{
+	schema := &fivetransdk_v2.Schema{
 		Name:   keyspaceName,
-		Tables: []*fivetransdk.Table{},
+		Tables: []*fivetransdk_v2.Table{},
 	}
 	if s.schemas == nil {
-		s.schemas = map[string]*fivetransdk.Schema{}
+		s.schemas = map[string]*fivetransdk_v2.Schema{}
 	}
 
 	s.schemas[keyspaceName] = schema
@@ -41,12 +40,12 @@ func (s *fivetranSchemaBuilder) OnTable(keyspaceName, tableName string) {
 	s.getOrCreateTable(keyspaceName, tableName)
 }
 
-func (s *fivetranSchemaBuilder) getOrCreateTable(keyspaceName string, tableName string) *fivetransdk.Table {
+func (s *fivetranSchemaBuilder) getOrCreateTable(keyspaceName string, tableName string) *fivetransdk_v2.Table {
 	_, ok := s.schemas[keyspaceName]
 	if !ok {
 		s.OnKeyspace(keyspaceName)
 	}
-	var table *fivetransdk.Table
+	var table *fivetransdk_v2.Table
 	schema, ok := s.schemas[keyspaceName]
 	if !ok {
 		panic("schema not found " + keyspaceName)
@@ -58,19 +57,19 @@ func (s *fivetranSchemaBuilder) getOrCreateTable(keyspaceName string, tableName 
 	}
 
 	if table == nil {
-		table = &fivetransdk.Table{
+		table = &fivetransdk_v2.Table{
 			Name:    tableName,
-			Columns: []*fivetransdk.Column{},
+			Columns: []*fivetransdk_v2.Column{},
 		}
 		schema.Tables = append(schema.Tables, table)
 	}
 
 	if s.tables == nil {
-		s.tables = map[string]map[string]*fivetransdk.Table{}
+		s.tables = map[string]map[string]*fivetransdk_v2.Table{}
 	}
 
 	if s.tables[keyspaceName] == nil {
-		s.tables[keyspaceName] = map[string]*fivetransdk.Table{}
+		s.tables[keyspaceName] = map[string]*fivetransdk_v2.Table{}
 	}
 
 	s.tables[keyspaceName][tableName] = table
@@ -80,12 +79,12 @@ func (s *fivetranSchemaBuilder) getOrCreateTable(keyspaceName string, tableName 
 func (s *fivetranSchemaBuilder) OnColumns(keyspaceName, tableName string, columns []lib.MysqlColumn) {
 	table := s.getOrCreateTable(keyspaceName, tableName)
 	if table.Columns == nil {
-		table.Columns = []*fivetransdk.Column{}
+		table.Columns = []*fivetransdk_v2.Column{}
 	}
 
 	for _, column := range columns {
 		dataType, decimalParams := getFivetranDataType(column.Type, s.treatTinyIntAsBoolean)
-		table.Columns = append(table.Columns, &fivetransdk.Column{
+		table.Columns = append(table.Columns, &fivetransdk_v2.Column{
 			Name:       column.Name,
 			Type:       dataType,
 			Decimal:    decimalParams,
@@ -94,16 +93,16 @@ func (s *fivetranSchemaBuilder) OnColumns(keyspaceName, tableName string, column
 	}
 }
 
-func (s *fivetranSchemaBuilder) BuildResponse() (*fivetransdk.SchemaResponse, error) {
-	responseSchema := &fivetransdk.SchemaResponse_WithSchema{
-		WithSchema: &fivetransdk.SchemaList{},
+func (s *fivetranSchemaBuilder) BuildResponse() (*fivetransdk_v2.SchemaResponse, error) {
+	responseSchema := &fivetransdk_v2.SchemaResponse_WithSchema{
+		WithSchema: &fivetransdk_v2.SchemaList{},
 	}
 
 	for _, schema := range s.schemas {
 		responseSchema.WithSchema.Schemas = append(responseSchema.WithSchema.Schemas, schema)
 	}
 
-	resp := &fivetransdk.SchemaResponse{
+	resp := &fivetransdk_v2.SchemaResponse{
 		Response: responseSchema,
 	}
 
@@ -111,14 +110,14 @@ func (s *fivetranSchemaBuilder) BuildResponse() (*fivetransdk.SchemaResponse, er
 }
 
 // Convert columnType to fivetran type
-func getFivetranDataType(mType string, treatTinyIntAsBoolean bool) (fivetransdk_v2.DataType, *fivetransdk.DecimalParams) {
+func getFivetranDataType(mType string, treatTinyIntAsBoolean bool) (fivetransdk_v2.DataType, *fivetransdk_v2.DecimalParams) {
 	mysqlType := strings.ToLower(mType)
 	if strings.HasPrefix(mysqlType, "tinyint") {
 		if treatTinyIntAsBoolean {
-			return fivetransdk.DataType_BOOLEAN, nil
+			return fivetransdk_v2.DataType_BOOLEAN, nil
 		}
 
-		return fivetransdk.DataType_INT, nil
+		return fivetransdk_v2.DataType_INT, nil
 	}
 
 	// A BIT(n) type can have a length of 1 to 64
@@ -128,54 +127,54 @@ func getFivetranDataType(mType string, treatTinyIntAsBoolean bool) (fivetransdk_
 	}
 
 	if strings.HasPrefix(mysqlType, "varbinary") {
-		return fivetransdk.DataType_BINARY, nil
+		return fivetransdk_v2.DataType_BINARY, nil
 	}
 
 	if strings.HasPrefix(mysqlType, "int") {
 		if strings.Contains(mysqlType, "unsigned") {
-			return fivetransdk.DataType_LONG, nil
+			return fivetransdk_v2.DataType_LONG, nil
 		}
-		return fivetransdk.DataType_INT, nil
+		return fivetransdk_v2.DataType_INT, nil
 	}
 
 	if strings.HasPrefix(mysqlType, "smallint") {
-		return fivetransdk.DataType_INT, nil
+		return fivetransdk_v2.DataType_INT, nil
 	}
 
 	if strings.HasPrefix(mysqlType, "bigint") {
-		return fivetransdk.DataType_LONG, nil
+		return fivetransdk_v2.DataType_LONG, nil
 	}
 
 	if strings.HasPrefix(mysqlType, "decimal") {
-		return fivetransdk.DataType_DECIMAL, getDecimalParams(mysqlType)
+		return fivetransdk_v2.DataType_DECIMAL, getDecimalParams(mysqlType)
 	}
 
 	if strings.HasPrefix(mysqlType, "double") ||
 		strings.HasPrefix(mysqlType, "float") {
-		return fivetransdk.DataType_DOUBLE, nil
+		return fivetransdk_v2.DataType_DOUBLE, nil
 	}
 
 	if strings.HasPrefix(mysqlType, "timestamp") {
-		return fivetransdk.DataType_UTC_DATETIME, nil
+		return fivetransdk_v2.DataType_UTC_DATETIME, nil
 	}
 
 	if strings.HasPrefix(mysqlType, "time") {
-		return fivetransdk.DataType_STRING, nil
+		return fivetransdk_v2.DataType_STRING, nil
 	}
 
 	if strings.HasPrefix(mysqlType, "datetime") {
-		return fivetransdk.DataType_NAIVE_DATETIME, nil
+		return fivetransdk_v2.DataType_NAIVE_DATETIME, nil
 	}
 
 	if strings.HasPrefix(mysqlType, "year") {
-		return fivetransdk.DataType_INT, nil
+		return fivetransdk_v2.DataType_INT, nil
 	}
 
 	if strings.HasPrefix(mysqlType, "varchar") ||
 		strings.HasPrefix(mysqlType, "text") ||
 		strings.HasPrefix(mysqlType, "enum") ||
 		strings.HasPrefix(mysqlType, "char") {
-		return fivetransdk.DataType_STRING, nil
+		return fivetransdk_v2.DataType_STRING, nil
 	}
 
 	if strings.HasPrefix(mysqlType, "set") ||
@@ -187,42 +186,42 @@ func getFivetranDataType(mType string, treatTinyIntAsBoolean bool) (fivetransdk_
 		strings.HasPrefix(mysqlType, "point") ||
 		strings.HasPrefix(mysqlType, "linestring") ||
 		strings.HasPrefix(mysqlType, "multilinestring") {
-		return fivetransdk.DataType_JSON, nil
+		return fivetransdk_v2.DataType_JSON, nil
 	}
 
 	switch mysqlType {
 	case "date":
-		return fivetransdk.DataType_NAIVE_DATE, nil
+		return fivetransdk_v2.DataType_NAIVE_DATE, nil
 	case "json":
-		return fivetransdk.DataType_JSON, nil
+		return fivetransdk_v2.DataType_JSON, nil
 	case "tinytext":
-		return fivetransdk.DataType_STRING, nil
+		return fivetransdk_v2.DataType_STRING, nil
 	case "mediumtext":
-		return fivetransdk.DataType_STRING, nil
+		return fivetransdk_v2.DataType_STRING, nil
 	case "longtext":
-		return fivetransdk.DataType_STRING, nil
+		return fivetransdk_v2.DataType_STRING, nil
 	case "binary":
-		return fivetransdk.DataType_BINARY, nil
+		return fivetransdk_v2.DataType_BINARY, nil
 	case "blob":
-		return fivetransdk.DataType_BINARY, nil
+		return fivetransdk_v2.DataType_BINARY, nil
 	case "longblob":
-		return fivetransdk.DataType_BINARY, nil
+		return fivetransdk_v2.DataType_BINARY, nil
 	case "mediumblob":
-		return fivetransdk.DataType_BINARY, nil
+		return fivetransdk_v2.DataType_BINARY, nil
 	case "tinyblob":
-		return fivetransdk.DataType_BINARY, nil
+		return fivetransdk_v2.DataType_BINARY, nil
 	case "bit":
-		return fivetransdk.DataType_BOOLEAN, nil
+		return fivetransdk_v2.DataType_BOOLEAN, nil
 	case "time":
-		return fivetransdk.DataType_STRING, nil
+		return fivetransdk_v2.DataType_STRING, nil
 	default:
-		return fivetransdk.DataType_STRING, nil
+		return fivetransdk_v2.DataType_STRING, nil
 	}
 }
 
 // getDecimalParams parses the mysql type declaration for a column
 // and returns a type compatible with fivetran's SDK
-func getDecimalParams(mysqlType string) *fivetransdk.DecimalParams {
+func getDecimalParams(mysqlType string) *fivetransdk_v2.DecimalParams {
 	// From : https://dev.mysql.com/doc/refman/5.7/en/precision-math-decimal-characteristics.html
 	// The declaration syntax for a DECIMAL column is DECIMAL(M,D). The ranges of values for the arguments are as follows:
 	// M is the maximum number of digits (the precision). It has a range of 1 to 65.
@@ -238,7 +237,7 @@ func getDecimalParams(mysqlType string) *fivetransdk.DecimalParams {
 	if len(matches) == 0 {
 		fmt.Println("returning defaults")
 		// return defaults
-		return &fivetransdk.DecimalParams{
+		return &fivetransdk_v2.DecimalParams{
 			Precision: m,
 			Scale:     d,
 		}
@@ -256,7 +255,7 @@ func getDecimalParams(mysqlType string) *fivetransdk.DecimalParams {
 	if err == nil && mi <= math.MaxUint32 {
 		m = uint32(mi)
 	}
-	return &fivetransdk.DecimalParams{
+	return &fivetransdk_v2.DecimalParams{
 		Precision: m,
 		Scale:     d,
 	}
