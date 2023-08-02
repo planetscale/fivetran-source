@@ -198,6 +198,8 @@ func getFivetranDataType(mType string, treatTinyIntAsBoolean bool) (fivetransdk_
 		return fivetransdk_v2.DataType_STRING, nil
 	case "mediumtext":
 		return fivetransdk_v2.DataType_STRING, nil
+	case "mediumint":
+		return fivetransdk_v2.DataType_INT, nil
 	case "longtext":
 		return fivetransdk_v2.DataType_STRING, nil
 	case "binary":
