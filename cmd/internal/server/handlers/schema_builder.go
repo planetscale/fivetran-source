@@ -120,10 +120,10 @@ func getFivetranDataType(mType string, treatTinyIntAsBoolean bool) (fivetransdk_
 		return fivetransdk_v2.DataType_INT, nil
 	}
 
-	// A BIT(n) type can have a length of 1 to 64
-	// we serialize these as a LONG : int64 value when serializing rows.
+	// Fivetran maps BIT to BOOLEAN
+	// See https://fivetran.com/docs/databases/mysql
 	if strings.HasPrefix(mysqlType, "bit") {
-		return fivetransdk_v2.DataType_INT, nil
+		return fivetransdk_v2.DataType_BOOLEAN, nil
 	}
 
 	if strings.HasPrefix(mysqlType, "varbinary") {
@@ -233,7 +233,6 @@ func getDecimalParams(mysqlType string) *fivetransdk_v2.DecimalParams {
 	precision := strings.Replace(strings.ToUpper(mysqlType), "DECIMAL", "", 1)
 	r := regexp.MustCompile(`[-]?\d[\d,]*[\d{2}]*`)
 	matches := r.FindAllString(precision, -1)
-	fmt.Printf("matches is %s\n", matches)
 	if len(matches) == 0 {
 		fmt.Println("returning defaults")
 		// return defaults
