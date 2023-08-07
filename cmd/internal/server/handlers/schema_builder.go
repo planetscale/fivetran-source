@@ -113,7 +113,7 @@ func (s *fivetranSchemaBuilder) BuildResponse() (*fivetransdk.SchemaResponse, er
 func getFivetranDataType(mType string, treatTinyIntAsBoolean bool) (fivetransdk.DataType, *fivetransdk.DecimalParams) {
 	mysqlType := strings.ToLower(mType)
 	if strings.HasPrefix(mysqlType, "tinyint") {
-		if treatTinyIntAsBoolean {
+		if treatTinyIntAsBoolean && mysqlType == "tinyint(1)" {
 			return fivetransdk.DataType_BOOLEAN, nil
 		}
 
