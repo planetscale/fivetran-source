@@ -11,7 +11,7 @@ import (
 
 	"github.com/pkg/errors"
 
-	fivetransdk "github.com/planetscale/fivetran-proto/go"
+	fivetransdk "github.com/planetscale/fivetran-sdk-grpc/go"
 	"vitess.io/vitess/go/sqltypes"
 )
 
