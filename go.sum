@@ -602,8 +602,6 @@ github.com/pkg/errors v0.9.1/go.mod h1:bwawxfHBFNV+L2hUp1rHADufV3IMtnDRdf1r5NINE
 github.com/pkg/profile v1.2.1/go.mod h1:hJw3o1OdXxsrSjjVksARp5W95eeEaEfptyVZyv6JUPA=
 github.com/planetscale/airbyte-source v1.16.0 h1:edgR8Vr99XQmCNaInHaAL+xN1a0+d3DjeEBerSUfQv8=
 github.com/planetscale/airbyte-source v1.16.0/go.mod h1:I4jdxCyHAJ/XmJCF7hQOZM2mvUK5FM7hKkUya5IVFDc=
-github.com/planetscale/fivetran-proto v0.0.0-20230411134822-1faa2911e96e h1:kUElX7sXr5XhW2mdhiMBz7blquYY8qlFfU64UiS2Z/o=
-github.com/planetscale/fivetran-proto v0.0.0-20230411134822-1faa2911e96e/go.mod h1:jP6PXMux7WNsn+ylpKab+xIEQ6wstSnBA2KQDdkCrYc=
 github.com/planetscale/fivetran-sdk-grpc v0.0.0-20230726214605-855c05dcd065 h1:JVG4BXVpCJ3thOOfwC8rjpYXwURczxTTjfWDmcnncv0=
 github.com/planetscale/fivetran-sdk-grpc v0.0.0-20230726214605-855c05dcd065/go.mod h1:HE+UELC4d/tqQ5yBJ8LRFuTEwrvzMEBBAppsgvvQ6l0=
 github.com/planetscale/pargzip v0.0.0-20201116224723-90c7fc03ea8a h1:y0OpQ4+5tKxeh9+H+2cVgASl9yMZYV9CILinKOiKafA=

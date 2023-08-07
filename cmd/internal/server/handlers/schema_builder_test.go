@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"testing"
 
-	fivetransdk_v2 "github.com/planetscale/fivetran-sdk-grpc/go"
 	"github.com/planetscale/fivetran-source/lib"
 
+	fivetransdk "github.com/planetscale/fivetran-sdk-grpc/go"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -27,7 +27,7 @@ func TestCanBuildSchema(t *testing.T) {
 	})
 	resp, err := sb.(*fivetranSchemaBuilder).BuildResponse()
 	assert.NoError(t, err)
-	schemaResponse, ok := resp.Response.(*fivetransdk_v2.SchemaResponse_WithSchema)
+	schemaResponse, ok := resp.Response.(*fivetransdk.SchemaResponse_WithSchema)
 	assert.True(t, ok)
 	assert.NotNil(t, schemaResponse)
 	assert.Len(t, schemaResponse.WithSchema.Schemas, 1)
@@ -44,81 +44,81 @@ func TestCanBuildSchema(t *testing.T) {
 func TestSchema_CanPickRightFivetranType(t *testing.T) {
 	tests := []struct {
 		MysqlType             string
-		FivetranType          fivetransdk_v2.DataType
+		FivetranType          fivetransdk.DataType
 		TreatTinyIntAsBoolean bool
-		DecimalParams         *fivetransdk_v2.DecimalParams
+		DecimalParams         *fivetransdk.DecimalParams
 	}{
 		{
 			MysqlType:    "int(32)",
-			FivetranType: fivetransdk_v2.DataType_INT,
+			FivetranType: fivetransdk.DataType_INT,
 		},
 		{
 			MysqlType:    "int unsigned",
-			FivetranType: fivetransdk_v2.DataType_LONG,
+			FivetranType: fivetransdk.DataType_LONG,
 		},
 		{
 			MysqlType:             "tinyint(1)",
-			FivetranType:          fivetransdk_v2.DataType_BOOLEAN,
+			FivetranType:          fivetransdk.DataType_BOOLEAN,
 			TreatTinyIntAsBoolean: true,
 		},
 		{
 			MysqlType:             "tinyint(1)",
-			FivetranType:          fivetransdk_v2.DataType_INT,
+			FivetranType:          fivetransdk.DataType_INT,
 			TreatTinyIntAsBoolean: false,
 		},
 		{
 			MysqlType:             "timestamp",
-			FivetranType:          fivetransdk_v2.DataType_UTC_DATETIME,
+			FivetranType:          fivetransdk.DataType_UTC_DATETIME,
 			TreatTinyIntAsBoolean: true,
 		},
 		{
 			MysqlType:             "time",
-			FivetranType:          fivetransdk_v2.DataType_STRING,
+			FivetranType:          fivetransdk.DataType_STRING,
 			TreatTinyIntAsBoolean: true,
 		},
 		{
 			MysqlType:    "bigint(16)",
-			FivetranType: fivetransdk_v2.DataType_LONG,
+			FivetranType: fivetransdk.DataType_LONG,
 		},
 		{
 			MysqlType:    "bigint unsigned",
-			FivetranType: fivetransdk_v2.DataType_LONG,
+			FivetranType: fivetransdk.DataType_LONG,
 		},
 		{
 			MysqlType:    "bigint zerofill",
-			FivetranType: fivetransdk_v2.DataType_LONG,
+			FivetranType: fivetransdk.DataType_LONG,
 		},
 		{
 			MysqlType:    "datetime(3)",
-			FivetranType: fivetransdk_v2.DataType_NAIVE_DATETIME,
+			FivetranType: fivetransdk.DataType_NAIVE_DATETIME,
 		},
 		{
 			MysqlType:    "date",
-			FivetranType: fivetransdk_v2.DataType_NAIVE_DATE,
+			FivetranType: fivetransdk.DataType_NAIVE_DATE,
 		},
 		{
 			MysqlType:    "text",
-			FivetranType: fivetransdk_v2.DataType_STRING,
+			FivetranType: fivetransdk.DataType_STRING,
 		},
 		{
 			MysqlType:    "varchar(256)",
-			FivetranType: fivetransdk_v2.DataType_STRING,
+			FivetranType: fivetransdk.DataType_STRING,
 		},
 		{
 			MysqlType:    "decimal(12,5)",
-			FivetranType: fivetransdk_v2.DataType_DECIMAL,
-			DecimalParams: &fivetransdk_v2.DecimalParams{
+			FivetranType: fivetransdk.DataType_DECIMAL,
+			DecimalParams: &fivetransdk.DecimalParams{
 				Precision: 12,
 				Scale:     5,
 			},
 		},
 		{
 			MysqlType:    "double",
-			FivetranType: fivetransdk_v2.DataType_DOUBLE,
+			FivetranType: fivetransdk.DataType_DOUBLE,
 		},
 		{
 			MysqlType:    "enum",
-			FivetranType: fivetransdk_v2.DataType_STRING,
+			FivetranType: fivetransdk.DataType_STRING,
 		},
 	}
 

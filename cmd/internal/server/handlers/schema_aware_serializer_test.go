@@ -7,9 +7,9 @@ import (
 
 	"github.com/planetscale/fivetran-source/lib"
 
-	fivetransdk_v2 "github.com/planetscale/fivetran-sdk-grpc/go"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	fivetransdk "github.com/planetscale/fivetran-sdk-grpc/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -22,13 +22,13 @@ func TestCanSerializeInsert(t *testing.T) {
 	row, s, err := generateTestRecord("PhaniRaj")
 	require.NoError(t, err)
 	tl := &testLogSender{}
-	l := NewSchemaAwareSerializer(tl, "", false, &fivetransdk_v2.SchemaList{Schemas: []*fivetransdk_v2.Schema{s}})
+	l := NewSchemaAwareSerializer(tl, "", false, &fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{s}})
 
-	schema := &fivetransdk_v2.SchemaSelection{
+	schema := &fivetransdk.SchemaSelection{
 		Included:   true,
 		SchemaName: s.Name,
 	}
-	table := &fivetransdk_v2.TableSelection{
+	table := &fivetransdk.TableSelection{
 		TableName: "Customers",
 		Included:  true,
 		Columns:   map[string]bool{},
@@ -44,13 +44,13 @@ func TestCanSerializeInsert(t *testing.T) {
 		assert.NotNil(t, tl.lastResponse)
 	}
 
-	operation, ok := tl.lastResponse.Response.(*fivetransdk_v2.UpdateResponse_Operation)
+	operation, ok := tl.lastResponse.Response.(*fivetransdk.UpdateResponse_Operation)
 	require.Truef(t, ok, "recordResponse Operation is not of type %s", "UpdateResponse_Operation")
 
-	operationRecord, ok := operation.Operation.Op.(*fivetransdk_v2.Operation_Record)
+	operationRecord, ok := operation.Operation.Op.(*fivetransdk.Operation_Record)
 	assert.Truef(t, ok, "recordResponse Operation.Op is not of type %s", "Operation_Record")
 
-	assert.Equal(t, fivetransdk_v2.OpType_UPSERT, operationRecord.Record.Type)
+	assert.Equal(t, fivetransdk.OpType_UPSERT, operationRecord.Record.Type)
 	data := operationRecord.Record.Data
 	assert.NotNil(t, data)
 
@@ -79,13 +79,13 @@ func TestCanSerializeDelete(t *testing.T) {
 	row, s, err := generateTestRecord("PhaniRaj")
 	require.NoError(t, err)
 	tl := &testLogSender{}
-	l := NewSchemaAwareSerializer(tl, "", false, &fivetransdk_v2.SchemaList{Schemas: []*fivetransdk_v2.Schema{s}})
+	l := NewSchemaAwareSerializer(tl, "", false, &fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{s}})
 
-	schema := &fivetransdk_v2.SchemaSelection{
+	schema := &fivetransdk.SchemaSelection{
 		Included:   true,
 		SchemaName: s.Name,
 	}
-	table := &fivetransdk_v2.TableSelection{
+	table := &fivetransdk.TableSelection{
 		TableName: "Customers",
 		Included:  true,
 		Columns:   map[string]bool{},
@@ -101,13 +101,13 @@ func TestCanSerializeDelete(t *testing.T) {
 		assert.NotNil(t, tl.lastResponse)
 	}
 
-	operation, ok := tl.lastResponse.Response.(*fivetransdk_v2.UpdateResponse_Operation)
+	operation, ok := tl.lastResponse.Response.(*fivetransdk.UpdateResponse_Operation)
 	require.Truef(t, ok, "recordResponse Operation is not of type %s", "UpdateResponse_Operation")
 
-	operationRecord, ok := operation.Operation.Op.(*fivetransdk_v2.Operation_Record)
+	operationRecord, ok := operation.Operation.Op.(*fivetransdk.Operation_Record)
 	assert.Truef(t, ok, "recordResponse Operation.Op is not of type %s", "Operation_Record")
 
-	assert.Equal(t, fivetransdk_v2.OpType_DELETE, operationRecord.Record.Type)
+	assert.Equal(t, fivetransdk.OpType_DELETE, operationRecord.Record.Type)
 	data := operationRecord.Record.Data
 	assert.NotNil(t, data)
 	assert.Equal(t, 2, len(data), "should serialize only primary keys for deleted rows")
@@ -120,13 +120,13 @@ func TestCanSerializeUpdate(t *testing.T) {
 
 	require.NoError(t, err)
 	tl := &testLogSender{}
-	l := NewSchemaAwareSerializer(tl, "", false, &fivetransdk_v2.SchemaList{Schemas: []*fivetransdk_v2.Schema{s}})
+	l := NewSchemaAwareSerializer(tl, "", false, &fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{s}})
 
-	schema := &fivetransdk_v2.SchemaSelection{
+	schema := &fivetransdk.SchemaSelection{
 		Included:   true,
 		SchemaName: s.Name,
 	}
-	table := &fivetransdk_v2.TableSelection{
+	table := &fivetransdk.TableSelection{
 		TableName: "Customers",
 		Included:  true,
 		Columns:   map[string]bool{},
@@ -149,13 +149,13 @@ func TestCanSerializeUpdate(t *testing.T) {
 		assert.NotNil(t, tl.lastResponse)
 	}
 
-	operation, ok := tl.lastResponse.Response.(*fivetransdk_v2.UpdateResponse_Operation)
+	operation, ok := tl.lastResponse.Response.(*fivetransdk.UpdateResponse_Operation)
 	require.Truef(t, ok, "recordResponse Operation is not of type %s", "UpdateResponse_Operation")
 
-	operationRecord, ok := operation.Operation.Op.(*fivetransdk_v2.Operation_Record)
+	operationRecord, ok := operation.Operation.Op.(*fivetransdk.Operation_Record)
 	assert.Truef(t, ok, "recordResponse Operation.Op is not of type %s", "Operation_Record")
 
-	assert.Equal(t, fivetransdk_v2.OpType_UPDATE, operationRecord.Record.Type)
+	assert.Equal(t, fivetransdk.OpType_UPDATE, operationRecord.Record.Type)
 	data := operationRecord.Record.Data
 	assert.NotNil(t, data)
 	assert.Equal(t, 2, len(data))
@@ -163,7 +163,7 @@ func TestCanSerializeUpdate(t *testing.T) {
 	assert.Equal(t, "string:\"YayavaramNarasimha\"", data["name"].String())
 }
 
-func generateTestRecord(name string) (*sqltypes.Result, *fivetransdk_v2.Schema, error) {
+func generateTestRecord(name string) (*sqltypes.Result, *fivetransdk.Schema, error) {
 	notes, err := sqltypes.NewValue(querypb.Type_TEXT, []byte("Something great comes this way"))
 	if err != nil {
 		return nil, nil, err
@@ -313,85 +313,85 @@ func generateTestRecord(name string) (*sqltypes.Result, *fivetransdk_v2.Schema, 
 			},
 		},
 	}
-	return row, &fivetransdk_v2.Schema{
+	return row, &fivetransdk.Schema{
 		Name: "sample",
-		Tables: []*fivetransdk_v2.Table{
+		Tables: []*fivetransdk.Table{
 			{
 				Name: "Customers",
-				Columns: []*fivetransdk_v2.Column{
+				Columns: []*fivetransdk.Column{
 					{
 						Name:       "customer_id",
-						Type:       fivetransdk_v2.DataType_SHORT,
+						Type:       fivetransdk.DataType_SHORT,
 						PrimaryKey: true,
 					},
 					{
 						Name:       "name",
-						Type:       fivetransdk_v2.DataType_STRING,
+						Type:       fivetransdk.DataType_STRING,
 						PrimaryKey: true,
 					},
 					{
 						Name: "first_name",
-						Type: fivetransdk_v2.DataType_STRING,
+						Type: fivetransdk.DataType_STRING,
 					},
 					{
 						Name: "last_name",
-						Type: fivetransdk_v2.DataType_STRING,
+						Type: fivetransdk.DataType_STRING,
 					},
 					{
 						Name: "middle_name",
-						Type: fivetransdk_v2.DataType_STRING,
+						Type: fivetransdk.DataType_STRING,
 					},
 					{
 						Name: "is_deleted",
-						Type: fivetransdk_v2.DataType_BOOLEAN,
+						Type: fivetransdk.DataType_BOOLEAN,
 					},
 					{
 						Name: "notes",
-						Type: fivetransdk_v2.DataType_STRING,
+						Type: fivetransdk.DataType_STRING,
 					},
 					{
 						Name: "decimal",
-						Type: fivetransdk_v2.DataType_DECIMAL,
+						Type: fivetransdk.DataType_DECIMAL,
 					},
 					{
 						Name: "profile_pic",
-						Type: fivetransdk_v2.DataType_BINARY,
+						Type: fivetransdk.DataType_BINARY,
 					},
 					{
 						Name: "header_pic",
-						Type: fivetransdk_v2.DataType_BINARY,
+						Type: fivetransdk.DataType_BINARY,
 					},
 					{
 						Name: "footer_pic",
-						Type: fivetransdk_v2.DataType_BINARY,
+						Type: fivetransdk.DataType_BINARY,
 					},
 					{
 						Name: "sitemap",
-						Type: fivetransdk_v2.DataType_JSON,
+						Type: fivetransdk.DataType_JSON,
 					},
 					{
 						Name: "long_value",
-						Type: fivetransdk_v2.DataType_LONG,
+						Type: fivetransdk.DataType_LONG,
 					},
 					{
 						Name: "double_value",
-						Type: fivetransdk_v2.DataType_DOUBLE,
+						Type: fivetransdk.DataType_DOUBLE,
 					},
 					{
 						Name: "float_value",
-						Type: fivetransdk_v2.DataType_FLOAT,
+						Type: fivetransdk.DataType_FLOAT,
 					},
 					{
 						Name: "date_value",
-						Type: fivetransdk_v2.DataType_NAIVE_DATE,
+						Type: fivetransdk.DataType_NAIVE_DATE,
 					},
 					{
 						Name: "timestamp_value",
-						Type: fivetransdk_v2.DataType_UTC_DATETIME,
+						Type: fivetransdk.DataType_UTC_DATETIME,
 					},
 					{
 						Name: "datetime_value",
-						Type: fivetransdk_v2.DataType_NAIVE_DATETIME,
+						Type: fivetransdk.DataType_NAIVE_DATETIME,
 					},
 				},
 			},
@@ -426,20 +426,20 @@ func TestCanSkipColumns(t *testing.T) {
 	}
 
 	tl := &testLogSender{}
-	l := NewSchemaAwareSerializer(tl, "", false, &fivetransdk_v2.SchemaList{Schemas: []*fivetransdk_v2.Schema{
+	l := NewSchemaAwareSerializer(tl, "", false, &fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{
 		{
 			Name: "SalesDB",
-			Tables: []*fivetransdk_v2.Table{
+			Tables: []*fivetransdk.Table{
 				{
 					Name: "Customers",
-					Columns: []*fivetransdk_v2.Column{
+					Columns: []*fivetransdk.Column{
 						{
 							Name: "customer_id",
-							Type: fivetransdk_v2.DataType_SHORT,
+							Type: fivetransdk.DataType_SHORT,
 						},
 						{
 							Name: "name",
-							Type: fivetransdk_v2.DataType_STRING,
+							Type: fivetransdk.DataType_STRING,
 						},
 					},
 				},
@@ -447,11 +447,11 @@ func TestCanSkipColumns(t *testing.T) {
 		},
 	}})
 
-	schema := &fivetransdk_v2.SchemaSelection{
+	schema := &fivetransdk.SchemaSelection{
 		Included:   true,
 		SchemaName: "SalesDB",
 	}
-	table := &fivetransdk_v2.TableSelection{
+	table := &fivetransdk.TableSelection{
 		TableName: "Customers",
 		Included:  true,
 		Columns: map[string]bool{
@@ -464,10 +464,10 @@ func TestCanSkipColumns(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, tl.lastResponse)
 
-	operation, ok := tl.lastResponse.Response.(*fivetransdk_v2.UpdateResponse_Operation)
+	operation, ok := tl.lastResponse.Response.(*fivetransdk.UpdateResponse_Operation)
 	require.Truef(t, ok, "recordResponse Operation is not of type %s", "UpdateResponse_Operation")
 
-	operationRecord, ok := operation.Operation.Op.(*fivetransdk_v2.Operation_Record)
+	operationRecord, ok := operation.Operation.Op.(*fivetransdk.Operation_Record)
 	assert.Truef(t, ok, "recordResponse Operation.Op is not of type %s", "Operation_Record")
 
 	data := operationRecord.Record.Data
@@ -485,16 +485,16 @@ func BenchmarkRecordSerialization_Serializer(b *testing.B) {
 	}
 
 	tl := &testLogSender{}
-	l := NewSchemaAwareSerializer(tl, "", false, &fivetransdk_v2.SchemaList{
-		Schemas: []*fivetransdk_v2.Schema{
+	l := NewSchemaAwareSerializer(tl, "", false, &fivetransdk.SchemaList{
+		Schemas: []*fivetransdk.Schema{
 			s,
 		},
 	})
 
-	schema := &fivetransdk_v2.SchemaSelection{
+	schema := &fivetransdk.SchemaSelection{
 		SchemaName: "SalesDB",
 	}
-	table := &fivetransdk_v2.TableSelection{
+	table := &fivetransdk.TableSelection{
 		TableName: "Customers",
 	}
 
