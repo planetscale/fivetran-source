@@ -8,7 +8,7 @@ import (
 
 	"github.com/planetscale/fivetran-source/lib"
 
-	fivetransdk "github.com/planetscale/fivetran-proto/go"
+	fivetransdk "github.com/planetscale/fivetran-sdk-grpc/go"
 )
 
 type fivetranSchemaBuilder struct {
@@ -112,7 +112,7 @@ func (s *fivetranSchemaBuilder) BuildResponse() (*fivetransdk.SchemaResponse, er
 func getFivetranDataType(mType string, treatTinyIntAsBoolean bool) (fivetransdk.DataType, *fivetransdk.DecimalParams) {
 	mysqlType := strings.ToLower(mType)
 	if strings.HasPrefix(mysqlType, "tinyint") {
-		if treatTinyIntAsBoolean {
+		if treatTinyIntAsBoolean && mysqlType == "tinyint(1)" {
 			return fivetransdk.DataType_BOOLEAN, nil
 		}
 
@@ -197,6 +197,8 @@ func getFivetranDataType(mType string, treatTinyIntAsBoolean bool) (fivetransdk.
 		return fivetransdk.DataType_STRING, nil
 	case "mediumtext":
 		return fivetransdk.DataType_STRING, nil
+	case "mediumint":
+		return fivetransdk.DataType_INT, nil
 	case "longtext":
 		return fivetransdk.DataType_STRING, nil
 	case "binary":

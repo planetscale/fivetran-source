@@ -1,147 +1,147 @@
 ---
 - - :permit
   - New BSD
-  - :who: 
-    :why: 
+  - :who:
+    :why:
     :versions: []
     :when: 2023-02-13 20:38:40.936333000 Z
 - - :permit
   - Apache 2.0
-  - :who: 
-    :why: 
+  - :who:
+    :why:
     :versions: []
     :when: 2023-02-13 20:38:48.800174000 Z
 - - :approve
   - github.com/pkg/errors
-  - :who: 
-    :why: 
+  - :who:
+    :why:
     :versions: []
     :when: 2023-02-13 22:13:54.921723000 Z
 - - :approve
   - github.com/planetscale/psdb
-  - :who: 
-    :why: 
+  - :who:
+    :why:
     :versions: []
     :when: 2023-02-13 22:13:57.825477000 Z
 - - :approve
   - github.com/DataDog/sketches-go,
-  - :who: 
-    :why: 
+  - :who:
+    :why:
     :versions: []
     :when: 2023-02-14 16:38:34.732400000 Z
 - - :approve
   - github.com/DataDog/datadog-go/v5
-  - :who: 
-    :why: 
+  - :who:
+    :why:
     :versions: []
     :when: 2023-02-14 16:38:36.455827000 Z
 - - :approve
   - github.com/DataDog/sketches-go,
-  - :who: 
-    :why: 
+  - :who:
+    :why:
     :versions: []
     :when: 2023-02-14 16:38:36.976212000 Z
 - - :approve
   - github.com/beorn7/perks
-  - :who: 
-    :why: 
+  - :who:
+    :why:
     :versions: []
     :when: 2023-02-14 16:38:37.499850000 Z
 - - :approve
   - github.com/cespare/xxhash/v2
-  - :who: 
-    :why: 
+  - :who:
+    :why:
     :versions: []
     :when: 2023-02-14 16:38:38.023569000 Z
 - - :approve
   - github.com/dustin/go-humanize
-  - :who: 
-    :why: 
+  - :who:
+    :why:
     :versions: []
     :when: 2023-02-14 16:38:38.547779000 Z
 - - :approve
   - github.com/go-sql-driver/mysql
-  - :who: 
-    :why: 
+  - :who:
+    :why:
     :versions: []
     :when: 2023-02-14 16:38:39.072593000 Z
 - - :approve
   - github.com/philhofer/fwd
-  - :who: 
-    :why: 
+  - :who:
+    :why:
     :versions: []
     :when: 2023-02-14 16:38:39.591419000 Z
 - - :approve
   - github.com/segmentio/asm
-  - :who: 
-    :why: 
+  - :who:
+    :why:
     :versions: []
     :when: 2023-02-14 16:38:40.123877000 Z
 - - :approve
   - github.com/tinylib/msgp
-  - :who: 
-    :why: 
+  - :who:
+    :why:
     :versions: []
     :when: 2023-02-14 16:38:40.650766000 Z
 - - :approve
   - go.uber.org/atomic
-  - :who: 
-    :why: 
+  - :who:
+    :why:
     :versions: []
     :when: 2023-02-14 16:38:41.197585000 Z
 - - :approve
   - github.com/DataDog/datadog-go/v5
-  - :who: 
-    :why: 
+  - :who:
+    :why:
     :versions: []
     :when: 2023-02-14 16:38:55.443067000 Z
 - - :approve
   - github.com/DataDog/sketches-go,
-  - :who: 
-    :why: 
+  - :who:
+    :why:
     :versions: []
     :when: 2023-02-14 16:38:55.964941000 Z
 - - :approve
   - github.com/beorn7/perks
-  - :who: 
-    :why: 
+  - :who:
+    :why:
     :versions: []
     :when: 2023-02-14 16:38:56.489102000 Z
 - - :approve
   - github.com/cespare/xxhash/v2
-  - :who: 
-    :why: 
+  - :who:
+    :why:
     :versions: []
     :when: 2023-02-14 16:38:57.006746000 Z
 - - :approve
   - github.com/dustin/go-humanize
-  - :who: 
-    :why: 
+  - :who:
+    :why:
     :versions: []
     :when: 2023-02-14 16:38:57.532722000 Z
 - - :approve
   - github.com/go-sql-driver/mysql
-  - :who: 
-    :why: 
+  - :who:
+    :why:
     :versions: []
     :when: 2023-02-14 16:38:58.050855000 Z
 - - :approve
   - github.com/philhofer/fwd
-  - :who: 
-    :why: 
+  - :who:
+    :why:
     :versions: []
     :when: 2023-02-14 16:38:58.564699000 Z
 - - :approve
   - github.com/segmentio/asm
-  - :who: 
-    :why: 
+  - :who:
+    :why:
     :versions: []
     :when: 2023-02-14 16:38:59.102804000 Z
 - - :approve
   - github.com/DataDog/datadog-go
   - &1
-    :who: 
-    :why: 
+    :who:
+    :why:
     :versions: []
     :when: 2023-02-14 16:38:59.638198000 Z
 - - :approve
@@ -149,13 +149,23 @@
   - *1
 - - :approve
   - go.uber.org/atomic
-  - :who: 
-    :why: 
+  - :who:
+    :why:
     :versions: []
     :when: 2023-02-14 16:39:00.167589000 Z
 - - :approve
   - github.com/planetscale/fivetran-proto
-  - :who: 
-    :why: 
+  - :who:
+    :why:
     :versions: []
     :when: 2023-03-28 22:17:08.505235000 Z
+- - :approve
+  - github.com/planetscale/fivetran-sdk-grpc
+  - &2
+    :who: Frances
+    :why: PlanetScale's private fork of new FiveTran protos
+    :versions: []
+    :when: 2023-07-27 19:42:15.786151000 Z
+- - :approve
+  - Thai
+  - *2

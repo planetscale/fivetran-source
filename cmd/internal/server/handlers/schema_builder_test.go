@@ -6,7 +6,7 @@ import (
 
 	"github.com/planetscale/fivetran-source/lib"
 
-	fivetransdk "github.com/planetscale/fivetran-proto/go"
+	fivetransdk "github.com/planetscale/fivetran-sdk-grpc/go"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -65,6 +65,16 @@ func TestSchema_CanPickRightFivetranType(t *testing.T) {
 			MysqlType:             "tinyint(1)",
 			FivetranType:          fivetransdk.DataType_INT,
 			TreatTinyIntAsBoolean: false,
+		},
+		{
+			MysqlType:             "tinyint unsigned",
+			FivetranType:          fivetransdk.DataType_INT,
+			TreatTinyIntAsBoolean: true,
+		},
+		{
+			MysqlType:             "tinyint",
+			FivetranType:          fivetransdk.DataType_INT,
+			TreatTinyIntAsBoolean: true,
 		},
 		{
 			MysqlType:             "timestamp",
