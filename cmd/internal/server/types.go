@@ -6,25 +6,25 @@ import (
 
 	"github.com/pkg/errors"
 	psdbconnect "github.com/planetscale/airbyte-source/proto/psdbconnect/v1alpha1"
-	fivetransdk_v2 "github.com/planetscale/fivetran-sdk-grpc/go"
 	"github.com/planetscale/fivetran-source/lib"
 
+	fivetransdk "github.com/planetscale/fivetran-sdk-grpc/go"
 	"github.com/planetscale/fivetran-source/cmd/internal/server/handlers"
 )
 
 type ConfigurationFormHandler interface {
-	Handle(context.Context, *fivetransdk_v2.ConfigurationFormRequest) (*fivetransdk_v2.ConfigurationFormResponse, error)
+	Handle(context.Context, *fivetransdk.ConfigurationFormRequest) (*fivetransdk.ConfigurationFormResponse, error)
 }
 
 type CheckConnectionHandler interface {
-	Handle(context.Context, lib.ConnectClient, string, *lib.PlanetScaleSource) (*fivetransdk_v2.TestResponse, error)
+	Handle(context.Context, lib.ConnectClient, string, *lib.PlanetScaleSource) (*fivetransdk.TestResponse, error)
 }
 type SchemaHandler interface {
-	Handle(context.Context, *lib.PlanetScaleSource, *lib.MysqlClient) (*fivetransdk_v2.SchemaResponse, error)
+	Handle(context.Context, *lib.PlanetScaleSource, *lib.MysqlClient) (*fivetransdk.SchemaResponse, error)
 }
 
 type SyncHandler interface {
-	Handle(*lib.PlanetScaleSource, *lib.ConnectClient, handlers.Serializer, *lib.SyncState, *fivetransdk_v2.Selection_WithSchema) error
+	Handle(*lib.PlanetScaleSource, *lib.ConnectClient, handlers.Serializer, *lib.SyncState, *fivetransdk.Selection_WithSchema) error
 }
 
 func NewConfigurationFormHandler() ConfigurationFormHandler {
@@ -90,7 +90,7 @@ func SourceFromRequest(request ConfiguredRequest) (*lib.PlanetScaleSource, error
 // StateFromRequest unmarshals the stateJson saved in FiveTran
 // and turns that into a structure we can use within the connector to
 // incrementally sync tables from PlanetScale.
-func StateFromRequest(request StatefulRequest, source lib.PlanetScaleSource, shards []string, schemaSelection fivetransdk_v2.Selection_WithSchema) (*lib.SyncState, error) {
+func StateFromRequest(request StatefulRequest, source lib.PlanetScaleSource, shards []string, schemaSelection fivetransdk.Selection_WithSchema) (*lib.SyncState, error) {
 	syncState := lib.SyncState{
 		Keyspaces: map[string]lib.KeyspaceState{},
 	}

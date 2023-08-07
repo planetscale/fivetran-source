@@ -17,7 +17,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/pkg/errors"
-	fivetransdk_v2 "github.com/planetscale/fivetran-sdk-grpc/go"
+	fivetran_sdk "github.com/planetscale/fivetran-sdk-grpc/go"
 )
 
 type connectorServer struct {
@@ -27,7 +27,7 @@ type connectorServer struct {
 	checkConnection        CheckConnectionHandler
 	clientConstructor      edgeClientConstructor
 	mysqlClientConstructor mysqlClientConstructor
-	fivetransdk_v2.UnimplementedConnectorServer
+	fivetran_sdk.UnimplementedConnectorServer
 }
 
 type (
@@ -35,7 +35,7 @@ type (
 	mysqlClientConstructor func() lib.MysqlClient
 )
 
-func NewConnectorServer() fivetransdk_v2.ConnectorServer {
+func NewConnectorServer() fivetran_sdk.ConnectorServer {
 	return &connectorServer{
 		configurationForm: NewConfigurationFormHandler(),
 		sync:              NewSyncHandler(),
@@ -44,14 +44,14 @@ func NewConnectorServer() fivetransdk_v2.ConnectorServer {
 	}
 }
 
-func (c *connectorServer) ConfigurationForm(ctx context.Context, request *fivetransdk_v2.ConfigurationFormRequest) (*fivetransdk_v2.ConfigurationFormResponse, error) {
+func (c *connectorServer) ConfigurationForm(ctx context.Context, request *fivetran_sdk.ConfigurationFormRequest) (*fivetran_sdk.ConfigurationFormResponse, error) {
 	rLogger := newRequestLogger(newRequestID())
 
 	rLogger.Println("handling configuration form request")
 	return c.configurationForm.Handle(ctx, request)
 }
 
-func (c *connectorServer) Test(ctx context.Context, request *fivetransdk_v2.TestRequest) (*fivetransdk_v2.TestResponse, error) {
+func (c *connectorServer) Test(ctx context.Context, request *fivetran_sdk.TestRequest) (*fivetran_sdk.TestResponse, error) {
 	rLogger := newRequestLogger(newRequestID())
 
 	rLogger.Println("handling test request")
@@ -77,7 +77,7 @@ func (c *connectorServer) Test(ctx context.Context, request *fivetransdk_v2.Test
 	return c.checkConnection.Handle(ctx, db, request.Name, psc)
 }
 
-func (c *connectorServer) Schema(ctx context.Context, request *fivetransdk_v2.SchemaRequest) (*fivetransdk_v2.SchemaResponse, error) {
+func (c *connectorServer) Schema(ctx context.Context, request *fivetran_sdk.SchemaRequest) (*fivetran_sdk.SchemaResponse, error) {
 	logger := newRequestLogger(newRequestID())
 
 	logger.Println("handling schema request")
@@ -124,7 +124,7 @@ func (c *connectorServer) Schema(ctx context.Context, request *fivetransdk_v2.Sc
 	return c.schema.Handle(ctx, psc, &mysqlClient)
 }
 
-func (c *connectorServer) Update(request *fivetransdk_v2.UpdateRequest, server fivetransdk_v2.Connector_UpdateServer) error {
+func (c *connectorServer) Update(request *fivetran_sdk.UpdateRequest, server fivetran_sdk.Connector_UpdateServer) error {
 	requestId := newRequestID()
 	rLogger := newRequestLogger(requestId)
 
@@ -138,7 +138,7 @@ func (c *connectorServer) Update(request *fivetransdk_v2.UpdateRequest, server f
 		return status.Error(codes.InvalidArgument, "request did not contain a valid selection")
 	}
 
-	schemaSelection, ok := request.Selection.Selection.(*fivetransdk_v2.Selection_WithSchema)
+	schemaSelection, ok := request.Selection.Selection.(*fivetran_sdk.Selection_WithSchema)
 	if !ok {
 		return status.Error(codes.InvalidArgument, "request did not contain a Selection_WithSchema")
 	}
@@ -187,12 +187,12 @@ func (c *connectorServer) Update(request *fivetransdk_v2.UpdateRequest, server f
 	// check if credentials are still valid.
 	checkConn, err := c.checkConnection.Handle(context.Background(), db, handlers.CheckConnectionTestName, psc)
 	if err != nil {
-		logger.Log(fivetransdk_v2.LogLevel_SEVERE, fmt.Sprintf("unable to connect to PlanetScale database, failed with : %q", err))
+		logger.Log(fivetran_sdk.LogLevel_SEVERE, fmt.Sprintf("unable to connect to PlanetScale database, failed with : %q", err))
 		return nil
 	}
 
 	if checkConn.GetFailure() != "" {
-		logger.Log(fivetransdk_v2.LogLevel_SEVERE, fmt.Sprintf("unable to connect to PlanetScale database, failed with : %q", checkConn.GetFailure()))
+		logger.Log(fivetran_sdk.LogLevel_SEVERE, fmt.Sprintf("unable to connect to PlanetScale database, failed with : %q", checkConn.GetFailure()))
 		return nil
 	}
 	return c.sync.Handle(psc, &db, logger, state, schemaSelection)
