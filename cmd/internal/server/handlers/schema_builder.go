@@ -9,7 +9,7 @@ import (
 
 	"github.com/planetscale/fivetran-source/lib"
 
-	fivetransdk "github.com/planetscale/fivetran-proto/go"
+	fivetransdk "github.com/planetscale/fivetran-sdk-grpc/go"
 )
 
 type fivetranSchemaBuilder struct {
