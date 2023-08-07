@@ -3,7 +3,7 @@ package handlers
 import (
 	"context"
 
-	fivetransdk "github.com/planetscale/fivetran-proto/go"
+	fivetransdk "github.com/planetscale/fivetran-sdk-grpc/go"
 )
 
 type ConfigurationForm struct{}
@@ -64,7 +64,7 @@ func (ConfigurationForm) Handle(ctx context.Context, _ *fivetransdk.Configuratio
 				},
 			},
 		},
-		Tests: []*fivetransdk.ConnectorTest{
+		Tests: []*fivetransdk.ConfigurationTest{
 			{
 				Name:  CheckConnectionTestName,
 				Label: "Check connection",

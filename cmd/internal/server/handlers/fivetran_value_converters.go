@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
-	fivetransdk "github.com/planetscale/fivetran-proto/go"
+	fivetransdk "github.com/planetscale/fivetran-sdk-grpc/go"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"vitess.io/vitess/go/sqltypes"
