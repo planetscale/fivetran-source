@@ -31,7 +31,7 @@ var converters = map[fivetransdk.DataType]ConverterFunc{
 		}
 		b, err := value.ToBool()
 		if err != nil {
-			return nil, errors.Wrap(err, "failed to serialize DataType_BOOLEAN")
+			return nil, errors.Wrap(err, "faizled to serialize DataType_BOOLEAN")
 		}
 		return &fivetransdk.ValueType{Inner: &fivetransdk.ValueType_Bool{Bool: b}}, nil
 	},
