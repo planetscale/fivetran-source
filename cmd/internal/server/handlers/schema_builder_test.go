@@ -67,6 +67,16 @@ func TestSchema_CanPickRightFivetranType(t *testing.T) {
 			TreatTinyIntAsBoolean: false,
 		},
 		{
+			MysqlType:             "tinyint unsigned",
+			FivetranType:          fivetransdk.DataType_INT,
+			TreatTinyIntAsBoolean: true,
+		},
+		{
+			MysqlType:             "tinyint",
+			FivetranType:          fivetransdk.DataType_INT,
+			TreatTinyIntAsBoolean: true,
+		},
+		{
 			MysqlType:             "timestamp",
 			FivetranType:          fivetransdk.DataType_UTC_DATETIME,
 			TreatTinyIntAsBoolean: true,
