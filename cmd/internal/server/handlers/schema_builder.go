@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"fmt"
 	"math"
 	"regexp"
 	"strconv"
@@ -233,9 +232,7 @@ func getDecimalParams(mysqlType string) *fivetransdk.DecimalParams {
 	precision := strings.Replace(strings.ToUpper(mysqlType), "DECIMAL", "", 1)
 	r := regexp.MustCompile(`[-]?\d[\d,]*[\d{2}]*`)
 	matches := r.FindAllString(precision, -1)
-	fmt.Printf("matches is %s\n", matches)
 	if len(matches) == 0 {
-		fmt.Println("returning defaults")
 		// return defaults
 		return &fivetransdk.DecimalParams{
 			Precision: m,

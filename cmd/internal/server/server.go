@@ -187,14 +187,17 @@ func (c *connectorServer) Update(request *fivetran_sdk.UpdateRequest, server fiv
 	// check if credentials are still valid.
 	checkConn, err := c.checkConnection.Handle(context.Background(), db, handlers.CheckConnectionTestName, psc)
 	if err != nil {
-		logger.Log(fivetran_sdk.LogLevel_SEVERE, fmt.Sprintf("unable to connect to PlanetScale database, failed with : %q", err))
-		return nil
+		msg := fmt.Sprintf("unable to connect to PlanetScale database, failed with : %q", err)
+		logger.Log(fivetran_sdk.LogLevel_SEVERE, msg)
+		return status.Error(codes.NotFound, msg)
 	}
 
 	if checkConn.GetFailure() != "" {
-		logger.Log(fivetran_sdk.LogLevel_SEVERE, fmt.Sprintf("unable to connect to PlanetScale database, failed with : %q", checkConn.GetFailure()))
-		return nil
+		msg := fmt.Sprintf("unable to connect to PlanetScale database, failed with : %q", checkConn.GetFailure())
+		logger.Log(fivetran_sdk.LogLevel_SEVERE, msg)
+		return status.Error(codes.NotFound, msg)
 	}
+
 	return c.sync.Handle(psc, &db, logger, state, schemaSelection)
 }
 
