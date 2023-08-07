@@ -22,16 +22,9 @@ var converters = map[fivetransdk.DataType]ConverterFunc{
 		}, nil
 	},
 	fivetransdk.DataType_BOOLEAN: func(value sqltypes.Value) (*fivetransdk.ValueType, error) {
-		if value.Type() == sqltypes.Bit {
-			b, err := value.ToBytes()
-			if err != nil {
-				return nil, errors.Wrap(err, "failed to serialize DataType_BOOLEAN")
-			}
-			return &fivetransdk.ValueType{Inner: &fivetransdk.ValueType_Bool{Bool: b[0] == 1}}, nil
-		}
 		b, err := value.ToBool()
 		if err != nil {
-			return nil, errors.Wrap(err, "faizled to serialize DataType_BOOLEAN")
+			return nil, errors.Wrap(err, "failed to serialize DataType_BOOLEAN")
 		}
 		return &fivetransdk.ValueType{Inner: &fivetransdk.ValueType_Bool{Bool: b}}, nil
 	},
