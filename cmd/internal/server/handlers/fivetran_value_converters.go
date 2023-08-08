@@ -178,8 +178,8 @@ var converters = map[fivetransdk.DataType]ConverterFunc{
 			// we use this function to get the hex representation of the base-10 WKB
 			hexValues := fmt.Sprintf("%x", b)
 			buf := new(bytes.Buffer)
-			// skip the first 8 characters because they're padding
-			// as vitess uses 4 bytes to store the WKB of geometry types.
+			// Skip the first 8 characters because they're padding
+			// as mysql uses 4 bytes to store the WKB of geometry types.
 			// Since WKB in mysql only uses 25 chracters, where the 1st character
 			// determines Endianness, and is used by vitess when we call `ToBytes` above.
 			buf.Write([]byte(hexValues[8:]))

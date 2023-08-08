@@ -56,7 +56,7 @@ func (s *Sync) Handle(psc *lib.PlanetScaleSource, db *lib.ConnectClient, logger 
 				columns := includedColumns(table)
 				sc, err := (*db).Read(ctx, logger, *psc, table.TableName, columns, tc, onRow, onCursor, onUpdate)
 				if err != nil {
-					return status.Error(codes.Internal, fmt.Sprintf("failed to download rows for table : %s", table.TableName))
+					return status.Error(codes.Internal, fmt.Sprintf("failed to download rows for table : %s , error : %s", table.TableName, err.Error()))
 				}
 				if sc != nil {
 					// if we get any new state, we assign it here.

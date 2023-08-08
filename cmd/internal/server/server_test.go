@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,6 +10,9 @@ import (
 	"net"
 	"strconv"
 	"testing"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/planetscale/fivetran-source/lib"
 
@@ -156,6 +160,177 @@ func TestUpdateValidatesState(t *testing.T) {
 	assert.ErrorContains(t, err, "request did not contain a valid stateJson")
 }
 
+func TestCanSerializeGeometryTypes(t *testing.T) {
+
+	tests := []struct {
+		Type string
+		Hex  string
+		Json string
+	}{
+		{
+			Type: "POINT",
+			// Select ST_GeomFromText("POINT(-112.8185647 49.6999986)")
+			Hex:  "0000000001010000003E0A325D63345CC0761FDB8D99D94840",
+			Json: "{\"type\":\"Point\",\"coordinates\":[-112.8185647,49.6999986]}",
+		},
+		{
+			Type: "LINESTRING",
+			// Select ST_GeomFromText("LINESTRING(0 0, 10 10, 20 25, 50 60)")
+			Hex:  "0000000001020000000400000000000000000000000000000000000000000000000000244000000000000024400000000000003440000000000000394000000000000049400000000000004E40",
+			Json: "{\"type\":\"LineString\",\"coordinates\":[[0,0],[10,10],[20,25],[50,60]]}",
+		},
+		{
+			Type: "POLYGON",
+			// Select ST_GeomFromText("POLYGON((0 0,10 0,10 10,0 10,0 0),(5 5,7 5,7 7,5 7, 5 5))")
+			Hex:  "0000000001030000000200000005000000000000000000000000000000000000000000000000002440000000000000000000000000000024400000000000002440000000000000000000000000000024400000000000000000000000000000000005000000000000000000144000000000000014400000000000001C4000000000000014400000000000001C400000000000001C4000000000000014400000000000001C4000000000000014400000000000001440",
+			Json: "{\"type\":\"Polygon\",\"coordinates\":[[[0,0],[10,0],[10,10],[0,10],[0,0]],[[5,5],[7,5],[7,7],[5,7],[5,5]]]}",
+		},
+		{
+			Type: "MULTIPOINT",
+			// Select ST_GeomFromText("MULTIPOINT(0 0, 20 20, 60 60)")
+			Hex:  "0000000001040000000300000001010000000000000000000000000000000000000001010000000000000000003440000000000000344001010000000000000000004E400000000000004E40",
+			Json: "{\"type\":\"MultiPoint\",\"coordinates\":[[0,0],[20,20],[60,60]]}",
+		},
+		{
+			Type: "MULTILINESTRING",
+			// ST_GeomFromText("MULTILINESTRING((10 10, 20 20), (15 15, 30 15))")
+			Hex:  "0000000001050000000200000001020000000200000000000000000024400000000000002440000000000000344000000000000034400102000000020000000000000000002E400000000000002E400000000000003E400000000000002E40",
+			Json: "{\"type\":\"MultiLineString\",\"coordinates\":[[[10,10],[20,20]],[[15,15],[30,15]]]}",
+		},
+		{
+			Type: "MULTIPOLYGON",
+			// ST_GeomFromText("MULTIPOLYGON(((0 0,10 0,10 10,0 10,0 0)),((5 5,7 5,7 7,5 7, 5 5)))")
+			Hex:  "0000000001060000000200000001030000000100000005000000000000000000000000000000000000000000000000002440000000000000000000000000000024400000000000002440000000000000000000000000000024400000000000000000000000000000000001030000000100000005000000000000000000144000000000000014400000000000001C4000000000000014400000000000001C400000000000001C4000000000000014400000000000001C4000000000000014400000000000001440",
+			Json: "{\"type\":\"MultiPolygon\",\"coordinates\":[[[[0,0],[10,0],[10,10],[0,10],[0,0]]],[[[5,5],[7,5],[7,7],[5,7],[5,5]]]]}",
+		},
+		{
+			Type: "GEOMETRYCOLLECTION",
+			// Select ST_GeomFromText("GEOMETRYCOLLECTION(POINT(10 10), POINT(30 30), LINESTRING(15 15, 20 20))")
+			Hex:  "0000000001070000000300000001010000000000000000002440000000000000244001010000000000000000003E400000000000003E400102000000020000000000000000002E400000000000002E4000000000000034400000000000003440",
+			Json: "{\"type\":\"GeometryCollection\",\"geometries\":[{\"type\":\"Point\",\"coordinates\":[10,10]},{\"type\":\"Point\",\"coordinates\":[30,30]},{\"type\":\"LineString\",\"coordinates\":[[15,15],[20,20]]}]}",
+		},
+	}
+
+	for _, geoTest := range tests {
+		t.Run(fmt.Sprintf("geometry_type_%v", geoTest.Type), func(t *testing.T) {
+			geometry, err := hex.DecodeString(geoTest.Hex)
+			if err != nil {
+				panic(err)
+			}
+			geometryTypeTest(t, geometry, geoTest.Json, err)
+		})
+	}
+}
+
+func geometryTypeTest(t *testing.T, geometry []byte, geojson string, err error) {
+	geometryTypeResult := &sqltypes.Result{
+		Fields: []*querypb.Field{
+			{Name: "Type_GEOMETRY", Type: querypb.Type_GEOMETRY},
+		},
+		Rows: [][]sqltypes.Value{
+			{
+				sqltypes.MakeTrusted(querypb.Type_GEOMETRY, geometry),
+			},
+		},
+	}
+
+	ctx := context.Background()
+	intValue := strconv.AppendInt(nil, int64(int8(12)), 10)
+	_, mysqlClientConstructor := setupUpdateRowsTest(intValue)
+
+	clientConstructor := func() lib.ConnectClient {
+		return &lib.TestConnectClient{
+			ListShardsFn: func(ctx context.Context, ps lib.PlanetScaleSource) ([]string, error) {
+				return []string{"-", "-40"}, nil
+			},
+			CanConnectFn: func(ctx context.Context, ps lib.PlanetScaleSource) error {
+				return nil
+			},
+			ReadFn: func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string,
+				tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
+			) (*lib.SerializedCursor, error) {
+				assert.Equal(t, "customers", tableName)
+				assert.NotNil(t, columns)
+				if err := onResult(geometryTypeResult, lib.OpType_Insert); err != nil {
+					return nil, status.Errorf(codes.Internal, "unable to serialize row : %s", err.Error())
+				}
+				return nil, nil
+			},
+		}
+	}
+	client, closer := server(ctx, clientConstructor, mysqlClientConstructor)
+	defer closer()
+	customerSelection := &fivetransdk.TableSelection{
+		Included:  true,
+		TableName: "customers",
+		Columns:   map[string]bool{},
+	}
+
+	for _, f := range geometryTypeResult.Fields {
+		customerSelection.Columns[f.Name] = true
+	}
+
+	selection := &fivetransdk.Selection_WithSchema{
+		WithSchema: &fivetransdk.TablesWithSchema{
+			Schemas: []*fivetransdk.SchemaSelection{
+				{
+					SchemaName: "SalesDB",
+					Included:   true,
+					Tables: []*fivetransdk.TableSelection{
+						customerSelection,
+						{
+							Included:  false,
+							TableName: "customer_secrets",
+						},
+					},
+				},
+			},
+		},
+	}
+	out, err := client.Update(ctx, &fivetransdk.UpdateRequest{
+		Configuration: map[string]string{
+			"host":     "earth.psdb",
+			"username": "phanatic",
+			"password": "password",
+			"database": "employees",
+		},
+		Selection: &fivetransdk.Selection{
+			Selection: selection,
+		},
+	})
+	require.NoError(t, err)
+	assert.NotNil(t, out)
+
+	rows := make([]*fivetransdk.UpdateResponse, 0, 3)
+	for {
+		resp, err := out.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("failed test with %q", err)
+		}
+		rows = append(rows, resp)
+	}
+	assert.Len(t, rows, 3)
+	operation := rows[0].GetOperation()
+	require.NotNil(t, operation)
+	record, ok := operation.Op.(*fivetransdk.Operation_Record)
+	assert.True(t, ok)
+	assert.NotNil(t, record)
+	assert.Equal(t, "SalesDB", *record.Record.SchemaName)
+	assert.Equal(t, "customers", record.Record.TableName)
+
+	assert.Equal(t, record.Record.Type, fivetransdk.OpType_UPSERT)
+
+	assert.Equal(t, "UPSERT", record.Record.Type.String())
+	value := record.Record.Data["Type_GEOMETRY"]
+	assert.NotNil(t, value)
+	jsonValue := value.Inner.(*fivetransdk.ValueType_Json)
+	assert.NotNil(t, jsonValue)
+	assert.Equal(t, geojson, jsonValue.Json)
+}
+
 func TestUpdateReturnsInserts(t *testing.T) {
 	ctx := context.Background()
 	intValue := strconv.AppendInt(nil, int64(int8(12)), 10)
@@ -174,7 +349,9 @@ func TestUpdateReturnsInserts(t *testing.T) {
 			) (*lib.SerializedCursor, error) {
 				assert.Equal(t, "customers", tableName)
 				assert.NotNil(t, columns)
-				onResult(allTypesResult, lib.OpType_Insert)
+				if err := onResult(allTypesResult, lib.OpType_Insert); err != nil {
+					return nil, status.Errorf(codes.Internal, "unable to serialize row : %s", err.Error())
+				}
 				return nil, nil
 			},
 		}
@@ -219,7 +396,7 @@ func TestUpdateReturnsInserts(t *testing.T) {
 			Selection: selection,
 		},
 	})
-	require.Error(t, err)
+	require.NoError(t, err)
 	assert.NotNil(t, out)
 
 	rows := make([]*fivetransdk.UpdateResponse, 0, 3)
@@ -234,10 +411,8 @@ func TestUpdateReturnsInserts(t *testing.T) {
 		rows = append(rows, resp)
 	}
 	assert.Len(t, rows, 3)
-	fmt.Printf("\n\t log entry is %s", rows[0].GetLogEntry())
 	operation := rows[0].GetOperation()
-	assert.NotNil(t, operation)
-	fmt.Printf("\n\tOperation is %s\n", operation)
+	require.NotNil(t, operation)
 	record, ok := operation.Op.(*fivetransdk.Operation_Record)
 	assert.True(t, ok)
 	assert.NotNil(t, record)
@@ -356,7 +531,7 @@ func TestUpdateReturnsErrors(t *testing.T) {
 	}
 	assert.Len(t, rows, 0)
 	assert.NotNil(t, tErr)
-	assert.Equal(t, "rpc error: code = Internal desc = failed to download rows for table : customers", tErr.Error())
+	assert.Equal(t, "rpc error: code = Internal desc = failed to download rows for table : customers , error : unable to serialize: DataType.BIG_INT", tErr.Error())
 }
 
 func TestUpdateReturnsDeletes(t *testing.T) {
@@ -603,6 +778,10 @@ func TestUpdateReturnsUpdates(t *testing.T) {
 }
 
 func setupUpdateRowsTest(intValue []byte) (*sqltypes.Result, func() lib.MysqlClient) {
+	geometry, err := hex.DecodeString("0000000001010000003E0A325D63345CC0761FDB8D99D94840")
+	if err != nil {
+		panic(err)
+	}
 	allTypesResult := &sqltypes.Result{
 		Fields: []*querypb.Field{
 			{Name: "Type_INT8", Type: querypb.Type_INT8},
@@ -665,7 +844,7 @@ func setupUpdateRowsTest(intValue []byte) (*sqltypes.Result, func() lib.MysqlCli
 				sqltypes.MakeTrusted(querypb.Type_BIT, []byte{1}),
 				sqltypes.MakeTrusted(querypb.Type_ENUM, []byte("3")),
 				sqltypes.MakeTrusted(querypb.Type_SET, []byte{0x01, 0x02}),
-				sqltypes.MakeTrusted(querypb.Type_GEOMETRY, []byte("Type_GEOMETRY")),
+				sqltypes.MakeTrusted(querypb.Type_GEOMETRY, geometry),
 				sqltypes.MakeTrusted(querypb.Type_JSON, []byte("Type_JSON")),
 			},
 		},
