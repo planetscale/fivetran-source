@@ -11,35 +11,44 @@ type ConfigurationForm struct{}
 const CheckConnectionTestName string = "check_connection"
 
 func (ConfigurationForm) Handle(ctx context.Context, _ *fivetransdk.ConfigurationFormRequest) (*fivetransdk.ConfigurationFormResponse, error) {
+	hostDesc := "Hostname to connect to your PlanetScale database"
+	dbDesc := "Name of your PlanetScale database"
+	usernameDesc := "Username to connect to your PlanetScale database"
+	passwordDesc := "Password to connect to your PlanetScale database"
+	tinyIntDesc := "Enable this setting to serialize tinyint(1) as boolean values"
 	resp := &fivetransdk.ConfigurationFormResponse{
 		Fields: []*fivetransdk.FormField{
 			{
-				Name:  "host",
-				Label: "Database host name",
+				Name:        "host",
+				Label:       "Database host name",
+				Description: &hostDesc,
 				Type: &fivetransdk.FormField_TextField{
 					TextField: fivetransdk.TextField_PlainText,
 				},
 				Required: true,
 			},
 			{
-				Name:  "database",
-				Label: "Database name",
+				Name:        "database",
+				Label:       "Database name",
+				Description: &dbDesc,
 				Type: &fivetransdk.FormField_TextField{
 					TextField: fivetransdk.TextField_PlainText,
 				},
 				Required: true,
 			},
 			{
-				Name:  "username",
-				Label: "Database username",
+				Name:        "username",
+				Label:       "Database username",
+				Description: &usernameDesc,
 				Type: &fivetransdk.FormField_TextField{
 					TextField: fivetransdk.TextField_PlainText,
 				},
 				Required: true,
 			},
 			{
-				Name:  "password",
-				Label: "Database password",
+				Name:        "password",
+				Label:       "Database password",
+				Description: &passwordDesc,
 				Type: &fivetransdk.FormField_TextField{
 					TextField: fivetransdk.TextField_Password,
 				},
@@ -53,8 +62,9 @@ func (ConfigurationForm) Handle(ctx context.Context, _ *fivetransdk.Configuratio
 				},
 			},
 			{
-				Name:  "treat_tiny_int_as_boolean",
-				Label: "Treat tinyint(1) as boolean",
+				Name:        "treat_tiny_int_as_boolean",
+				Label:       "Treat tinyint(1) as boolean",
+				Description: &tinyIntDesc,
 				Type: &fivetransdk.FormField_DropdownField{
 					DropdownField: &fivetransdk.DropdownField{
 						DropdownField: []string{
