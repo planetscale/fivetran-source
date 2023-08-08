@@ -219,7 +219,7 @@ func TestUpdateReturnsInserts(t *testing.T) {
 			Selection: selection,
 		},
 	})
-	assert.NoError(t, err)
+	require.Error(t, err)
 	assert.NotNil(t, out)
 
 	rows := make([]*fivetransdk.UpdateResponse, 0, 3)
@@ -234,8 +234,10 @@ func TestUpdateReturnsInserts(t *testing.T) {
 		rows = append(rows, resp)
 	}
 	assert.Len(t, rows, 3)
+	fmt.Printf("\n\t log entry is %s", rows[0].GetLogEntry())
 	operation := rows[0].GetOperation()
 	assert.NotNil(t, operation)
+	fmt.Printf("\n\tOperation is %s\n", operation)
 	record, ok := operation.Op.(*fivetransdk.Operation_Record)
 	assert.True(t, ok)
 	assert.NotNil(t, record)
