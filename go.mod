@@ -9,6 +9,7 @@ require (
 	github.com/planetscale/airbyte-source v1.16.0
 	github.com/planetscale/fivetran-sdk-grpc v0.0.0-20230726214605-855c05dcd065
 	github.com/planetscale/psdb v0.0.0-20220429000526-e2a0e798aaf3
+	github.com/spatial-go/geoos v1.1.3
 	github.com/stretchr/testify v1.8.2
 	google.golang.org/grpc v1.57.0
 	google.golang.org/protobuf v1.31.0
@@ -36,7 +37,6 @@ require (
 	github.com/opentracing-contrib/go-grpc v0.0.0-20210225150812-73cb765af46e // indirect
 	github.com/opentracing/opentracing-go v1.2.0 // indirect
 	github.com/philhofer/fwd v1.1.1 // indirect
-	github.com/planetscale/fivetran-sdk-grpc v0.0.0-20230726214605-855c05dcd065 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/prometheus/client_golang v1.12.1 // indirect
 	github.com/prometheus/client_model v0.2.0 // indirect

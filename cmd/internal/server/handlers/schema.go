@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/planetscale/fivetran-source/lib"
 
@@ -15,6 +16,7 @@ func (Schema) Handle(ctx context.Context, psc *lib.PlanetScaleSource, db *lib.My
 	if err := (*db).BuildSchema(ctx, *psc, schemaBuilder); err != nil {
 		return nil, err
 	}
-
-	return schemaBuilder.(*fivetranSchemaBuilder).BuildResponse()
+	r, _ := schemaBuilder.(*fivetranSchemaBuilder).BuildResponse()
+	fmt.Printf("\n\t tables are:  %v ", r.Response.(*fivetransdk.SchemaResponse_WithSchema).WithSchema.Schemas[0].Tables)
+	return r, nil
 }
