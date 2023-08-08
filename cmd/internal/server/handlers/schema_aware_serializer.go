@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	"github.com/planetscale/fivetran-source/lib"
 
 	"github.com/pkg/errors"
@@ -202,30 +205,40 @@ func (l *schemaAwareSerializer) serializeResult(before *sqltypes.Result, after *
 		}
 
 		if _, ok := l.serializers[l.recordResponseKey]; !ok {
-
 			rs, err := generateRecordSerializer(table, schema.SchemaName, l.schemaList, l.serializeTinyIntAsBool)
 			if err != nil {
 				return err
 			}
 			l.serializers[l.recordResponseKey] = &rs
-
 		}
 	}
 
 	rs := *l.serializers[l.recordResponseKey]
 	rows, err := rs.Serialize(before, after, opType)
 	if err != nil {
-		return l.Log(fivetransdk.LogLevel_SEVERE, fmt.Sprintf("record schema aware json serializer : %q", err))
+		msg := fmt.Sprintf("record schema aware json serializer : %q", err)
+		if err := l.Log(fivetransdk.LogLevel_SEVERE, msg); err != nil {
+			return status.Error(codes.Internal, err.Error())
+		}
+		return status.Error(codes.Internal, msg)
 	}
 
 	for _, row := range rows {
 		operation, ok := l.recordResponse.Response.(*fivetransdk.UpdateResponse_Operation)
 		if !ok {
-			return l.Log(fivetransdk.LogLevel_SEVERE, fmt.Sprintf("recordResponse Operation is of type %T, not UpdateResponse_Operation", l.recordResponse.Response))
+			msg := fmt.Sprintf("recordResponse Operation is of type %T, not UpdateResponse_Operation", l.recordResponse.Response)
+			if err := l.Log(fivetransdk.LogLevel_SEVERE, msg); err != nil {
+				return status.Error(codes.Internal, err.Error())
+			}
+			return status.Error(codes.Internal, msg)
 		}
 		operationRecord, ok := operation.Operation.Op.(*fivetransdk.Operation_Record)
 		if !ok {
-			return l.Log(fivetransdk.LogLevel_SEVERE, fmt.Sprintf("recordResponse Operation.Op is of type %T not Operation_Record", operation.Operation.Op))
+			msg := fmt.Sprintf("recordResponse Operation.Op is of type %T not Operation_Record", operation.Operation.Op)
+			if err := l.Log(fivetransdk.LogLevel_SEVERE, msg); err != nil {
+				return status.Error(codes.Internal, err.Error())
+			}
+			return status.Error(codes.Internal, msg)
 		}
 		operationRecord.Record.Data = row
 		operationRecord.Record.Type = fivetranOpMap[opType]
