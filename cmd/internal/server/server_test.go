@@ -275,6 +275,90 @@ func TestUpdateReturnsInserts(t *testing.T) {
 	assert.Equal(t, "CgMtNDASB1NhbGVzREI=", customShard.Cursor)
 }
 
+func TestUpdateReturnsErrors(t *testing.T) {
+	ctx := context.Background()
+	intValue := strconv.AppendInt(nil, int64(int8(12)), 10)
+	allTypesResult, mysqlClientConstructor := setupUpdateRowsTest(intValue)
+
+	clientConstructor := func() lib.ConnectClient {
+		return &lib.TestConnectClient{
+			ListShardsFn: func(ctx context.Context, ps lib.PlanetScaleSource) ([]string, error) {
+				return []string{"-", "-40"}, nil
+			},
+			CanConnectFn: func(ctx context.Context, ps lib.PlanetScaleSource) error {
+				return nil
+			},
+			ReadFn: func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string,
+				tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
+			) (*lib.SerializedCursor, error) {
+				assert.Equal(t, "customers", tableName)
+				assert.NotNil(t, columns)
+
+				return nil, fmt.Errorf("unable to serialize: %v", "DataType.BIG_INT")
+			},
+		}
+	}
+	client, closer := server(ctx, clientConstructor, mysqlClientConstructor)
+	defer closer()
+	customerSelection := &fivetransdk.TableSelection{
+		Included:  true,
+		TableName: "customers",
+		Columns:   map[string]bool{},
+	}
+
+	for _, f := range allTypesResult.Fields {
+		customerSelection.Columns[f.Name] = true
+	}
+
+	selection := &fivetransdk.Selection_WithSchema{
+		WithSchema: &fivetransdk.TablesWithSchema{
+			Schemas: []*fivetransdk.SchemaSelection{
+				{
+					SchemaName: "SalesDB",
+					Included:   true,
+					Tables: []*fivetransdk.TableSelection{
+						customerSelection,
+						{
+							Included:  false,
+							TableName: "customer_secrets",
+						},
+					},
+				},
+			},
+		},
+	}
+	out, err := client.Update(ctx, &fivetransdk.UpdateRequest{
+		Configuration: map[string]string{
+			"host":     "earth.psdb",
+			"username": "phanatic",
+			"password": "password",
+			"database": "employees",
+		},
+		Selection: &fivetransdk.Selection{
+			Selection: selection,
+		},
+	})
+	assert.NoError(t, err)
+	assert.NotNil(t, out)
+
+	rows := make([]*fivetransdk.UpdateResponse, 0, 3)
+	var tErr error
+	for {
+		resp, err := out.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			tErr = err
+			break
+		}
+		rows = append(rows, resp)
+	}
+	assert.Len(t, rows, 0)
+	assert.NotNil(t, tErr)
+	assert.Equal(t, "rpc error: code = Internal desc = failed to download rows for table : customers", tErr.Error())
+}
+
 func TestUpdateReturnsDeletes(t *testing.T) {
 	ctx := context.Background()
 	intValue := strconv.AppendInt(nil, int64(int8(12)), 10)
