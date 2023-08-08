@@ -161,7 +161,6 @@ func TestUpdateValidatesState(t *testing.T) {
 }
 
 func TestCanSerializeGeometryTypes(t *testing.T) {
-
 	tests := []struct {
 		Type string
 		Hex  string
@@ -215,14 +214,14 @@ func TestCanSerializeGeometryTypes(t *testing.T) {
 		t.Run(fmt.Sprintf("geometry_type_%v", geoTest.Type), func(t *testing.T) {
 			geometry, err := hex.DecodeString(geoTest.Hex)
 			if err != nil {
-				panic(err)
+				t.Fatalf("failed to encode geometry value with %q", err)
 			}
-			geometryTypeTest(t, geometry, geoTest.Json, err)
+			geometryTypeTest(t, geometry, geoTest.Json)
 		})
 	}
 }
 
-func geometryTypeTest(t *testing.T, geometry []byte, geojson string, err error) {
+func geometryTypeTest(t *testing.T, geometry []byte, geojson string) {
 	geometryTypeResult := &sqltypes.Result{
 		Fields: []*querypb.Field{
 			{Name: "Type_GEOMETRY", Type: querypb.Type_GEOMETRY},
