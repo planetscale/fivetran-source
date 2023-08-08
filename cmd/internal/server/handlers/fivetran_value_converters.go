@@ -1,15 +1,20 @@
 package handlers
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"math"
 	"time"
 
+	"github.com/spatial-go/geoos/geoencoding"
+	"github.com/spatial-go/geoos/geoencoding/geojson"
+
+	querypb "vitess.io/vitess/go/vt/proto/query"
+
 	"github.com/pkg/errors"
 	fivetransdk "github.com/planetscale/fivetran-sdk-grpc/go"
 	"google.golang.org/protobuf/types/known/timestamppb"
-
 	"vitess.io/vitess/go/sqltypes"
 )
 
@@ -158,6 +163,43 @@ var converters = map[fivetransdk.DataType]ConverterFunc{
 		}, nil
 	},
 	fivetransdk.DataType_JSON: func(value sqltypes.Value) (*fivetransdk.ValueType, error) {
+		if value.Type() == querypb.Type_GEOMETRY {
+			// we tell Fivetran that all geoemtry types are in fact serialized as JSON values.
+			// which is why we need to depend on the value type here to inform us to serialize
+			// geometry values as GeoJson
+			// 1. Get the Well Known Binary representation of the geometry value here.
+			// Docs: https://dev.mysql.com/doc/refman/8.0/en/gis-data-formats.html#gis-wkb-format
+			b, err := value.ToBytes()
+			if err != nil {
+				return nil, errors.Wrap(err, "unable to get bytes for Geometry type")
+			}
+
+			// vitess's value types return the WKB as an array of bytes in base 10
+			// we use this function to get the hex representation of the base-10 WKB
+			hexValues := fmt.Sprintf("%x", b)
+			buf := new(bytes.Buffer)
+			// Skip the first 8 characters because they're padding
+			// as mysql uses 4 bytes to store the WKB of geometry types.
+			// Since WKB in mysql only uses 25 chracters, where the 1st character
+			// determines Endianness, and is used by vitess when we call `ToBytes` above.
+			buf.Write([]byte(hexValues[8:]))
+			got, err := geoencoding.Read(buf, geoencoding.WKB)
+			if err != nil {
+				return nil, errors.Wrap(err, "unable to serialize Geometry type")
+			}
+			if got == nil {
+				return nil, fmt.Errorf("invalid Geometry value: %s", b)
+			}
+
+			// serialize the geometric shape as GeoJson
+			// GeoJson examples are available in the RFC here :
+			// https://datatracker.ietf.org/doc/html/rfc7946#section-1.5
+			gj := geojson.GeojsonEncoder{}
+			geoJson := gj.Encode(got.Geom())
+			return &fivetransdk.ValueType{
+				Inner: &fivetransdk.ValueType_Json{Json: string(geoJson)},
+			}, nil
+		}
 		return &fivetransdk.ValueType{
 			Inner: &fivetransdk.ValueType_Json{Json: value.ToString()},
 		}, nil

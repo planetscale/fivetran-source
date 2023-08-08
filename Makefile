@@ -54,7 +54,7 @@ build-server:
 
 .PHONY: server
 server:
-	@go run ./cmd/server/main.go
+	@go run ./cmd/server/main.go -port 50051
 
 .PHONY: lint
 lint:
