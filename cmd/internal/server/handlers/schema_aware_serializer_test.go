@@ -75,6 +75,71 @@ func TestCanSerializeInsert(t *testing.T) {
 	assert.Equal(t, timestamppb.New(dt).Nanos, data["datetime_value"].GetNaiveDatetime().Nanos)
 }
 
+func TestCanSerializeNulLValues(t *testing.T) {
+	row, s, err := generateTestRecord("PhaniRaj")
+	require.NoError(t, err)
+	row.Rows = [][]sqltypes.Value{
+		{
+			sqltypes.NULL,
+			sqltypes.NULL,
+			sqltypes.NULL,
+			sqltypes.NULL,
+			sqltypes.NULL,
+			sqltypes.NULL,
+			sqltypes.NULL,
+			sqltypes.NULL,
+			sqltypes.NULL,
+			sqltypes.NULL,
+			sqltypes.NULL,
+			sqltypes.NULL,
+			sqltypes.NULL,
+			sqltypes.NULL,
+			sqltypes.NULL,
+			sqltypes.NULL,
+			sqltypes.NULL,
+			sqltypes.NULL,
+		},
+	}
+
+	tl := &testLogSender{}
+	l := NewSchemaAwareSerializer(tl, "", false, &fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{s}})
+	schema := &fivetransdk.SchemaSelection{
+		Included:   true,
+		SchemaName: s.Name,
+	}
+	table := &fivetransdk.TableSelection{
+		TableName: "Customers",
+		Included:  true,
+		Columns:   map[string]bool{},
+	}
+
+	for _, f := range row.Fields {
+		table.Columns[f.Name] = true
+	}
+
+	for i := 0; i < 3; i++ {
+		err = l.Record(row, schema, table, lib.OpType_Delete)
+		assert.NoError(t, err)
+		assert.NotNil(t, tl.lastResponse)
+	}
+
+	operation, ok := tl.lastResponse.Response.(*fivetransdk.UpdateResponse_Operation)
+	require.Truef(t, ok, "recordResponse Operation is not of type %s", "UpdateResponse_Operation")
+
+	operationRecord, ok := operation.Operation.Op.(*fivetransdk.Operation_Record)
+	assert.Truef(t, ok, "recordResponse Operation.Op is not of type %s", "Operation_Record")
+
+	assert.Equal(t, fivetransdk.OpType_DELETE, operationRecord.Record.Type)
+	data := operationRecord.Record.Data
+	assert.NotNil(t, data)
+	assert.Equal(t, 2, len(data), "should serialize only primary keys for deleted rows")
+	for _, value := range data {
+		inner := value.Inner
+		assert.IsType(t, &fivetransdk.ValueType_Null{}, inner)
+		assert.True(t, inner.(*fivetransdk.ValueType_Null).Null)
+	}
+}
+
 func TestCanSerializeDelete(t *testing.T) {
 	row, s, err := generateTestRecord("PhaniRaj")
 	require.NoError(t, err)
