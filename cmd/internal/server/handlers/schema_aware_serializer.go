@@ -102,10 +102,19 @@ func (s *schemaAwareRecordSerializer) Serialize(before *sqltypes.Result, after *
 			if !writeColumn {
 				continue
 			}
-
-			fVal, err := writer(val)
-			if err != nil {
-				return nil, errors.Wrap(err, "unable to serialize row")
+			var (
+				fVal *fivetransdk.ValueType
+				err  error
+			)
+			if val.IsNull() {
+				fVal = &fivetransdk.ValueType{
+					Inner: &fivetransdk.ValueType_Null{Null: true},
+				}
+			} else {
+				fVal, err = writer(val)
+				if err != nil {
+					return nil, errors.Wrap(err, "unable to serialize row")
+				}
 			}
 			record[colName] = fVal
 		}
