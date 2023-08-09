@@ -122,7 +122,7 @@ var converters = map[fivetransdk.DataType]ConverterFunc{
 		// The DATE type is used for values with a date part but no time part.
 		// MySQL retrieves and displays DATE values in 'YYYY-MM-DD' format.
 		// The supported range is '1000-01-01' to '9999-12-31'.
-		t, err := time.Parse("2006-01-02", value.ToString())
+		t, err := time.Parse(time.DateOnly, value.ToString())
 		if err != nil {
 			return nil, errors.Wrap(err, "failed to serialize DataType_NAIVE_DATE")
 		}
@@ -134,7 +134,8 @@ var converters = map[fivetransdk.DataType]ConverterFunc{
 		// The DATETIME type is used for values that contain both date and time parts.
 		// MySQL retrieves and displays DATETIME values in 'YYYY-MM-DD hh:mm:ss' format.
 		// The supported range is '1000-01-01 00:00:00' to '9999-12-31 23:59:59'.
-		t, err := time.Parse("2006-01-02 15:04:05", value.ToString())
+
+		t, err := time.Parse(time.DateTime, value.ToString())
 		if err != nil {
 			return nil, errors.Wrap(err, "failed to serialize DataType_NAIVE_DATETIME")
 		}
