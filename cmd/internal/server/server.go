@@ -3,11 +3,9 @@ package server
 import (
 	"context"
 	"fmt"
+	"github.com/planetscale/fivetran-source/cmd/internal/server/handlers"
 	"log"
 	"os"
-	"time"
-
-	"github.com/planetscale/fivetran-source/cmd/internal/server/handlers"
 
 	"github.com/planetscale/fivetran-source/lib"
 
@@ -164,17 +162,14 @@ func (c *connectorServer) Update(request *fivetran_sdk.UpdateRequest, server fiv
 		db = c.clientConstructor()
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	sourceSchema, err := c.schema.Handle(ctx, psc, &mysqlClient)
+	sourceSchema, err := c.schema.Handle(context.Background(), psc, &mysqlClient)
 	if err != nil {
 		return status.Errorf(codes.InvalidArgument, "unable get source schema for this database : %q", err)
 	}
 
 	logger := handlers.NewSchemaAwareSerializer(server, requestId, psc.TreatTinyIntAsBoolean, sourceSchema.GetWithSchema())
 
-	shards, err := db.ListShards(ctx, *psc)
+	shards, err := db.ListShards(context.Background(), *psc)
 	if err != nil {
 		return status.Errorf(codes.InvalidArgument, "unable to list shards for this database : %q", err)
 	}
