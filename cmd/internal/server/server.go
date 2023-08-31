@@ -3,9 +3,10 @@ package server
 import (
 	"context"
 	"fmt"
-	"github.com/planetscale/fivetran-source/cmd/internal/server/handlers"
 	"log"
 	"os"
+
+	"github.com/planetscale/fivetran-source/cmd/internal/server/handlers"
 
 	"github.com/planetscale/fivetran-source/lib"
 
