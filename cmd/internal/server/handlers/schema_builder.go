@@ -11,6 +11,12 @@ import (
 	fivetransdk "github.com/planetscale/fivetran-sdk-grpc/go"
 )
 
+const (
+	gCTableNameExpression string = `^_vt_(HOLD|PURGE|EVAC|DROP)_([0-f]{32})_([0-9]{14})$`
+)
+
+var gcTableNameRegexp = regexp.MustCompile(gCTableNameExpression)
+
 type fivetranSchemaBuilder struct {
 	schemas               map[string]*fivetransdk.Schema
 	tables                map[string]map[string]*fivetransdk.Table
@@ -36,6 +42,11 @@ func (s *fivetranSchemaBuilder) OnKeyspace(keyspaceName string) {
 }
 
 func (s *fivetranSchemaBuilder) OnTable(keyspaceName, tableName string) {
+	// skip any that are Vitess's GC tables.
+	if gcTableNameRegexp.MatchString(tableName) {
+		return
+	}
+
 	s.getOrCreateTable(keyspaceName, tableName)
 }
 
