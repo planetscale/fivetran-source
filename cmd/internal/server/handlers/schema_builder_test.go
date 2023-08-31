@@ -10,6 +10,23 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func TestCanIgnoreVitessGCTables(t *testing.T) {
+	sb := NewSchemaBuilder(true)
+	sb.OnKeyspace("Employees")
+
+	sb.OnTable("Employees", "_vt_DROP_6ace8bcef73211ea87e9f875a4d24e90_20200915120410")
+	sb.OnTable("Employees", "_vt_HOLD_6ace8bcef73211ea87e9f875a4d24e90_20200915120410")
+	sb.OnTable("Employees", "_vt_EVAC_6ace8bcef73211ea87e9f875a4d24e90_20200915120410")
+	sb.OnTable("Employees", "_vt_PURGE_6ace8bcef73211ea87e9f875a4d24e90_20200915120410")
+	resp, err := sb.(*fivetranSchemaBuilder).BuildResponse()
+	assert.NoError(t, err)
+	schemaResponse, ok := resp.Response.(*fivetransdk.SchemaResponse_WithSchema)
+	assert.True(t, ok)
+	assert.NotNil(t, schemaResponse)
+	assert.Len(t, schemaResponse.WithSchema.Schemas, 1)
+	assert.Len(t, schemaResponse.WithSchema.Schemas[0].Tables, 0)
+}
+
 func TestCanBuildSchema(t *testing.T) {
 	sb := NewSchemaBuilder(true)
 	sb.OnKeyspace("Employees")
