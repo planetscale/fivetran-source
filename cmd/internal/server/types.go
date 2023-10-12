@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 
 	"github.com/pkg/errors"
 	psdbconnect "github.com/planetscale/airbyte-source/proto/psdbconnect/v1alpha1"
@@ -82,6 +83,22 @@ func SourceFromRequest(request ConfiguredRequest) (*lib.PlanetScaleSource, error
 		psc.Host = val
 	} else {
 		return nil, errors.New("hostname not found in configuration")
+	}
+
+	if val, ok := configuration["treat_tiny_int_as_boolean"]; ok {
+		b, err := strconv.ParseBool(val)
+		if err != nil {
+			return nil, errors.New("treat_tiny_int_as_boolean is not a boolean")
+		}
+		psc.TreatTinyIntAsBoolean = b
+	}
+
+	if val, ok := configuration["use_replica"]; ok {
+		b, err := strconv.ParseBool(val)
+		if err != nil {
+			return nil, errors.New("use_replica is not a boolean")
+		}
+		psc.UseReplica = b
 	}
 
 	return psc, nil
