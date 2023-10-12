@@ -56,9 +56,20 @@ func (ConfigurationForm) Handle(ctx context.Context, _ *fivetransdk.Configuratio
 			},
 			{
 				Name:  "shards",
-				Label: "(Optional) Comma-separated list of shards to sync",
+				Label: "Comma-separated list of shards to sync",
 				Type: &fivetransdk.FormField_TextField{
 					TextField: fivetransdk.TextField_PlainText,
+				},
+			},
+			{
+				Name:  "use_replica",
+				Label: "Use Replica?",
+				Type: &fivetransdk.FormField_DropdownField{
+					DropdownField: &fivetransdk.DropdownField{
+						DropdownField: []string{
+							"true", "false",
+						},
+					},
 				},
 			},
 			{
