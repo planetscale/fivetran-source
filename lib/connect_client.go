@@ -326,6 +326,7 @@ func (p connectClient) getLatestCursorPosition(ctx context.Context, shard, keysp
 			Position: "current",
 		},
 		TabletType: tabletType,
+		Cells:      []string{"planetscale_operator_default"},
 	}
 
 	c, err := client.Sync(ctx, sReq)
