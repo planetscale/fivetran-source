@@ -117,6 +117,7 @@ func TestRead_CanPickPrimaryForShardedKeyspaces(t *testing.T) {
 	cc := clientConnectionMock{
 		syncFn: func(ctx context.Context, in *psdbconnect.SyncRequest, opts ...grpc.CallOption) (psdbconnect.Connect_SyncClient, error) {
 			assert.Equal(t, psdbconnect.TabletType_primary, in.TabletType)
+			assert.Contains(t, in.Cells, "planetscale_operator_default")
 			return syncClient, nil
 		},
 	}
@@ -125,6 +126,49 @@ func TestRead_CanPickPrimaryForShardedKeyspaces(t *testing.T) {
 	}
 	ps := PlanetScaleSource{
 		Database: "connect-test",
+	}
+	onRow := func(*sqltypes.Result, Operation) error {
+		return nil
+	}
+	onCursor := func(*psdbconnect.TableCursor) error {
+		return nil
+	}
+	sc, err := ped.Read(context.Background(), dbl, ps, "customers", nil, tc, onRow, onCursor, nil)
+	assert.NoError(t, err)
+	esc, err := TableCursorToSerializedCursor(tc)
+	assert.NoError(t, err)
+	assert.Equal(t, esc, sc)
+	assert.Equal(t, 1, cc.syncFnInvokedCount)
+}
+
+func TestRead_CanPickReplicaForShardedKeyspaces(t *testing.T) {
+	dbl := &dbLogger{}
+	ped := connectClient{}
+	tc := &psdbconnect.TableCursor{
+		Shard:    "40-80",
+		Position: "THIS_IS_A_SHARD_GTID",
+		Keyspace: "connect-test",
+	}
+
+	syncClient := &connectSyncClientMock{
+		syncResponses: []*psdbconnect.SyncResponse{
+			{Cursor: tc},
+		},
+	}
+
+	cc := clientConnectionMock{
+		syncFn: func(ctx context.Context, in *psdbconnect.SyncRequest, opts ...grpc.CallOption) (psdbconnect.Connect_SyncClient, error) {
+			assert.Equal(t, psdbconnect.TabletType_replica, in.TabletType)
+			assert.Contains(t, in.Cells, "planetscale_operator_default")
+			return syncClient, nil
+		},
+	}
+	ped.clientFn = func(ctx context.Context, ps PlanetScaleSource) (psdbconnect.ConnectClient, error) {
+		return &cc, nil
+	}
+	ps := PlanetScaleSource{
+		Database:   "connect-test",
+		UseReplica: true,
 	}
 	onRow := func(*sqltypes.Result, Operation) error {
 		return nil
