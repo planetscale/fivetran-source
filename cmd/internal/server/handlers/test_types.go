@@ -18,32 +18,39 @@ func (l *testLogSender) Send(response *fivetransdk.UpdateResponse) error {
 	return l.sendError
 }
 
-type testLogger struct{}
+type testLogger struct {
+	truncateCalled bool
+}
 
 func (testLogger) Info(s string) {
 	// TODO implement me
 	panic("implement me")
 }
 
-func (testLogger) Log(level fivetransdk.LogLevel, s string) error {
+func (tl *testLogger) Log(level fivetransdk.LogLevel, s string) error {
 	// TODO implement me
 	panic("implement me")
 }
 
-func (testLogger) Update(*lib.UpdatedRow, *fivetransdk.SchemaSelection, *fivetransdk.TableSelection) error {
+func (tl *testLogger) Update(*lib.UpdatedRow, *fivetransdk.SchemaSelection, *fivetransdk.TableSelection) error {
 	return fmt.Errorf("%v is not implemented", "Update")
 }
 
-func (testLogger) Record(result *sqltypes.Result, selection *fivetransdk.SchemaSelection, selection2 *fivetransdk.TableSelection, operation lib.Operation) error {
+func (tl *testLogger) Truncate(*fivetransdk.SchemaSelection, *fivetransdk.TableSelection) error {
+	tl.truncateCalled = true
+	return nil
+}
+
+func (tl *testLogger) Record(result *sqltypes.Result, selection *fivetransdk.SchemaSelection, selection2 *fivetransdk.TableSelection, operation lib.Operation) error {
 	// TODO implement me
 	panic("implement me")
 }
 
-func (testLogger) State(state lib.SyncState) error {
+func (tl *testLogger) State(state lib.SyncState) error {
 	return nil
 }
 
-func (testLogger) Release() {
+func (tl *testLogger) Release() {
 	// TODO implement me
 	panic("implement me")
 }
