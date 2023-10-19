@@ -35,13 +35,13 @@ Once Fivetran is connected to your PlanetScale primary or read replica, we pull 
 
 ### Syncing empty tables and columns
 
-Fivetran can sync empty tables and columns for your PlanetScale connector. For more information, see our [Features documentation](https://fivetran.com/docs/getting-started/features#syncingemptytablesandcolumns).
+Fivetran can sync empty tables and columns for your PlanetScale connector. For more information, see our [Features documentation](/docs/getting-started/features#syncingemptytablesandcolumns).
 
 ----
 
 ## Schema information
 
-Fivetran tries to replicate the exact schema and tables from your PlanetScale source database to your destination according to our [standard database update strategies](https://fivetran.com/docs/databases#transformationandmappingoverview). For every schema in the PlanetScale database you connect, we create a schema in your destination that maps directly to its native schema. This ensures that the data in your destination is in a familiar format to work with.
+Fivetran tries to replicate the exact schema and tables from your PlanetScale source database to your destination according to our [standard database update strategies](/docs/databases#transformationandmappingoverview). For every schema in the PlanetScale database you connect, we create a schema in your destination that maps directly to its native schema. This ensures that the data in your destination is in a familiar format to work with.
 
 ### Fivetran-generated columns
 
@@ -109,8 +109,7 @@ In some cases, when loading data into your destination, we may need to convert F
 
 ### Unparsable values
 
-[link](https://fivetran.com/docs/databases/mysql#unparsablevalues)
-When we encounter an unparsable value of one of the following data types, we substitute it with a default value. Which default value we use depends on whether the unparsable value is in a primary key column or non-primary key column:
+When we encounter [an unparsable value](/docs/databases/mysql#unparsablevalues) of one of the following data types, we substitute it with a default value. Which default value we use depends on whether the unparsable value is in a primary key column or non-primary key column:
 
 | MySQL Type | Primary Key Value | Non-Primary Key Value |
 | - | - | - |
@@ -128,7 +127,7 @@ If you don’t want to sync all the data from your master database, you can excl
 
 ## Initial sync
 
-When Fivetran connects to a new database, we first copy all rows from every table in every schema for which we have SELECT permission (except those you have excluded in your Fivetran dashboard) and add [Fivetran-generated columns](https://fivetran.com/docs/databases/mysql#fivetrangeneratedcolumns). Tables are copied in ascending size order (from smallest to largest). We copy rows by performing a SELECT statement on each table. For large tables, we copy a limited number of rows at a time so that we don't have to start the sync again from the beginning if our connection is lost midway.
+When Fivetran connects to a new database, we first copy all rows from every table in every schema for which we have SELECT permission (except those you have excluded in your Fivetran dashboard) and add [Fivetran-generated columns](/docs/databases/mysql#fivetrangeneratedcolumns). Tables are copied in ascending size order (from smallest to largest). We copy rows by performing a SELECT statement on each table. For large tables, we copy a limited number of rows at a time so that we don't have to start the sync again from the beginning if our connection is lost midway.
 
 The duration of initial syncs can vary depending on the number and size of tables to be imported. We, therefore, interleave incremental updates with the table imports during the initial sync.
 
