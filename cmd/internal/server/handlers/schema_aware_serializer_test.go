@@ -228,6 +228,39 @@ func TestCanSerializeUpdate(t *testing.T) {
 	assert.Equal(t, "string:\"YayavaramNarasimha\"", data["name"].String())
 }
 
+func TestCanSerializeTruncate(t *testing.T) {
+	_, s, err := generateTestRecord("PhaniRaj")
+	assert.NoError(t, err)
+	tl := &testLogSender{}
+	l := NewSchemaAwareSerializer(tl, "", false, &fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{s}})
+
+	schema := &fivetransdk.SchemaSelection{
+		Included:   true,
+		SchemaName: s.Name,
+	}
+	table := &fivetransdk.TableSelection{
+		TableName: "Customers",
+		Included:  true,
+		Columns:   map[string]bool{},
+	}
+
+	for i := 0; i < 3; i++ {
+		err = l.Truncate(schema, table)
+
+		assert.NoError(t, err)
+		assert.NotNil(t, tl.lastResponse)
+	}
+
+	operation, ok := tl.lastResponse.Response.(*fivetransdk.UpdateResponse_Operation)
+	require.Truef(t, ok, "recordResponse Operation is not of type %s", "UpdateResponse_Operation")
+
+	operationRecord, ok := operation.Operation.Op.(*fivetransdk.Operation_Record)
+	assert.Truef(t, ok, "recordResponse Operation.Op is not of type %s", "Operation_Record")
+
+	assert.Equal(t, fivetransdk.OpType_TRUNCATE, operationRecord.Record.Type)
+	assert.Nil(t, operationRecord.Record.Data)
+}
+
 func generateTestRecord(name string) (*sqltypes.Result, *fivetransdk.Schema, error) {
 	notes, err := sqltypes.NewValue(querypb.Type_TEXT, []byte("Something great comes this way"))
 	if err != nil {
