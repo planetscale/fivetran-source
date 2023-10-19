@@ -26,7 +26,6 @@ func (s *Sync) Handle(psc *lib.PlanetScaleSource, db *lib.ConnectClient, logger 
 	ctx := context.Background()
 	for _, ks := range includedKeyspaces(schema) {
 		for _, table := range includedTables(ks) {
-
 			stateKey := ks.SchemaName + ":" + table.TableName
 			streamState, ok := state.Keyspaces[ks.SchemaName].Streams[stateKey]
 			if !ok {
@@ -53,6 +52,11 @@ func (s *Sync) Handle(psc *lib.PlanetScaleSource, db *lib.ConnectClient, logger 
 				if err != nil {
 					return status.Error(codes.Internal, fmt.Sprintf("invalid cursor for stream %v, failed with [%v]", stateKey, err))
 				}
+
+				if tc.Position == "" {
+					logger.Truncate(ks, table)
+				}
+
 				columns := includedColumns(table)
 				sc, err := (*db).Read(ctx, logger, *psc, table.TableName, columns, tc, onRow, onCursor, onUpdate)
 				if err != nil {

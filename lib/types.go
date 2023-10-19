@@ -16,6 +16,7 @@ const (
 	OpType_Insert Operation = iota
 	OpType_Update
 	OpType_Delete
+	OpType_Truncate
 )
 
 type UpdatedRow struct {

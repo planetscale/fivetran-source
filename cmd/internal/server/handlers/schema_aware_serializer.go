@@ -16,9 +16,10 @@ import (
 )
 
 var fivetranOpMap = map[lib.Operation]fivetransdk.OpType{
-	lib.OpType_Insert: fivetransdk.OpType_UPSERT,
-	lib.OpType_Delete: fivetransdk.OpType_DELETE,
-	lib.OpType_Update: fivetransdk.OpType_UPDATE,
+	lib.OpType_Insert:   fivetransdk.OpType_UPSERT,
+	lib.OpType_Delete:   fivetransdk.OpType_DELETE,
+	lib.OpType_Update:   fivetransdk.OpType_UPDATE,
+	lib.OpType_Truncate: fivetransdk.OpType_TRUNCATE,
 }
 
 type Serializer interface {
@@ -27,6 +28,7 @@ type Serializer interface {
 	Record(*sqltypes.Result, *fivetransdk.SchemaSelection, *fivetransdk.TableSelection, lib.Operation) error
 	State(lib.SyncState) error
 	Update(*lib.UpdatedRow, *fivetransdk.SchemaSelection, *fivetransdk.TableSelection) error
+	Truncate(*fivetransdk.SchemaSelection, *fivetransdk.TableSelection) error
 }
 
 type LogSender interface {
@@ -188,6 +190,10 @@ func (l *schemaAwareSerializer) Update(updatedRow *lib.UpdatedRow, schema *fivet
 	return l.serializeResult(updatedRow.Before, updatedRow.After, schema, table, lib.OpType_Update)
 }
 
+func (l *schemaAwareSerializer) Truncate(schema *fivetransdk.SchemaSelection, table *fivetransdk.TableSelection) error {
+	return l.sendTruncate(schema, table)
+}
+
 func (l *schemaAwareSerializer) Record(result *sqltypes.Result, schema *fivetransdk.SchemaSelection, table *fivetransdk.TableSelection, opType lib.Operation) error {
 	return l.serializeResult(nil, result, schema, table, opType)
 }
@@ -255,6 +261,23 @@ func (l *schemaAwareSerializer) serializeResult(before *sqltypes.Result, after *
 	}
 
 	return nil
+}
+
+func (l *schemaAwareSerializer) sendTruncate(schema *fivetransdk.SchemaSelection, table *fivetransdk.TableSelection) error {
+	return l.sender.Send(&fivetransdk.UpdateResponse{
+		Response: &fivetransdk.UpdateResponse_Operation{
+			Operation: &fivetransdk.Operation{
+				Op: &fivetransdk.Operation_Record{
+					Record: &fivetransdk.Record{
+						SchemaName: &schema.SchemaName,
+						TableName:  table.TableName,
+						Type:       fivetransdk.OpType_TRUNCATE,
+						Data:       nil,
+					},
+				},
+			},
+		},
+	})
 }
 
 func generateRecordSerializer(table *fivetransdk.TableSelection, selectedSchemaName string, schemaList *fivetransdk.SchemaList, serializeTinyIntAsBool bool) (recordSerializer, error) {
