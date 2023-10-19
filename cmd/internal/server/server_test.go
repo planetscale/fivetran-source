@@ -311,8 +311,8 @@ func geometryTypeTest(t *testing.T, geometry []byte, geojson string) {
 		}
 		rows = append(rows, resp)
 	}
-	assert.Len(t, rows, 3)
-	operation := rows[0].GetOperation()
+	assert.Len(t, rows, 5)
+	operation := rows[1].GetOperation()
 	require.NotNil(t, operation)
 	record, ok := operation.Op.(*fivetransdk.Operation_Record)
 	assert.True(t, ok)
@@ -409,8 +409,8 @@ func TestUpdateReturnsInserts(t *testing.T) {
 		}
 		rows = append(rows, resp)
 	}
-	assert.Len(t, rows, 3)
-	operation := rows[0].GetOperation()
+	assert.Len(t, rows, 5)
+	operation := rows[1].GetOperation()
 	require.NotNil(t, operation)
 	record, ok := operation.Op.(*fivetransdk.Operation_Record)
 	assert.True(t, ok)
@@ -528,7 +528,7 @@ func TestUpdateReturnsErrors(t *testing.T) {
 		}
 		rows = append(rows, resp)
 	}
-	assert.Len(t, rows, 0)
+	assert.Len(t, rows, 1)
 	assert.NotNil(t, tErr)
 	assert.Equal(t, "rpc error: code = Internal desc = failed to download rows for table : customers , error : unable to serialize: DataType.BIG_INT", tErr.Error())
 }
@@ -610,8 +610,8 @@ func TestUpdateReturnsDeletes(t *testing.T) {
 		}
 		rows = append(rows, resp)
 	}
-	assert.Len(t, rows, 3)
-	operation := rows[0].GetOperation()
+	assert.Len(t, rows, 5)
+	operation := rows[1].GetOperation()
 	assert.NotNil(t, operation)
 	record, ok := operation.Op.(*fivetransdk.Operation_Record)
 	assert.True(t, ok)
@@ -729,8 +729,8 @@ func TestUpdateReturnsUpdates(t *testing.T) {
 		}
 		rows = append(rows, resp)
 	}
-	assert.Len(t, rows, 3)
-	operation := rows[0].GetOperation()
+	assert.Len(t, rows, 5)
+	operation := rows[1].GetOperation()
 	assert.NotNil(t, operation)
 	record, ok := operation.Op.(*fivetransdk.Operation_Record)
 	assert.True(t, ok)
@@ -971,8 +971,8 @@ func TestUpdateReturnsState(t *testing.T) {
 		}
 		rows = append(rows, resp)
 	}
-	assert.Len(t, rows, 2)
-	operation := rows[0].GetOperation()
+	assert.Len(t, rows, 3)
+	operation := rows[1].GetOperation()
 	assert.NotNil(t, operation)
 	checkpoint, ok := operation.Op.(*fivetransdk.Operation_Checkpoint)
 	require.True(t, ok)
