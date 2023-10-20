@@ -26,11 +26,14 @@ To connect your PlanetScale database to Fivetran, you need:
 
 Fivetran connects directly to your PlanetScale database.
 
-#### Connect using AWS Private Link
+#### Connect using private networking
 
-> IMPORTANT: You must have a Business Critical plan to use AWS Private Link.
+> IMPORTANT: You must have a Business Critical plan to use private networking.
 
-If your PlanetScale database is configured only to allow access through AWS PrivateLink, follow our [AWS Private Link setup guide](/docs/databases/connection-options#awsprivatelink) to configure Private Link for your PlanetScale database.
+We support the following providers:
+
+- AWS PrivateLink - used for VPCs and AWS-hosted or on-premises services. See our [AWS Private Link setup guide](/docs/databases/connection-options#awsprivatelink) for details.
+- GCP Private Service Connect - used for VPCs and Google-hosted or on-premises services. See our [GCP Private Service Connect setup guide](/docs/databases/connection-options#googlecloudprivateserviceconnect) for details.
 
 ### <span class="step-item">Set up PlanetScale connection string</span>
 
