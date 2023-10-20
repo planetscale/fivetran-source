@@ -17,7 +17,7 @@ Capture deletes: All tables and fields
 Data blocking: Column level, table level, and schema level
 Column Hashing
 Re-sync: Table level
-Private networking: Azure Private Link
+Private networking: AWS Private Link, GCP Private Service Connect
 {% /featureTable %}
 
 ----
