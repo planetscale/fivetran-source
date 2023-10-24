@@ -42,7 +42,7 @@ test:
 
 .PHONY: build
 build:
-	@go build ./...
+	@CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" ./...
 
 .PHONY: fmt
 fmt: bootstrap
@@ -50,7 +50,7 @@ fmt: bootstrap
 
 .PHONY: build-server
 build-server:
-	@go build -x ./cmd/server
+	@CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -x ./cmd/server
 
 .PHONY: server
 server:
@@ -59,7 +59,7 @@ server:
 .PHONY: lint
 lint:
 	@go install honnef.co/go/tools/cmd/staticcheck@latest
-	@staticcheck ./...
+	@$(GOBIN)/staticcheck ./...
 
 .PHONY: lint-fmt
 lint-fmt: fmt
