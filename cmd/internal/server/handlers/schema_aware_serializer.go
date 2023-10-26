@@ -307,7 +307,7 @@ func generateRecordSerializer(table *fivetransdk.TableSelection, selectedSchemaN
 
 			for _, colunWithSchema := range tableSchema.Columns {
 				if colName == colunWithSchema.Name {
-					serializers[colName], err = GetConverter(colunWithSchema.Type, serializeTinyIntAsBool)
+					serializers[colName], err = GetConverter(colunWithSchema.Type)
 					if err != nil {
 						return nil, err
 					}

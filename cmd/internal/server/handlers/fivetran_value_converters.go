@@ -207,21 +207,7 @@ var converters = map[fivetransdk.DataType]ConverterFunc{
 	},
 }
 
-var convertTinyIntToBool = func(value sqltypes.Value) (*fivetransdk.ValueType, error) {
-	b, err := value.ToBool()
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to serialize Type_INT8")
-	}
-	return &fivetransdk.ValueType{
-		Inner: &fivetransdk.ValueType_Bool{Bool: b},
-	}, nil
-}
-
-func GetConverter(dataType fivetransdk.DataType, serializeTinyIntAsBool bool) (ConverterFunc, error) {
-	if serializeTinyIntAsBool && dataType == fivetransdk.DataType_INT {
-		return convertTinyIntToBool, nil
-	}
-
+func GetConverter(dataType fivetransdk.DataType) (ConverterFunc, error) {
 	converter, ok := converters[dataType]
 	if !ok {
 		return nil, fmt.Errorf("don't know how to convert type %s", dataType)
