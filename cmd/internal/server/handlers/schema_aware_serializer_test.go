@@ -177,7 +177,7 @@ func TestCanSerializeDelete(t *testing.T) {
 	data := operationRecord.Record.Data
 	assert.NotNil(t, data)
 	assert.Equal(t, 2, len(data), "should serialize only primary keys for deleted rows")
-	assert.Equal(t, int32(123), data["customer_id"].GetShort())
+	assert.Equal(t, int32(123), data["customer_id"].GetInt())
 	assert.Equal(t, "string:\"PhaniRaj\"", data["name"].String())
 }
 
@@ -225,7 +225,7 @@ func TestCanSerializeUpdate(t *testing.T) {
 	data := operationRecord.Record.Data
 	assert.NotNil(t, data)
 	assert.Equal(t, 2, len(data))
-	assert.Equal(t, int32(123), data["customer_id"].GetShort())
+	assert.Equal(t, int32(123), data["customer_id"].GetInt())
 	assert.Equal(t, "string:\"YayavaramNarasimha\"", data["name"].String())
 }
 
@@ -544,7 +544,7 @@ func TestCanSkipColumns(t *testing.T) {
 					Columns: []*fivetransdk.Column{
 						{
 							Name: "customer_id",
-							Type: fivetransdk.DataType_SHORT,
+							Type: fivetransdk.DataType_INT,
 						},
 						{
 							Name: "name",
@@ -582,7 +582,7 @@ func TestCanSkipColumns(t *testing.T) {
 	data := operationRecord.Record.Data
 	assert.NotNil(t, data)
 
-	assert.Equal(t, int32(123), data["customer_id"].GetShort())
+	assert.Equal(t, int32(123), data["customer_id"].GetInt())
 	_, found := data["name"]
 	assert.False(t, found, "should not include unselected column in output")
 }
