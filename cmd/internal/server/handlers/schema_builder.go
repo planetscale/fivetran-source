@@ -140,6 +140,10 @@ func getFivetranDataType(mType string, treatTinyIntAsBoolean bool) (fivetransdk.
 		return fivetransdk.DataType_BINARY, nil
 	}
 
+	if strings.HasPrefix(mysqlType, "binary") {
+		return fivetransdk.DataType_BINARY, nil
+	}
+
 	if strings.HasPrefix(mysqlType, "int") {
 		if strings.Contains(mysqlType, "unsigned") {
 			return fivetransdk.DataType_LONG, nil
