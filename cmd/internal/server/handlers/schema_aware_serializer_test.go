@@ -22,7 +22,7 @@ func TestCanSerializeInsert(t *testing.T) {
 	row, s, err := generateTestRecord("PhaniRaj")
 	require.NoError(t, err)
 	tl := &testLogSender{}
-	l := NewSchemaAwareSerializer(tl, "", false, &fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{s}})
+	l := NewSchemaAwareSerializer(tl, "", true, &fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{s}})
 
 	schema := &fivetransdk.SchemaSelection{
 		Included:   true,
@@ -54,7 +54,7 @@ func TestCanSerializeInsert(t *testing.T) {
 	data := operationRecord.Record.Data
 	assert.NotNil(t, data)
 
-	assert.Equal(t, int32(123), data["customer_id"].GetShort())
+	assert.Equal(t, int32(123), data["customer_id"].GetInt())
 	assert.Equal(t, "string:\"PhaniRaj\"", data["name"].String())
 	assert.Equal(t, "string:\"Something great comes this way\"", data["notes"].String())
 	assert.False(t, data["is_deleted"].GetBool())
@@ -73,6 +73,7 @@ func TestCanSerializeInsert(t *testing.T) {
 	dt, err := time.Parse("2006-01-02 15:04:05", "2021-01-19 03:14:07.999999")
 	require.NoError(t, err)
 	assert.Equal(t, timestamppb.New(dt).Nanos, data["datetime_value"].GetNaiveDatetime().Nanos)
+	assert.True(t, data["tiny_int_as_bool_value"].GetBool())
 }
 
 func TestCanSerializeNulLValues(t *testing.T) {
@@ -387,6 +388,11 @@ func generateTestRecord(name string) (*sqltypes.Result, *fivetransdk.Schema, err
 				Type:  querypb.Type_DATETIME,
 				Flags: 32928,
 			},
+			{
+				Name:  "tiny_int_as_bool_value",
+				Type:  querypb.Type_INT8,
+				Flags: 32928,
+			},
 		},
 		Rows: [][]sqltypes.Value{
 			{
@@ -408,6 +414,7 @@ func generateTestRecord(name string) (*sqltypes.Result, *fivetransdk.Schema, err
 				sqltypes.NewDate("2004-12-12"),
 				sqltypes.NewTimestamp(timestamp),
 				sqltypes.NewDatetime("2021-01-19 03:14:07.999999"),
+				sqltypes.NewInt32(1),
 			},
 		},
 	}
@@ -419,7 +426,7 @@ func generateTestRecord(name string) (*sqltypes.Result, *fivetransdk.Schema, err
 				Columns: []*fivetransdk.Column{
 					{
 						Name:       "customer_id",
-						Type:       fivetransdk.DataType_SHORT,
+						Type:       fivetransdk.DataType_INT,
 						PrimaryKey: true,
 					},
 					{
@@ -490,6 +497,10 @@ func generateTestRecord(name string) (*sqltypes.Result, *fivetransdk.Schema, err
 					{
 						Name: "datetime_value",
 						Type: fivetransdk.DataType_NAIVE_DATETIME,
+					},
+					{
+						Name: "tiny_int_as_bool_value",
+						Type: fivetransdk.DataType_BOOLEAN,
 					},
 				},
 			},
