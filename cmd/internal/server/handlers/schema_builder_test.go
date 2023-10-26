@@ -108,6 +108,14 @@ func TestSchema_CanPickRightFivetranType(t *testing.T) {
 			FivetranType: fivetransdk.DataType_LONG,
 		},
 		{
+			MysqlType:    "varbinary",
+			FivetranType: fivetransdk.DataType_BINARY,
+		},
+		{
+			MysqlType:    "binary(16)",
+			FivetranType: fivetransdk.DataType_BINARY,
+		},
+		{
 			MysqlType:    "bigint unsigned",
 			FivetranType: fivetransdk.DataType_LONG,
 		},
