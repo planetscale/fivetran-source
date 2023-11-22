@@ -53,7 +53,8 @@ Back in Fivetran, in your [connector setup form](/docs/getting-started/fivetran-
 4. **Database username**: Paste in the copied value for `username`
 5. **Database password**: Paste in the copied value for `password`
 6. **Comma-separated list of shards to sync (optional)**: If your PlanetScale database is *not* sharded, ignore this field. If the database is sharded, by default, the PlanetScale connector will download rows from all shards in the database. To pick which shards are synced by the connector, you can optionally provide a comma-separated list of shards in the connector configuration.
-7. **Use replica?**: In PlanetScale, VStream will connect to the primary tablet for your database, which also serves queries to your database. To lessen the load on the primary tablet, set this to `true` to make Vstream read from a replica of your database.
+7. **Use replica?**: In PlanetScale, VStream will connect to the primary tablet for your database, which also serves queries to your database. To lessen the load on the primary tablet, set this to `true` to make Vstream read from a replica of your database. 
+    - Please note that only PlanetScale production branches have replica tablets. If connecting to a development branch, please set `useReplica` to `false`.
 8. **Treat tinyint(1) as boolean (optional)**: You can choose to have the connector transform tinyint(1) type columns in your database to either `true` or `false`.
 9. **Fivetran IPs (optional)**: If your connection string was created with [IP restrictions](https://planetscale.com/docs/concepts/connection-strings#ip-restrictions), ensure that the [Fivetran IP ranges](/docs/using-fivetran/ips) are added to the password.
 
