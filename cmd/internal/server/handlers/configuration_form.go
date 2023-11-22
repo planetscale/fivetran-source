@@ -16,6 +16,7 @@ func (ConfigurationForm) Handle(ctx context.Context, _ *fivetransdk.Configuratio
 	usernameDesc := "Username to connect to your PlanetScale database"
 	passwordDesc := "Password to connect to your PlanetScale database"
 	tinyIntDesc := "Enable this setting to serialize tinyint(1) as boolean values"
+	useReplicaDesc := "Only set to true if your PlanetScale branch has a replica. PlanetScale Development branches do not have replicas."
 	resp := &fivetransdk.ConfigurationFormResponse{
 		Fields: []*fivetransdk.FormField{
 			{
@@ -62,8 +63,9 @@ func (ConfigurationForm) Handle(ctx context.Context, _ *fivetransdk.Configuratio
 				},
 			},
 			{
-				Name:  "use_replica",
-				Label: "Use Replica?",
+				Name:        "use_replica",
+				Label:       "Use Replica?",
+				Description: &useReplicaDesc,
 				Type: &fivetransdk.FormField_DropdownField{
 					DropdownField: &fivetransdk.DropdownField{
 						DropdownField: []string{
