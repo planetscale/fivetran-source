@@ -4,11 +4,13 @@ title:
 description: Fivetran for PlanetScale documentation includes a setup guide and more. Learn how our data pipelines make it easy for analysts to use SQL or analytics tools.
 ---
 
-# PlanetScale {% availabilityBadge connector="planetscale" /%}
+# PlanetScale {% typeBadge connector="planetscale" /%} {% availabilityBadge connector="planetscale" /%}
 
 [PlanetScale](https://planetscale.com) is a MySQL database platform built on top of Vitess, the popular open-source database management technology created at YouTube. Vitess enables horizontal sharding of MySQL abstracted from the application layer. It’s designed to improve database management and provide a performant, fault-tolerant database that can handle large workloads.
 
 PlanetScale provides customers with the power of Vitess, offering a fully managed and performant MySQL database service with horizontal sharding, Git-like schema change workflows, automatic backup, recovery, advanced query analytics, and multi-region replication capabilities. PlanetScale can be deployed on multiple cloud platforms, including Amazon Web Services (AWS) and Google Cloud Platform (GCP).
+
+> NOTE: This connector is [partner-built](/docs/partner-built-program). For any questions related to PlanetScale connector and its documentation, contact PlanetScale's support team. For details on SLA, see [PlanetScale's Support Overview documentation](https://planetscale.com/docs/support/support-overview).
 
 ----
 
@@ -24,7 +26,7 @@ Private networking: AWS Private Link, GCP Private Service Connect
 
 ## Setup guide
 
-Follow our [step-by-step PlanetScale setup guide](/docs/databases/planetscale/setup-guide) to connect your PlanetScale database with Fivetran.
+Follow the [step-by-step PlanetScale setup guide](/docs/databases/planetscale/setup-guide) to connect your PlanetScale database with Fivetran.
 
 ----
 
@@ -35,7 +37,7 @@ Once Fivetran is connected to your PlanetScale primary or read replica, we pull 
 
 ### Syncing empty tables and columns
 
-Fivetran can sync empty tables and columns for your PlanetScale connector. For more information, see our [Features documentation](/docs/getting-started/features#syncingemptytablesandcolumns).
+Fivetran can sync empty tables and columns for your PlanetScale connector. For more information, see our [Features documentation](/docs/using-fivetran/features#syncingemptytablesandcolumns).
 
 ----
 
@@ -103,9 +105,9 @@ The following table illustrates how we transform your MySQL data types into Five
 | VARBINARY | BINARY | True |
 | YEAR | INTEGER | True |
 
-If we are missing an important data type that you need, please [reach out to support](https://support.fivetran.com/).
+If we are missing an important data type that you need, [reach out to support](https://support.fivetran.com/).
 
-In some cases, when loading data into your destination, we may need to convert Fivetran data types into data types supported by the destination. For more information, see the [individual data destination pages](https://fivetran.com/docs/destinations).
+In some cases, when loading data into your destination, we may need to convert Fivetran data types into data types supported by the destination. For more information, see the [individual data destination pages](/docs/destinations).
 
 ### Unparsable values
 
@@ -121,7 +123,7 @@ Although we may be able to read some values outside the supported DATE, DATETIME
 
 ### Excluding source data
 
-If you don’t want to sync all the data from your master database, you can exclude schemas, tables, or columns from your syncs on your Fivetran dashboard. To do so, go to your connector details page and uncheck the objects you want to omit from syncing. For more information, see our [Column Blocking documentation](https://fivetran.com/docs/getting-started/features/column-blocking-hashing).
+If you don’t want to sync all the data from your master database, you can exclude schemas, tables, or columns from your syncs on your Fivetran dashboard. To do so, go to your connector details page and uncheck the objects you want to omit from syncing. For more information, see our [Column Blocking documentation](/docs/using-fivetran/features/column-blocking-hashing#columnblocking).
 
 ----
 
