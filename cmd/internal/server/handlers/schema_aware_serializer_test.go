@@ -74,6 +74,7 @@ func TestCanSerializeInsert(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, timestamppb.New(dt).Nanos, data["datetime_value"].GetNaiveDatetime().Nanos)
 	assert.True(t, data["tiny_int_as_bool_value"].GetBool())
+	assert.Equal(t, "string:\"enum_value\"", data["enum_value"].String())
 }
 
 func TestCanSerializeNulLValues(t *testing.T) {
@@ -283,6 +284,10 @@ func generateTestRecord(name string) (*sqltypes.Result, *fivetransdk.Schema, err
 	if err != nil {
 		return nil, nil, err
 	}
+	enumValue, err := sqltypes.NewValue(querypb.Type_ENUM, []byte("enum_value"))
+	if err != nil {
+		return nil, nil, err
+	}
 	timestamp := "2006-01-02 15:04:05"
 	row := &sqltypes.Result{
 		Fields: []*querypb.Field{
@@ -393,6 +398,11 @@ func generateTestRecord(name string) (*sqltypes.Result, *fivetransdk.Schema, err
 				Type:  querypb.Type_INT8,
 				Flags: 32928,
 			},
+			{
+				Name:  "enum_value",
+				Type:  querypb.Type_ENUM,
+				Flags: 32928,
+			},
 		},
 		Rows: [][]sqltypes.Value{
 			{
@@ -415,6 +425,7 @@ func generateTestRecord(name string) (*sqltypes.Result, *fivetransdk.Schema, err
 				sqltypes.NewTimestamp(timestamp),
 				sqltypes.NewDatetime("2021-01-19 03:14:07.999999"),
 				sqltypes.NewInt32(1),
+				enumValue,
 			},
 		},
 	}
@@ -501,6 +512,10 @@ func generateTestRecord(name string) (*sqltypes.Result, *fivetransdk.Schema, err
 					{
 						Name: "tiny_int_as_bool_value",
 						Type: fivetransdk.DataType_BOOLEAN,
+					},
+					{
+						Name: "enum_value",
+						Type: fivetransdk.DataType_STRING,
 					},
 				},
 			},
