@@ -214,3 +214,29 @@ func GetConverter(dataType fivetransdk.DataType) (ConverterFunc, error) {
 	}
 	return converter, nil
 }
+
+func GetEnumConverter(enumValues []string) (ConverterFunc, error) {
+	return func(value sqltypes.Value) (*fivetransdk.ValueType, error) {
+		index, err := value.ToInt()
+		if err != nil {
+			// If value is not an integer (index), we just serialize it as a string
+			return &fivetransdk.ValueType{
+				Inner: &fivetransdk.ValueType_String_{String_: value.ToString()},
+			}, nil
+		}
+		for i, v := range enumValues {
+			if index == i {
+				return &fivetransdk.ValueType{
+					Inner: &fivetransdk.ValueType_String_{String_: v},
+				}, nil
+			}
+		}
+		return nil, errors.Wrap(err, "failed to serialize enum as DataType_STRING")
+	}, nil
+}
+
+func GetSetConverter(setValues []string) (ConverterFunc, error) {
+	return func(value sqltypes.Value) (*fivetransdk.ValueType, error) {
+		return nil, nil
+	}, nil
+}
