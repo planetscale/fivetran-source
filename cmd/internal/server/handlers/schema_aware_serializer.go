@@ -144,13 +144,13 @@ func convertRowToMap(row *sqltypes.Row, columns []string) map[string]sqltypes.Va
 	return record
 }
 
-func NewSchemaAwareSerializer(sender LogSender, prefix string, serializeTinyIntAsBool bool, schema *SchemaWithMetadata) Serializer {
+func NewSchemaAwareSerializer(sender LogSender, prefix string, serializeTinyIntAsBool bool, schemaList *fivetransdk.SchemaList, enumAndSetValues map[string]map[string]map[string][]string) Serializer {
 	return &schemaAwareSerializer{
 		prefix:                 prefix,
 		sender:                 sender,
 		serializeTinyIntAsBool: serializeTinyIntAsBool,
-		schemaList:             schema.GetWithSchema(),
-		enumAndSetValues:       schema.enumAndSetValues,
+		schemaList:             schemaList,
+		enumAndSetValues:       enumAndSetValues,
 		serializers:            map[string]*recordSerializer{},
 	}
 }
