@@ -22,7 +22,7 @@ func TestCanSerializeInsert(t *testing.T) {
 	row, s, err := generateTestRecord("PhaniRaj")
 	require.NoError(t, err)
 	tl := &testLogSender{}
-	l := NewSchemaAwareSerializer(tl, "", true, &fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{s}})
+	l := NewSchemaAwareSerializer(tl, "", true, &SchemaWithMetadata{fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{s}}})
 
 	schema := &fivetransdk.SchemaSelection{
 		Included:   true,

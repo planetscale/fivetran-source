@@ -15,21 +15,31 @@ const (
 	gCTableNameExpression string = `^_vt_(HOLD|PURGE|EVAC|DROP)_([0-f]{32})_([0-9]{14})$`
 )
 
+type SchemaWithMetadata struct {
+	fivetransdk.SchemaResponse
+	enumAndSetValues map[string]map[string]map[string][]string
+}
+
 var gcTableNameRegexp = regexp.MustCompile(gCTableNameExpression)
 
-type fivetranSchemaBuilder struct {
+type FiveTranSchemaBuilder struct {
 	schemas               map[string]*fivetransdk.Schema
 	tables                map[string]map[string]*fivetransdk.Table
 	treatTinyIntAsBoolean bool
+	// We need to map enum and set indices to their actual values
+	// so that we can properly serialize them in the Update phase.
+	// This looks like keyspace -> table -> column -> enum/set values
+	enumAndSetValues map[string]map[string]map[string][]string
 }
 
 func NewSchemaBuilder(treatTinyIntAsBoolean bool) lib.SchemaBuilder {
-	return &fivetranSchemaBuilder{
+	return &FiveTranSchemaBuilder{
 		treatTinyIntAsBoolean: treatTinyIntAsBoolean,
+		enumAndSetValues:      map[string]map[string]map[string][]string{},
 	}
 }
 
-func (s *fivetranSchemaBuilder) OnKeyspace(keyspaceName string) {
+func (s *FiveTranSchemaBuilder) OnKeyspace(keyspaceName string) {
 	schema := &fivetransdk.Schema{
 		Name:   keyspaceName,
 		Tables: []*fivetransdk.Table{},
@@ -37,11 +47,14 @@ func (s *fivetranSchemaBuilder) OnKeyspace(keyspaceName string) {
 	if s.schemas == nil {
 		s.schemas = map[string]*fivetransdk.Schema{}
 	}
+	if s.enumAndSetValues[keyspaceName] == nil {
+		s.enumAndSetValues[keyspaceName] = map[string]map[string][]string{}
+	}
 
 	s.schemas[keyspaceName] = schema
 }
 
-func (s *fivetranSchemaBuilder) OnTable(keyspaceName, tableName string) {
+func (s *FiveTranSchemaBuilder) OnTable(keyspaceName, tableName string) {
 	// skip any that are Vitess's GC tables.
 	if gcTableNameRegexp.MatchString(tableName) {
 		return
@@ -50,7 +63,7 @@ func (s *fivetranSchemaBuilder) OnTable(keyspaceName, tableName string) {
 	s.getOrCreateTable(keyspaceName, tableName)
 }
 
-func (s *fivetranSchemaBuilder) getOrCreateTable(keyspaceName string, tableName string) *fivetransdk.Table {
+func (s *FiveTranSchemaBuilder) getOrCreateTable(keyspaceName string, tableName string) *fivetransdk.Table {
 	_, ok := s.schemas[keyspaceName]
 	if !ok {
 		s.OnKeyspace(keyspaceName)
@@ -83,14 +96,32 @@ func (s *fivetranSchemaBuilder) getOrCreateTable(keyspaceName string, tableName 
 	}
 
 	s.tables[keyspaceName][tableName] = table
+
+	// setting up for enum and set value mappings
+	keyspace, ok := s.enumAndSetValues[keyspaceName]
+	if !ok {
+		s.enumAndSetValues[keyspaceName] = map[string]map[string][]string{}
+	}
+	if keyspace[tableName] == nil {
+		keyspace[tableName] = map[string][]string{}
+	}
+
 	return table
 }
 
-func (s *fivetranSchemaBuilder) OnColumns(keyspaceName, tableName string, columns []lib.MysqlColumn) {
+func (s *FiveTranSchemaBuilder) OnColumns(keyspaceName, tableName string, columns []lib.MysqlColumn) {
 	table := s.getOrCreateTable(keyspaceName, tableName)
 	if table.Columns == nil {
 		table.Columns = []*fivetransdk.Column{}
 	}
+
+	if s.enumAndSetValues[keyspaceName] == nil {
+		s.enumAndSetValues[keyspaceName] = map[string]map[string][]string{}
+	}
+	if s.enumAndSetValues[keyspaceName][tableName] == nil {
+		s.enumAndSetValues[keyspaceName][tableName] = map[string][]string{}
+	}
+	enumAndSetValues := s.enumAndSetValues[keyspaceName][tableName]
 
 	for _, column := range columns {
 		dataType, decimalParams := getFivetranDataType(column.Type, s.treatTinyIntAsBoolean)
@@ -100,10 +131,14 @@ func (s *fivetranSchemaBuilder) OnColumns(keyspaceName, tableName string, column
 			Decimal:    decimalParams,
 			PrimaryKey: column.IsPrimaryKey,
 		})
+
+		if isEnumOrSet(column.Type) {
+			enumAndSetValues[column.Name] = parseEnumOrSetValues(column.Type)
+		}
 	}
 }
 
-func (s *fivetranSchemaBuilder) BuildResponse() (*fivetransdk.SchemaResponse, error) {
+func (s *FiveTranSchemaBuilder) BuildResponse() (*fivetransdk.SchemaResponse, error) {
 	responseSchema := &fivetransdk.SchemaResponse_WithSchema{
 		WithSchema: &fivetransdk.SchemaList{},
 	}
@@ -117,6 +152,48 @@ func (s *fivetranSchemaBuilder) BuildResponse() (*fivetransdk.SchemaResponse, er
 	}
 
 	return resp, nil
+}
+
+// BuildUpdateResponse returns a schema with extra metadata needed during the Update phase.
+// This includes enum and set mappings not available on the fivetransdk Column type.
+func (s *FiveTranSchemaBuilder) BuildUpdateResponse() (*SchemaWithMetadata, error) {
+	responseSchema := &fivetransdk.SchemaResponse_WithSchema{
+		WithSchema: &fivetransdk.SchemaList{},
+	}
+
+	for _, schema := range s.schemas {
+		responseSchema.WithSchema.Schemas = append(responseSchema.WithSchema.Schemas, schema)
+	}
+
+	resp := &SchemaWithMetadata{
+		fivetransdk.SchemaResponse{
+			Response: responseSchema,
+		},
+		s.enumAndSetValues,
+	}
+
+	return resp, nil
+}
+
+func isEnumOrSet(mType string) bool {
+	mysqlType := strings.ToLower(mType)
+	return strings.HasPrefix(mysqlType, "enum") || strings.HasPrefix(mysqlType, "set")
+}
+
+// Takes enum or set column type like ENUM('a', 'b', 'c') or SET('a', 'b', 'c')
+// and returns a slice of values []string{'a', 'b', 'c'}
+func parseEnumOrSetValues(mType string) []string {
+	values := []string{}
+
+	re := regexp.MustCompile("\\((.+)\\)")
+	res := re.FindString(mType)
+	res = strings.Trim(res, "(")
+	res = strings.Trim(res, ")")
+	for _, r := range strings.Split(res, ", ") {
+		values = append(values, strings.Trim(r, "'"))
+	}
+
+	return values
 }
 
 // Convert columnType to fivetran type
