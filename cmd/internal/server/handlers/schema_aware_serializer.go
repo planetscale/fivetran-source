@@ -43,6 +43,7 @@ type schemaAwareSerializer struct {
 	serializeTinyIntAsBool bool
 	serializers            map[string]*recordSerializer
 	schemaList             *fivetransdk.SchemaList
+	enumAndSetValues       map[string]map[string]map[string][]string
 }
 
 type recordSerializer interface {
@@ -53,6 +54,9 @@ type schemaAwareRecordSerializer struct {
 	columnSelection map[string]bool
 	primaryKeys     map[string]bool
 	columnWriters   map[string]func(value sqltypes.Value) (*fivetransdk.ValueType, error)
+	// Mapping of indices to enum and set values that looks like
+	// table_name: column_name: enum_values
+	enumAndSetValues map[string]map[string][]string
 }
 
 func (s *schemaAwareRecordSerializer) Serialize(before *sqltypes.Result, after *sqltypes.Result, opType lib.Operation) ([]map[string]*fivetransdk.ValueType, error) {
@@ -140,12 +144,13 @@ func convertRowToMap(row *sqltypes.Row, columns []string) map[string]sqltypes.Va
 	return record
 }
 
-func NewSchemaAwareSerializer(sender LogSender, prefix string, serializeTinyIntAsBool bool, schemaList *fivetransdk.SchemaList) Serializer {
+func NewSchemaAwareSerializer(sender LogSender, prefix string, serializeTinyIntAsBool bool, schema *SchemaWithMetadata) Serializer {
 	return &schemaAwareSerializer{
 		prefix:                 prefix,
 		sender:                 sender,
 		serializeTinyIntAsBool: serializeTinyIntAsBool,
-		schemaList:             schemaList,
+		schemaList:             schema.GetWithSchema(),
+		enumAndSetValues:       schema.enumAndSetValues,
 		serializers:            map[string]*recordSerializer{},
 	}
 }
@@ -325,6 +330,9 @@ func generateRecordSerializer(table *fivetransdk.TableSelection, selectedSchemaN
 		columnSelection: table.Columns,
 		primaryKeys:     pks,
 		columnWriters:   serializers,
+		// Mapping of indices to enum and set values that looks like
+		// table_name: column_name: enum_values
+		enumAndSetValues: map[string]map[string][]string{},
 	}, nil
 }
 

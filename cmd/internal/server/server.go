@@ -163,12 +163,19 @@ func (c *connectorServer) Update(request *fivetran_sdk.UpdateRequest, server fiv
 		db = c.clientConstructor()
 	}
 
-	sourceSchema, err := c.schema.Handle(context.Background(), psc, &mysqlClient)
+	schemaBuilder := handlers.NewSchemaBuilder(psc.TreatTinyIntAsBoolean)
+	if err := mysqlClient.BuildSchema(context.Background(), *psc, schemaBuilder); err != nil {
+		status.Error(codes.InvalidArgument, "unable to build schema from PlanetScale database")
+		return nil
+	}
+
+	sourceSchema, err := schemaBuilder.(*handlers.FiveTranSchemaBuilder).BuildUpdateResponse()
+
 	if err != nil {
 		return status.Errorf(codes.InvalidArgument, "unable get source schema for this database : %q", err)
 	}
 
-	logger := handlers.NewSchemaAwareSerializer(server, requestId, psc.TreatTinyIntAsBoolean, sourceSchema.GetWithSchema())
+	logger := handlers.NewSchemaAwareSerializer(server, requestId, psc.TreatTinyIntAsBoolean, sourceSchema)
 
 	shards, err := db.ListShards(context.Background(), *psc)
 	if err != nil {
