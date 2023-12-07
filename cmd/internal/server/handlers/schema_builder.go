@@ -16,8 +16,8 @@ const (
 )
 
 type SchemaWithMetadata struct {
-	fivetransdk.SchemaResponse
-	enumAndSetValues map[string]map[string]map[string][]string
+	SchemaList       *fivetransdk.SchemaList
+	EnumAndSetValues map[string]map[string]map[string][]string
 }
 
 var gcTableNameRegexp = regexp.MustCompile(gCTableNameExpression)
@@ -165,11 +165,13 @@ func (s *FiveTranSchemaBuilder) BuildUpdateResponse() (*SchemaWithMetadata, erro
 		responseSchema.WithSchema.Schemas = append(responseSchema.WithSchema.Schemas, schema)
 	}
 
+	schema := fivetransdk.SchemaResponse{
+		Response: responseSchema,
+	}
+
 	resp := &SchemaWithMetadata{
-		fivetransdk.SchemaResponse{
-			Response: responseSchema,
-		},
-		s.enumAndSetValues,
+		SchemaList:       schema.GetWithSchema(),
+		EnumAndSetValues: s.enumAndSetValues,
 	}
 
 	return resp, nil
