@@ -2,14 +2,16 @@
 PlanetScale Source connector for FiveTran
 
 
-## Using grpcurl
+## Testing locally
+### Prerequisites
 1. Install grpcurl following [these instructions](https://github.com/fullstorydev/grpcurl#installation)
 
-2. Then, start the server:
+2. Then, start the server in `fivetran-source` repository:
 ```bash
 make server
 ```
 
+### Testing the connector
 3. Navigate to a directory with the proto sources for this repository (for example, [fivetran_sdk](https://github.com/fivetran/fivetran_sdk))
 
 4. Start testing from the proto sources repository. Execute each of these from the same repository.
