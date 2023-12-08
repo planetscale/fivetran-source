@@ -43,7 +43,7 @@ type schemaAwareSerializer struct {
 	serializeTinyIntAsBool bool
 	serializers            map[string]*recordSerializer
 	schemaList             *fivetransdk.SchemaList
-	enumAndSetValues       map[string]map[string]map[string][]string
+	enumsAndSets           SchemaEnumsAndSets
 }
 
 type recordSerializer interface {
@@ -144,13 +144,13 @@ func convertRowToMap(row *sqltypes.Row, columns []string) map[string]sqltypes.Va
 	return record
 }
 
-func NewSchemaAwareSerializer(sender LogSender, prefix string, serializeTinyIntAsBool bool, schemaList *fivetransdk.SchemaList, enumAndSetValues map[string]map[string]map[string][]string) Serializer {
+func NewSchemaAwareSerializer(sender LogSender, prefix string, serializeTinyIntAsBool bool, schemaList *fivetransdk.SchemaList, enumsAndSets SchemaEnumsAndSets) Serializer {
 	return &schemaAwareSerializer{
 		prefix:                 prefix,
 		sender:                 sender,
 		serializeTinyIntAsBool: serializeTinyIntAsBool,
 		schemaList:             schemaList,
-		enumAndSetValues:       enumAndSetValues,
+		enumsAndSets:           enumsAndSets,
 		serializers:            map[string]*recordSerializer{},
 	}
 }
@@ -294,9 +294,9 @@ func (l *schemaAwareSerializer) generateRecordSerializer(table *fivetransdk.Tabl
 			continue
 		}
 
-		schemaEnumAndSetValues, ok := l.enumAndSetValues[schema.Name]
+		schemaEnumAndSetValues, ok := l.enumsAndSets[schema.Name]
 		if !ok {
-			schemaEnumAndSetValues = map[string]map[string][]string{}
+			schemaEnumAndSetValues = map[string]map[string]ValueMap{}
 		}
 
 		var tableSchema *fivetransdk.Table
@@ -312,7 +312,7 @@ func (l *schemaAwareSerializer) generateRecordSerializer(table *fivetransdk.Tabl
 
 		tableSchemaEnumAndSetValues, ok := schemaEnumAndSetValues[tableSchema.Name]
 		if !ok {
-			tableSchemaEnumAndSetValues = map[string][]string{}
+			tableSchemaEnumAndSetValues = map[string]ValueMap{}
 		}
 
 		for colName, included := range table.Columns {
@@ -322,9 +322,10 @@ func (l *schemaAwareSerializer) generateRecordSerializer(table *fivetransdk.Tabl
 
 			for _, columnWithSchema := range tableSchema.Columns {
 				if colName == columnWithSchema.Name {
-					if tableSchemaEnumAndSetValues[colName] != nil {
-						// If there are enum or set mappings, use an enum or set converter
-						serializers[colName], err = GetEnumConverter(tableSchemaEnumAndSetValues[colName])
+					if tableSchemaEnumAndSetValues[colName].columnType == "enum" {
+						serializers[colName], err = GetEnumConverter(tableSchemaEnumAndSetValues[colName].values)
+					} else if tableSchemaEnumAndSetValues[colName].columnType == "set" {
+						serializers[colName], err = GetSetConverter(tableSchemaEnumAndSetValues[colName].values)
 					} else {
 						serializers[colName], err = GetConverter(columnWithSchema.Type)
 						if err != nil {
