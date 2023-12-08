@@ -190,7 +190,7 @@ func isEnumOrSet(mType string) bool {
 	return strings.HasPrefix(mysqlType, "enum") || strings.HasPrefix(mysqlType, "set")
 }
 
-// Takes enum or set column type like ENUM('a', 'b', 'c') or SET('a', 'b', 'c')
+// Takes enum or set column type like ENUM('a','b','c') or SET('a','b','c')
 // and returns a slice of values []string{'a', 'b', 'c'}
 func parseEnumOrSetValues(mType string) ValueMap {
 	values := []string{}
@@ -201,7 +201,7 @@ func parseEnumOrSetValues(mType string) ValueMap {
 		columnType = "set"
 	}
 
-	re := regexp.MustCompile("\\((.+)\\)")
+	re := regexp.MustCompile(`\((.+)\)`)
 	res := re.FindString(mType)
 	res = strings.Trim(res, "(")
 	res = strings.Trim(res, ")")
