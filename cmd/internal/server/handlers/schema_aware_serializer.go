@@ -324,11 +324,17 @@ func (l *schemaAwareSerializer) generateRecordSerializer(table *fivetransdk.Tabl
 						msg := fmt.Sprintf("using enum converter for column %s and values %+v", colName, values)
 						l.Info(msg)
 						serializers[colName], err = GetEnumConverter(values)
+						if err != nil {
+							return nil, err
+						}
 					} else if tableSchemaEnumAndSetValues[colName].columnType == "set" {
 						values := tableSchemaEnumAndSetValues[colName].values
 						msg := fmt.Sprintf("using set converter for column %s and values %+v", colName, values)
 						l.Info(msg)
 						serializers[colName], err = GetSetConverter(values)
+						if err != nil {
+							return nil, err
+						}
 					} else {
 						serializers[colName], err = GetConverter(columnWithSchema.Type)
 						if err != nil {
