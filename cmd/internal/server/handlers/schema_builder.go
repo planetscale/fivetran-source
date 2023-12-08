@@ -205,7 +205,7 @@ func parseEnumOrSetValues(mType string) ValueMap {
 	res := re.FindString(mType)
 	res = strings.Trim(res, "(")
 	res = strings.Trim(res, ")")
-	for _, r := range strings.Split(res, ", ") {
+	for _, r := range strings.Split(res, ",") {
 		values = append(values, strings.Trim(r, "'"))
 	}
 
