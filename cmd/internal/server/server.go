@@ -170,7 +170,6 @@ func (c *connectorServer) Update(request *fivetran_sdk.UpdateRequest, server fiv
 	}
 
 	sourceSchema, err := schemaBuilder.(*handlers.FiveTranSchemaBuilder).BuildUpdateResponse()
-
 	if err != nil {
 		return status.Errorf(codes.InvalidArgument, "unable get source schema for this database : %q", err)
 	}
