@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"strconv"
 	"time"
 
 	"github.com/spatial-go/geoos/geoencoding"
@@ -217,15 +218,17 @@ func GetConverter(dataType fivetransdk.DataType) (ConverterFunc, error) {
 
 func GetEnumConverter(enumValues []string) (ConverterFunc, error) {
 	return func(value sqltypes.Value) (*fivetransdk.ValueType, error) {
-		index, err := value.ToInt()
+		parsedValue := value.ToString()
+		index, err := strconv.ParseInt(parsedValue, 10, 64)
 		if err != nil {
 			// If value is not an integer (index), we just serialize it as a string
 			return &fivetransdk.ValueType{
 				Inner: &fivetransdk.ValueType_String_{String_: value.ToString()},
 			}, nil
 		}
+
 		for i, v := range enumValues {
-			if index == i {
+			if int(index-1) == i {
 				return &fivetransdk.ValueType{
 					Inner: &fivetransdk.ValueType_String_{String_: v},
 				}, nil

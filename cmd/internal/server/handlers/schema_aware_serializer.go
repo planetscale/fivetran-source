@@ -320,9 +320,15 @@ func (l *schemaAwareSerializer) generateRecordSerializer(table *fivetransdk.Tabl
 			for _, columnWithSchema := range tableSchema.Columns {
 				if colName == columnWithSchema.Name {
 					if tableSchemaEnumAndSetValues[colName].columnType == "enum" {
-						serializers[colName], err = GetEnumConverter(tableSchemaEnumAndSetValues[colName].values)
+						values := tableSchemaEnumAndSetValues[colName].values
+						msg := fmt.Sprintf("using enum converter for column %s and values %+v", colName, values)
+						l.Info(msg)
+						serializers[colName], err = GetEnumConverter(values)
 					} else if tableSchemaEnumAndSetValues[colName].columnType == "set" {
-						serializers[colName], err = GetSetConverter(tableSchemaEnumAndSetValues[colName].values)
+						values := tableSchemaEnumAndSetValues[colName].values
+						msg := fmt.Sprintf("using set converter for column %s and values %+v", colName, values)
+						l.Info(msg)
+						serializers[colName], err = GetSetConverter(values)
 					} else {
 						serializers[colName], err = GetConverter(columnWithSchema.Type)
 						if err != nil {
