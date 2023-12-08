@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/spatial-go/geoos/geoencoding"
@@ -240,6 +241,26 @@ func GetEnumConverter(enumValues []string) (ConverterFunc, error) {
 
 func GetSetConverter(setValues []string) (ConverterFunc, error) {
 	return func(value sqltypes.Value) (*fivetransdk.ValueType, error) {
-		return nil, nil
+		parsedValue := value.ToString()
+		parsedInt, err := strconv.ParseInt(parsedValue, 10, 64)
+		if err != nil {
+			// if value is not an integer, we just serialize as a strong
+			return &fivetransdk.ValueType{
+				Inner: &fivetransdk.ValueType_String_{String_: value.ToString()},
+			}, nil
+		}
+		mappedValues := []string{}
+		// SET mapping is stored as a binary value, i.e. 1001
+		bytes := strconv.FormatInt(parsedInt, 2)
+		// if the bit is ON, that means the value at that index is included in the SET
+		for i, char := range bytes {
+			if char == '1' {
+				mappedValues = append(mappedValues, setValues[i])
+			}
+		}
+
+		return &fivetransdk.ValueType{
+			Inner: &fivetransdk.ValueType_String_{String_: strings.Join(mappedValues, ",")},
+		}, nil
 	}, nil
 }
