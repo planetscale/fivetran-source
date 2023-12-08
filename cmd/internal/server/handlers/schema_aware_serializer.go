@@ -54,9 +54,6 @@ type schemaAwareRecordSerializer struct {
 	columnSelection map[string]bool
 	primaryKeys     map[string]bool
 	columnWriters   map[string]func(value sqltypes.Value) (*fivetransdk.ValueType, error)
-	// Mapping of indices to enum and set values that looks like
-	// table_name: column_name: enum_values
-	enumAndSetValues map[string]map[string][]string
 }
 
 func (s *schemaAwareRecordSerializer) Serialize(before *sqltypes.Result, after *sqltypes.Result, opType lib.Operation) ([]map[string]*fivetransdk.ValueType, error) {
