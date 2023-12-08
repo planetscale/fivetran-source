@@ -175,7 +175,7 @@ func (c *connectorServer) Update(request *fivetran_sdk.UpdateRequest, server fiv
 		return status.Errorf(codes.InvalidArgument, "unable get source schema for this database : %q", err)
 	}
 
-	logger := handlers.NewSchemaAwareSerializer(server, requestId, psc.TreatTinyIntAsBoolean, sourceSchema.SchemaList, sourceSchema.EnumAndSetValues)
+	logger := handlers.NewSchemaAwareSerializer(server, requestId, psc.TreatTinyIntAsBoolean, sourceSchema.SchemaList, sourceSchema.EnumsAndSets)
 
 	shards, err := db.ListShards(context.Background(), *psc)
 	if err != nil {

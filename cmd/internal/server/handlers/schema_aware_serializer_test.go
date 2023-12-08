@@ -22,7 +22,7 @@ func TestCanSerializeInsert(t *testing.T) {
 	row, s, err := generateTestRecord("PhaniRaj")
 	require.NoError(t, err)
 	tl := &testLogSender{}
-	l := NewSchemaAwareSerializer(tl, "", true, &fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{s}}, map[string]map[string]map[string][]string{})
+	l := NewSchemaAwareSerializer(tl, "", true, &fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{s}}, map[string]map[string]map[string]ValueMap{})
 
 	schema := &fivetransdk.SchemaSelection{
 		Included:   true,
@@ -104,7 +104,7 @@ func TestCanSerializeNulLValues(t *testing.T) {
 	}
 
 	tl := &testLogSender{}
-	l := NewSchemaAwareSerializer(tl, "", false, &fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{s}}, map[string]map[string]map[string][]string{})
+	l := NewSchemaAwareSerializer(tl, "", false, &fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{s}}, map[string]map[string]map[string]ValueMap{})
 	schema := &fivetransdk.SchemaSelection{
 		Included:   true,
 		SchemaName: s.Name,
@@ -146,7 +146,7 @@ func TestCanSerializeDelete(t *testing.T) {
 	row, s, err := generateTestRecord("PhaniRaj")
 	require.NoError(t, err)
 	tl := &testLogSender{}
-	l := NewSchemaAwareSerializer(tl, "", false, &fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{s}}, map[string]map[string]map[string][]string{})
+	l := NewSchemaAwareSerializer(tl, "", false, &fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{s}}, map[string]map[string]map[string]ValueMap{})
 
 	schema := &fivetransdk.SchemaSelection{
 		Included:   true,
@@ -187,7 +187,7 @@ func TestCanSerializeUpdate(t *testing.T) {
 
 	require.NoError(t, err)
 	tl := &testLogSender{}
-	l := NewSchemaAwareSerializer(tl, "", false, &fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{s}}, map[string]map[string]map[string][]string{})
+	l := NewSchemaAwareSerializer(tl, "", false, &fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{s}}, map[string]map[string]map[string]ValueMap{})
 
 	schema := &fivetransdk.SchemaSelection{
 		Included:   true,
@@ -234,7 +234,7 @@ func TestCanSerializeTruncate(t *testing.T) {
 	_, s, err := generateTestRecord("PhaniRaj")
 	assert.NoError(t, err)
 	tl := &testLogSender{}
-	l := NewSchemaAwareSerializer(tl, "", false, &fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{s}}, map[string]map[string]map[string][]string{})
+	l := NewSchemaAwareSerializer(tl, "", false, &fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{s}}, map[string]map[string]map[string]ValueMap{})
 
 	schema := &fivetransdk.SchemaSelection{
 		Included:   true,
@@ -570,7 +570,7 @@ func TestCanSkipColumns(t *testing.T) {
 			},
 		},
 	}},
-		map[string]map[string]map[string][]string{})
+		map[string]map[string]map[string]ValueMap{})
 
 	schema := &fivetransdk.SchemaSelection{
 		Included:   true,
@@ -615,7 +615,7 @@ func BenchmarkRecordSerialization_Serializer(b *testing.B) {
 			s,
 		},
 	},
-		map[string]map[string]map[string][]string{})
+		map[string]map[string]map[string]ValueMap{})
 
 	schema := &fivetransdk.SchemaSelection{
 		SchemaName: "SalesDB",

@@ -15,9 +15,17 @@ const (
 	gCTableNameExpression string = `^_vt_(HOLD|PURGE|EVAC|DROP)_([0-f]{32})_([0-9]{14})$`
 )
 
+// Maps enum and set indices to their values
+type ValueMap struct {
+	columnType string
+	values     []string
+}
+
+type SchemaEnumsAndSets map[string]map[string]map[string]ValueMap
+
 type SchemaWithMetadata struct {
-	SchemaList       *fivetransdk.SchemaList
-	EnumAndSetValues map[string]map[string]map[string][]string
+	SchemaList   *fivetransdk.SchemaList
+	EnumsAndSets SchemaEnumsAndSets
 }
 
 var gcTableNameRegexp = regexp.MustCompile(gCTableNameExpression)
@@ -29,13 +37,13 @@ type FiveTranSchemaBuilder struct {
 	// We need to map enum and set indices to their actual values
 	// so that we can properly serialize them in the Update phase.
 	// This looks like keyspace -> table -> column -> enum/set values
-	enumAndSetValues map[string]map[string]map[string][]string
+	enumsAndSets SchemaEnumsAndSets
 }
 
 func NewSchemaBuilder(treatTinyIntAsBoolean bool) lib.SchemaBuilder {
 	return &FiveTranSchemaBuilder{
 		treatTinyIntAsBoolean: treatTinyIntAsBoolean,
-		enumAndSetValues:      map[string]map[string]map[string][]string{},
+		enumsAndSets:          map[string]map[string]map[string]ValueMap{},
 	}
 }
 
@@ -47,8 +55,8 @@ func (s *FiveTranSchemaBuilder) OnKeyspace(keyspaceName string) {
 	if s.schemas == nil {
 		s.schemas = map[string]*fivetransdk.Schema{}
 	}
-	if s.enumAndSetValues[keyspaceName] == nil {
-		s.enumAndSetValues[keyspaceName] = map[string]map[string][]string{}
+	if s.enumsAndSets[keyspaceName] == nil {
+		s.enumsAndSets[keyspaceName] = map[string]map[string]ValueMap{}
 	}
 
 	s.schemas[keyspaceName] = schema
@@ -98,12 +106,12 @@ func (s *FiveTranSchemaBuilder) getOrCreateTable(keyspaceName string, tableName 
 	s.tables[keyspaceName][tableName] = table
 
 	// setting up for enum and set value mappings
-	keyspace, ok := s.enumAndSetValues[keyspaceName]
+	keyspace, ok := s.enumsAndSets[keyspaceName]
 	if !ok {
-		s.enumAndSetValues[keyspaceName] = map[string]map[string][]string{}
+		s.enumsAndSets[keyspaceName] = map[string]map[string]ValueMap{}
 	}
 	if keyspace[tableName] == nil {
-		keyspace[tableName] = map[string][]string{}
+		keyspace[tableName] = map[string]ValueMap{}
 	}
 
 	return table
@@ -115,13 +123,13 @@ func (s *FiveTranSchemaBuilder) OnColumns(keyspaceName, tableName string, column
 		table.Columns = []*fivetransdk.Column{}
 	}
 
-	if s.enumAndSetValues[keyspaceName] == nil {
-		s.enumAndSetValues[keyspaceName] = map[string]map[string][]string{}
+	if s.enumsAndSets[keyspaceName] == nil {
+		s.enumsAndSets[keyspaceName] = map[string]map[string]ValueMap{}
 	}
-	if s.enumAndSetValues[keyspaceName][tableName] == nil {
-		s.enumAndSetValues[keyspaceName][tableName] = map[string][]string{}
+	if s.enumsAndSets[keyspaceName][tableName] == nil {
+		s.enumsAndSets[keyspaceName][tableName] = map[string]ValueMap{}
 	}
-	enumAndSetValues := s.enumAndSetValues[keyspaceName][tableName]
+	enumAndSetValues := s.enumsAndSets[keyspaceName][tableName]
 
 	for _, column := range columns {
 		dataType, decimalParams := getFivetranDataType(column.Type, s.treatTinyIntAsBoolean)
@@ -170,8 +178,8 @@ func (s *FiveTranSchemaBuilder) BuildUpdateResponse() (*SchemaWithMetadata, erro
 	}
 
 	resp := &SchemaWithMetadata{
-		SchemaList:       schema.GetWithSchema(),
-		EnumAndSetValues: s.enumAndSetValues,
+		SchemaList:   schema.GetWithSchema(),
+		EnumsAndSets: s.enumsAndSets,
 	}
 
 	return resp, nil
@@ -184,8 +192,14 @@ func isEnumOrSet(mType string) bool {
 
 // Takes enum or set column type like ENUM('a', 'b', 'c') or SET('a', 'b', 'c')
 // and returns a slice of values []string{'a', 'b', 'c'}
-func parseEnumOrSetValues(mType string) []string {
+func parseEnumOrSetValues(mType string) ValueMap {
 	values := []string{}
+	var columnType string
+	if strings.HasPrefix(mType, "enum") {
+		columnType = "enum"
+	} else if strings.HasPrefix(mType, "set") {
+		columnType = "set"
+	}
 
 	re := regexp.MustCompile("\\((.+)\\)")
 	res := re.FindString(mType)
@@ -195,7 +209,10 @@ func parseEnumOrSetValues(mType string) []string {
 		values = append(values, strings.Trim(r, "'"))
 	}
 
-	return values
+	return ValueMap{
+		columnType: columnType,
+		values:     values,
+	}
 }
 
 // Convert columnType to fivetran type
