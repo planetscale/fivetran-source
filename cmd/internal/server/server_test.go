@@ -729,8 +729,8 @@ func TestUpdateReturnsUpdates(t *testing.T) {
 		}
 		rows = append(rows, resp)
 	}
-	assert.Len(t, rows, 5)
-	operation := rows[1].GetOperation()
+	assert.Len(t, rows, 7)
+	operation := rows[3].GetOperation()
 	assert.NotNil(t, operation)
 	record, ok := operation.Op.(*fivetransdk.Operation_Record)
 	assert.True(t, ok)
