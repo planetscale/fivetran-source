@@ -228,6 +228,13 @@ func GetEnumConverter(enumValues []string) (ConverterFunc, error) {
 			}, nil
 		}
 
+		// The index value of the empty string error value is 0
+		if index == 0 {
+			return &fivetransdk.ValueType{
+				Inner: &fivetransdk.ValueType_String_{String_: ""},
+			}, nil
+		}
+
 		for i, v := range enumValues {
 			if int(index-1) == i {
 				return &fivetransdk.ValueType{
