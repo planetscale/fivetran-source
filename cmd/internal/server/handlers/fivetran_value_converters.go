@@ -250,7 +250,7 @@ func GetSetConverter(setValues []string) (ConverterFunc, error) {
 		if err != nil {
 			// if value is not an integer, we just serialize as a strong
 			return &fivetransdk.ValueType{
-				Inner: &fivetransdk.ValueType_String_{String_: parsedValue},
+				Inner: &fivetransdk.ValueType_Json{Json: parsedValue},
 			}, nil
 		}
 		mappedValues := []string{}
@@ -266,12 +266,12 @@ func GetSetConverter(setValues []string) (ConverterFunc, error) {
 		// If we can't find the values, just serialize as a string
 		if len(mappedValues) == 0 {
 			return &fivetransdk.ValueType{
-				Inner: &fivetransdk.ValueType_String_{String_: parsedValue},
+				Inner: &fivetransdk.ValueType_Json{Json: parsedValue},
 			}, nil
 		}
 
 		return &fivetransdk.ValueType{
-			Inner: &fivetransdk.ValueType_String_{String_: strings.Join(mappedValues, ",")},
+			Inner: &fivetransdk.ValueType_Json{Json: strings.Join(mappedValues, ",")},
 		}, nil
 	}, nil
 }
