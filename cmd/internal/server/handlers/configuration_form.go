@@ -3,7 +3,7 @@ package handlers
 import (
 	"context"
 
-	fivetransdk "github.com/planetscale/fivetran-sdk-grpc/go"
+	fivetransdk "github.com/planetscale/fivetran-source/fivetran_sdk"
 )
 
 type ConfigurationForm struct{}
