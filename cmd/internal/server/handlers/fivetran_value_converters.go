@@ -256,10 +256,13 @@ func GetSetConverter(setValues []string) (ConverterFunc, error) {
 		mappedValues := []string{}
 		// SET mapping is stored as a binary value, i.e. 1001
 		bytes := strconv.FormatInt(parsedInt, 2)
+		numValues := len(bytes)
+		// we iterate over the bytes in reverse order, because the first bit is the last value in the SET
 		// if the bit is ON, that means the value at that index is included in the SET
 		for i, char := range bytes {
 			if char == '1' {
-				mappedValues = append(mappedValues, setValues[i])
+				mappedValue := setValues[numValues-(i+1)]
+				mappedValues = append([]string{mappedValue}, mappedValues...)
 			}
 		}
 
