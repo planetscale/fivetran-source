@@ -224,7 +224,7 @@ func GetEnumConverter(enumValues []string) (ConverterFunc, error) {
 		if err != nil {
 			// If value is not an integer (index), we just serialize it as a string
 			return &fivetransdk.ValueType{
-				Inner: &fivetransdk.ValueType_String_{String_: value.ToString()},
+				Inner: &fivetransdk.ValueType_String_{String_: parsedValue},
 			}, nil
 		}
 
@@ -235,7 +235,11 @@ func GetEnumConverter(enumValues []string) (ConverterFunc, error) {
 				}, nil
 			}
 		}
-		return nil, errors.Wrap(err, "failed to serialize enum as DataType_STRING")
+
+		// Just return the value as a string if we can't find the enum value
+		return &fivetransdk.ValueType{
+			Inner: &fivetransdk.ValueType_String_{String_: parsedValue},
+		}, nil
 	}, nil
 }
 
@@ -246,7 +250,7 @@ func GetSetConverter(setValues []string) (ConverterFunc, error) {
 		if err != nil {
 			// if value is not an integer, we just serialize as a strong
 			return &fivetransdk.ValueType{
-				Inner: &fivetransdk.ValueType_String_{String_: value.ToString()},
+				Inner: &fivetransdk.ValueType_String_{String_: parsedValue},
 			}, nil
 		}
 		mappedValues := []string{}
@@ -257,6 +261,13 @@ func GetSetConverter(setValues []string) (ConverterFunc, error) {
 			if char == '1' {
 				mappedValues = append(mappedValues, setValues[i])
 			}
+		}
+
+		// If we can't find the values, just serialize as a string
+		if len(mappedValues) == 0 {
+			return &fivetransdk.ValueType{
+				Inner: &fivetransdk.ValueType_String_{String_: parsedValue},
+			}, nil
 		}
 
 		return &fivetransdk.ValueType{
