@@ -77,7 +77,7 @@ func TestCanSerializeInsert(t *testing.T) {
 	assert.Equal(t, "string:\"enum_value\"", data["enum_value"].String())
 }
 
-func TestCanSerializeEnumsAndSets(t *testing.T) {
+func TestCanSerializeMappedEnumsAndSets(t *testing.T) {
 	fivetranSchema := fivetransdk.Schema{
 		Name: "Customers",
 		Tables: []*fivetransdk.Table{
@@ -92,11 +92,11 @@ func TestCanSerializeEnumsAndSets(t *testing.T) {
 		},
 	}
 
-	enumValue, err := sqltypes.NewValue(querypb.Type_ENUM, []byte("1"))
+	mappedEnumValue, err := sqltypes.NewValue(querypb.Type_ENUM, []byte("employee"))
 	assert.NoError(t, err)
-	setValue, err := sqltypes.NewValue(querypb.Type_SET, []byte("24")) // 24 is decimal conversion of 11000 in binary
+	mappedSetValue, err := sqltypes.NewValue(querypb.Type_SET, []byte("San Francisco,New York"))
 	assert.NoError(t, err)
-	row := &sqltypes.Result{
+	rows := &sqltypes.Result{
 		Fields: []*querypb.Field{
 			{
 				Name:         "email",
@@ -117,7 +117,8 @@ func TestCanSerializeEnumsAndSets(t *testing.T) {
 			},
 		},
 		Rows: [][]sqltypes.Value{
-			{sqltypes.NewVarChar("customer@customer.com"), setValue, enumValue},
+			// SET and ENUM values appear as their mapped values during copy phase
+			{sqltypes.NewVarChar("customer-2@customer.com"), mappedSetValue, mappedEnumValue},
 		},
 	}
 
@@ -141,12 +142,102 @@ func TestCanSerializeEnumsAndSets(t *testing.T) {
 		Columns:   map[string]bool{},
 	}
 
-	for _, f := range row.Fields {
+	for _, f := range rows.Fields {
 		table.Columns[f.Name] = true
 	}
 
 	for i := 0; i < 3; i++ {
-		err = l.Record(row, schema, table, lib.OpType_Insert)
+		err = l.Record(rows, schema, table, lib.OpType_Insert)
+		assert.NoError(t, err)
+		assert.NotNil(t, tl.lastResponse)
+	}
+
+	operation, ok := tl.lastResponse.Response.(*fivetransdk.UpdateResponse_Operation)
+	require.Truef(t, ok, "recordResponse Operation is not of type %s", "UpdateResponse_Operation")
+
+	operationRecord, ok := operation.Operation.Op.(*fivetransdk.Operation_Record)
+	assert.Truef(t, ok, "recordResponse Operation.Op is not of type %s", "Operation_Record")
+
+	assert.Equal(t, fivetransdk.OpType_UPSERT, operationRecord.Record.Type)
+	data := operationRecord.Record.Data
+	assert.NotNil(t, data)
+
+	assert.Equal(t, "string:\"customer-2@customer.com\"", data["email"].String())
+	assert.Equal(t, "json:\"San Francisco,New York\"", data["locations"].String())
+	assert.Equal(t, "string:\"employee\"", data["customer_type"].String())
+}
+
+func TestCanSerializeIndexedEnumsAndSets(t *testing.T) {
+	fivetranSchema := fivetransdk.Schema{
+		Name: "Customers",
+		Tables: []*fivetransdk.Table{
+			{
+				Name: "customers",
+				Columns: []*fivetransdk.Column{
+					{Name: "email", Type: fivetransdk.DataType_STRING},
+					{Name: "locations", Type: fivetransdk.DataType_JSON},
+					{Name: "customer_type", Type: fivetransdk.DataType_STRING},
+				},
+			},
+		},
+	}
+
+	indexEnumValue, err := sqltypes.NewValue(querypb.Type_ENUM, []byte("1"))
+	assert.NoError(t, err)
+	indexSetValue, err := sqltypes.NewValue(querypb.Type_SET, []byte("24")) // 24 is decimal conversion of 11000 in binary
+	assert.NoError(t, err)
+	rows := &sqltypes.Result{
+		Fields: []*querypb.Field{
+			{
+				Name:         "email",
+				Type:         querypb.Type_VARCHAR,
+				ColumnLength: 21,
+				Charset:      63,
+				Flags:        32928,
+			},
+			{
+				Name:  "locations",
+				Type:  querypb.Type_SET,
+				Flags: 32928,
+			},
+			{
+				Name:  "customer_type",
+				Type:  querypb.Type_ENUM,
+				Flags: 32928,
+			},
+		},
+		Rows: [][]sqltypes.Value{
+			// SET and ENUM values appear as their indices during replication
+			{sqltypes.NewVarChar("customer@customer.com"), indexSetValue, indexEnumValue},
+		},
+	}
+
+	tl := &testLogSender{}
+	l := NewSchemaAwareSerializer(tl, "", true, &fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{&fivetranSchema}}, map[string]map[string]map[string]ValueMap{
+		"Customers": {
+			"customers": {
+				"locations":     {columnType: "set", values: []string{"San Francisco", "New York", "Boston", "Los Angeles", "Oakland"}},
+				"customer_type": {columnType: "enum", values: []string{"employee", "customer"}},
+			},
+		},
+	})
+
+	schema := &fivetransdk.SchemaSelection{
+		Included:   true,
+		SchemaName: "Customers",
+	}
+	table := &fivetransdk.TableSelection{
+		TableName: "customers",
+		Included:  true,
+		Columns:   map[string]bool{},
+	}
+
+	for _, f := range rows.Fields {
+		table.Columns[f.Name] = true
+	}
+
+	for i := 0; i < 3; i++ {
+		err = l.Record(rows, schema, table, lib.OpType_Insert)
 		assert.NoError(t, err)
 		assert.NotNil(t, tl.lastResponse)
 	}
