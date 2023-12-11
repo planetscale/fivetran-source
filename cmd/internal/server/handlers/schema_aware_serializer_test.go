@@ -280,6 +280,8 @@ func TestCanSerializeNulLValues(t *testing.T) {
 			sqltypes.NULL,
 			sqltypes.NULL,
 			sqltypes.NULL,
+			sqltypes.NULL,
+			sqltypes.NULL,
 		},
 	}
 
