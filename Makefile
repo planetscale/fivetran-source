@@ -53,7 +53,7 @@ fmt: bootstrap
 	$(GOBIN)/gofumpt -w .
 
 .PHONY: build-server
-build-server: build-proto
+build-server:
 	@CGO_ENABLED=0 go build -trimpath -ldflags="-s -w"  ./cmd/server
 
 .PHONY: server
