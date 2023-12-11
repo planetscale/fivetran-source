@@ -7,7 +7,6 @@ require (
 	github.com/google/uuid v1.3.1
 	github.com/pkg/errors v0.9.1
 	github.com/planetscale/airbyte-source v1.18.0
-	github.com/planetscale/fivetran-sdk-grpc v0.0.0-20230808175316-83fcd813d46b
 	github.com/planetscale/psdb v0.0.0-20220429000526-e2a0e798aaf3
 	github.com/spatial-go/geoos v1.1.3
 	github.com/stretchr/testify v1.8.4
