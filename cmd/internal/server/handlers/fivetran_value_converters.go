@@ -13,7 +13,7 @@ import (
 	querypb "vitess.io/vitess/go/vt/proto/query"
 
 	"github.com/pkg/errors"
-	fivetransdk "github.com/planetscale/fivetran-sdk-grpc/go"
+	fivetransdk "github.com/planetscale/fivetran-source/fivetran_sdk"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"vitess.io/vitess/go/sqltypes"
 )
