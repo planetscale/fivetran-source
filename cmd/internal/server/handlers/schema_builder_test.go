@@ -18,7 +18,7 @@ func TestCanIgnoreVitessGCTables(t *testing.T) {
 	sb.OnTable("Employees", "_vt_HOLD_6ace8bcef73211ea87e9f875a4d24e90_20200915120410")
 	sb.OnTable("Employees", "_vt_EVAC_6ace8bcef73211ea87e9f875a4d24e90_20200915120410")
 	sb.OnTable("Employees", "_vt_PURGE_6ace8bcef73211ea87e9f875a4d24e90_20200915120410")
-	resp, err := sb.(*fivetranSchemaBuilder).BuildResponse()
+	resp, err := sb.(*FiveTranSchemaBuilder).BuildResponse()
 	assert.NoError(t, err)
 	schemaResponse, ok := resp.Response.(*fivetransdk.SchemaResponse_WithSchema)
 	assert.True(t, ok)
@@ -42,7 +42,7 @@ func TestCanBuildSchema(t *testing.T) {
 			Type: "varchar(400)",
 		},
 	})
-	resp, err := sb.(*fivetranSchemaBuilder).BuildResponse()
+	resp, err := sb.(*FiveTranSchemaBuilder).BuildResponse()
 	assert.NoError(t, err)
 	schemaResponse, ok := resp.Response.(*fivetransdk.SchemaResponse_WithSchema)
 	assert.True(t, ok)
@@ -56,6 +56,53 @@ func TestCanBuildSchema(t *testing.T) {
 	assert.True(t, table.Columns[0].PrimaryKey)
 	assert.Equal(t, "dept_name", table.Columns[1].Name)
 	assert.False(t, table.Columns[1].PrimaryKey)
+}
+
+func TestCanBuildUpdateSchema(t *testing.T) {
+	sb := NewSchemaBuilder(true)
+	sb.OnKeyspace("Employees")
+	sb.OnTable("Employees", "departments")
+	sb.OnColumns("Employees", "departments", []lib.MysqlColumn{
+		{
+			Name:         "dept_no",
+			Type:         "varchar(40)",
+			IsPrimaryKey: true,
+		},
+		{
+			Name: "dept_name",
+			Type: "varchar(400)",
+		},
+		{
+			Name: "dept_category",
+			Type: "enum('hr','it','sales','engineering')",
+		},
+		{
+			Name: "dept_locations",
+			Type: "set('san francisco','new york','seattle','boston')",
+		},
+	})
+	resp, err := sb.(*FiveTranSchemaBuilder).BuildUpdateResponse()
+	assert.NoError(t, err)
+	schemaResponse := resp.SchemaList
+	assert.NotNil(t, schemaResponse)
+	assert.Len(t, schemaResponse.Schemas, 1)
+	assert.Len(t, schemaResponse.Schemas[0].Tables, 1)
+	table := schemaResponse.Schemas[0].Tables[0]
+	assert.Equal(t, "departments", table.Name)
+	assert.Len(t, table.Columns, 4)
+	assert.Equal(t, "dept_no", table.Columns[0].Name)
+	assert.True(t, table.Columns[0].PrimaryKey)
+	assert.Equal(t, "dept_name", table.Columns[1].Name)
+	assert.False(t, table.Columns[1].PrimaryKey)
+	assert.Equal(t, table.Columns[2].Name, "dept_category")
+	assert.Equal(t, table.Columns[3].Name, "dept_locations")
+
+	enumsAndSets := resp.EnumsAndSets
+	assert.NotNil(t, enumsAndSets)
+	assert.Equal(t, enumsAndSets["Employees"]["departments"]["dept_category"].values, []string{"hr", "it", "sales", "engineering"})
+	assert.Equal(t, enumsAndSets["Employees"]["departments"]["dept_category"].columnType, "enum")
+	assert.Equal(t, enumsAndSets["Employees"]["departments"]["dept_locations"].values, []string{"san francisco", "new york", "seattle", "boston"})
+	assert.Equal(t, enumsAndSets["Employees"]["departments"]["dept_locations"].columnType, "set")
 }
 
 func TestSchema_CanPickRightFivetranType(t *testing.T) {

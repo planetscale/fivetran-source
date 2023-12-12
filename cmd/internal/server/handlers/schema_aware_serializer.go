@@ -43,6 +43,7 @@ type schemaAwareSerializer struct {
 	serializeTinyIntAsBool bool
 	serializers            map[string]*recordSerializer
 	schemaList             *fivetransdk.SchemaList
+	enumsAndSets           SchemaEnumsAndSets
 }
 
 type recordSerializer interface {
@@ -140,12 +141,13 @@ func convertRowToMap(row *sqltypes.Row, columns []string) map[string]sqltypes.Va
 	return record
 }
 
-func NewSchemaAwareSerializer(sender LogSender, prefix string, serializeTinyIntAsBool bool, schemaList *fivetransdk.SchemaList) Serializer {
+func NewSchemaAwareSerializer(sender LogSender, prefix string, serializeTinyIntAsBool bool, schemaList *fivetransdk.SchemaList, enumsAndSets SchemaEnumsAndSets) Serializer {
 	return &schemaAwareSerializer{
 		prefix:                 prefix,
 		sender:                 sender,
 		serializeTinyIntAsBool: serializeTinyIntAsBool,
 		schemaList:             schemaList,
+		enumsAndSets:           enumsAndSets,
 		serializers:            map[string]*recordSerializer{},
 	}
 }
@@ -220,7 +222,7 @@ func (l *schemaAwareSerializer) serializeResult(before *sqltypes.Result, after *
 		}
 
 		if _, ok := l.serializers[l.recordResponseKey]; !ok {
-			rs, err := generateRecordSerializer(table, schema.SchemaName, l.schemaList, l.serializeTinyIntAsBool)
+			rs, err := l.generateRecordSerializer(table, schema.SchemaName)
 			if err != nil {
 				return err
 			}
@@ -280,13 +282,18 @@ func (l *schemaAwareSerializer) sendTruncate(schema *fivetransdk.SchemaSelection
 	})
 }
 
-func generateRecordSerializer(table *fivetransdk.TableSelection, selectedSchemaName string, schemaList *fivetransdk.SchemaList, serializeTinyIntAsBool bool) (recordSerializer, error) {
+func (l *schemaAwareSerializer) generateRecordSerializer(table *fivetransdk.TableSelection, selectedSchemaName string) (recordSerializer, error) {
 	serializers := map[string]func(value sqltypes.Value) (*fivetransdk.ValueType, error){}
 	var err error
 	pks := map[string]bool{}
-	for _, schema := range schemaList.Schemas {
+	for _, schema := range l.schemaList.Schemas {
 		if schema.Name != selectedSchemaName {
 			continue
+		}
+
+		schemaEnumAndSetValues, ok := l.enumsAndSets[schema.Name]
+		if !ok {
+			schemaEnumAndSetValues = map[string]map[string]ValueMap{}
 		}
 
 		var tableSchema *fivetransdk.Table
@@ -300,20 +307,43 @@ func generateRecordSerializer(table *fivetransdk.TableSelection, selectedSchemaN
 			return nil, fmt.Errorf("cannot generate serializer, unable to find schema for table : %q", table.TableName)
 		}
 
+		tableSchemaEnumAndSetValues, ok := schemaEnumAndSetValues[tableSchema.Name]
+		if !ok {
+			tableSchemaEnumAndSetValues = map[string]ValueMap{}
+		}
+
 		for colName, included := range table.Columns {
 			if !included {
 				continue
 			}
 
-			for _, colunWithSchema := range tableSchema.Columns {
-				if colName == colunWithSchema.Name {
-					serializers[colName], err = GetConverter(colunWithSchema.Type)
-					if err != nil {
-						return nil, err
+			for _, columnWithSchema := range tableSchema.Columns {
+				if colName == columnWithSchema.Name {
+					if tableSchemaEnumAndSetValues[colName].columnType == "enum" {
+						values := tableSchemaEnumAndSetValues[colName].values
+						msg := fmt.Sprintf("using enum converter for column %s and values %+v", colName, values)
+						l.Info(msg)
+						serializers[colName], err = GetEnumConverter(values)
+						if err != nil {
+							return nil, err
+						}
+					} else if tableSchemaEnumAndSetValues[colName].columnType == "set" {
+						values := tableSchemaEnumAndSetValues[colName].values
+						msg := fmt.Sprintf("using set converter for column %s and values %+v", colName, values)
+						l.Info(msg)
+						serializers[colName], err = GetSetConverter(values)
+						if err != nil {
+							return nil, err
+						}
+					} else {
+						serializers[colName], err = GetConverter(columnWithSchema.Type)
+						if err != nil {
+							return nil, err
+						}
 					}
 
-					if colunWithSchema.PrimaryKey {
-						pks[colunWithSchema.Name] = true
+					if columnWithSchema.PrimaryKey {
+						pks[columnWithSchema.Name] = true
 					}
 				}
 			}

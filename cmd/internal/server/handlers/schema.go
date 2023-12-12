@@ -15,5 +15,5 @@ func (Schema) Handle(ctx context.Context, psc *lib.PlanetScaleSource, db *lib.My
 	if err := (*db).BuildSchema(ctx, *psc, schemaBuilder); err != nil {
 		return nil, err
 	}
-	return schemaBuilder.(*fivetranSchemaBuilder).BuildResponse()
+	return schemaBuilder.(*FiveTranSchemaBuilder).BuildResponse()
 }
