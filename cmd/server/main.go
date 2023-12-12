@@ -6,8 +6,8 @@ import (
 	"log"
 	"net"
 
-	fivetransdk "github.com/planetscale/fivetran-sdk-grpc/go"
 	"github.com/planetscale/fivetran-source/cmd/internal/server"
+	fivetransdk "github.com/planetscale/fivetran-source/fivetran_sdk"
 	"google.golang.org/grpc"
 )
 
