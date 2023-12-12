@@ -6,3 +6,5 @@ bin/*
 *.out
 server/*
 sources/*
+proto
+proto/*
