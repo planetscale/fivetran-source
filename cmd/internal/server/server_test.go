@@ -409,8 +409,8 @@ func TestUpdateReturnsInserts(t *testing.T) {
 		}
 		rows = append(rows, resp)
 	}
-	assert.Len(t, rows, 5)
-	operation := rows[1].GetOperation()
+	assert.Len(t, rows, 7)
+	operation := rows[3].GetOperation()
 	require.NotNil(t, operation)
 	record, ok := operation.Op.(*fivetransdk.Operation_Record)
 	assert.True(t, ok)
@@ -610,8 +610,8 @@ func TestUpdateReturnsDeletes(t *testing.T) {
 		}
 		rows = append(rows, resp)
 	}
-	assert.Len(t, rows, 5)
-	operation := rows[1].GetOperation()
+	assert.Len(t, rows, 7)
+	operation := rows[3].GetOperation()
 	assert.NotNil(t, operation)
 	record, ok := operation.Op.(*fivetransdk.Operation_Record)
 	assert.True(t, ok)
@@ -729,8 +729,8 @@ func TestUpdateReturnsUpdates(t *testing.T) {
 		}
 		rows = append(rows, resp)
 	}
-	assert.Len(t, rows, 5)
-	operation := rows[1].GetOperation()
+	assert.Len(t, rows, 7)
+	operation := rows[3].GetOperation()
 	assert.NotNil(t, operation)
 	record, ok := operation.Op.(*fivetransdk.Operation_Record)
 	assert.True(t, ok)
@@ -881,8 +881,8 @@ func setupUpdateRowsTest(intValue []byte) (*sqltypes.Result, func() lib.MysqlCli
 						{Name: "Type_CHAR", Type: "char"},
 						{Name: "Type_BINARY", Type: "binary"},
 						{Name: "Type_BIT", Type: "bit"},
-						{Name: "Type_ENUM", Type: "enum"},
-						{Name: "Type_SET", Type: "set"},
+						{Name: "Type_ENUM", Type: "enum('cat','dog','bird')"},
+						{Name: "Type_SET", Type: "set('cat','dog','bird','hamster')"},
 						// Skip TUPLE, not possible in Result.
 						{Name: "Type_GEOMETRY", Type: "geometry"},
 						{Name: "Type_JSON", Type: "json"},

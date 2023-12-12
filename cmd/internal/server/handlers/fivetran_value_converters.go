@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/spatial-go/geoos/geoencoding"
@@ -213,4 +215,73 @@ func GetConverter(dataType fivetransdk.DataType) (ConverterFunc, error) {
 		return nil, fmt.Errorf("don't know how to convert type %s", dataType)
 	}
 	return converter, nil
+}
+
+func GetEnumConverter(enumValues []string) (ConverterFunc, error) {
+	return func(value sqltypes.Value) (*fivetransdk.ValueType, error) {
+		parsedValue := value.ToString()
+		index, err := strconv.ParseInt(parsedValue, 10, 64)
+		if err != nil {
+			// If value is not an integer (index), we just serialize it as a string
+			return &fivetransdk.ValueType{
+				Inner: &fivetransdk.ValueType_String_{String_: parsedValue},
+			}, nil
+		}
+
+		// The index value of the empty string error value is 0
+		if index == 0 {
+			return &fivetransdk.ValueType{
+				Inner: &fivetransdk.ValueType_String_{String_: ""},
+			}, nil
+		}
+
+		for i, v := range enumValues {
+			if int(index-1) == i {
+				return &fivetransdk.ValueType{
+					Inner: &fivetransdk.ValueType_String_{String_: v},
+				}, nil
+			}
+		}
+
+		// Just return the value as a string if we can't find the enum value
+		return &fivetransdk.ValueType{
+			Inner: &fivetransdk.ValueType_String_{String_: parsedValue},
+		}, nil
+	}, nil
+}
+
+func GetSetConverter(setValues []string) (ConverterFunc, error) {
+	return func(value sqltypes.Value) (*fivetransdk.ValueType, error) {
+		parsedValue := value.ToString()
+		parsedInt, err := strconv.ParseInt(parsedValue, 10, 64)
+		if err != nil {
+			// if value is not an integer, we just serialize as a strong
+			return &fivetransdk.ValueType{
+				Inner: &fivetransdk.ValueType_Json{Json: parsedValue},
+			}, nil
+		}
+		mappedValues := []string{}
+		// SET mapping is stored as a binary value, i.e. 1001
+		bytes := strconv.FormatInt(parsedInt, 2)
+		numValues := len(bytes)
+		// if the bit is ON, that means the value at that index is included in the SET
+		for i, char := range bytes {
+			if char == '1' {
+				// bytes are in reverse order, the first bit represents the last value in the SET
+				mappedValue := setValues[numValues-(i+1)]
+				mappedValues = append([]string{mappedValue}, mappedValues...)
+			}
+		}
+
+		// If we can't find the values, just serialize as a string
+		if len(mappedValues) == 0 {
+			return &fivetransdk.ValueType{
+				Inner: &fivetransdk.ValueType_Json{Json: parsedValue},
+			}, nil
+		}
+
+		return &fivetransdk.ValueType{
+			Inner: &fivetransdk.ValueType_Json{Json: strings.Join(mappedValues, ",")},
+		}, nil
+	}, nil
 }
