@@ -9,8 +9,8 @@ import (
 	psdbconnect "github.com/planetscale/airbyte-source/proto/psdbconnect/v1alpha1"
 	"github.com/planetscale/fivetran-source/lib"
 
-	fivetransdk "github.com/planetscale/fivetran-sdk-grpc/go"
 	"github.com/planetscale/fivetran-source/cmd/internal/server/handlers"
+	fivetransdk "github.com/planetscale/fivetran-source/fivetran_sdk"
 )
 
 type ConfigurationFormHandler interface {

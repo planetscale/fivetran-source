@@ -36,12 +36,16 @@ all: build test lint-fmt lint
 bootstrap:
 	@go install mvdan.cc/gofumpt@latest
 
+.PHONY: build-proto
+build-proto:
+	@CGO_ENABLED=0 ./scripts/build_all.sh
+
 .PHONY: test
 test:
 	@go test ./...
 
 .PHONY: build
-build:
+build: build-proto
 	@CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" ./...
 
 .PHONY: fmt
@@ -50,10 +54,10 @@ fmt: bootstrap
 
 .PHONY: build-server
 build-server:
-	@CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -x ./cmd/server
+	@CGO_ENABLED=0 go build -trimpath -ldflags="-s -w"  ./cmd/server
 
 .PHONY: server
-server:
+server: build-proto
 	@go run ./cmd/server/main.go -port 50051
 
 .PHONY: lint
