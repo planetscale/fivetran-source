@@ -7,10 +7,6 @@ ARG GH_TOKEN
 WORKDIR /fivetran-source
 COPY . .
 
-RUN git config --global credential.helper store
-RUN sh -c 'echo "https://planetscale-actions-bot:$GH_TOKEN@github.com" >> ~/.git-credentials'
-RUN go env -w GOPRIVATE=github.com/planetscale/*
-
 RUN go mod download
 RUN make build-server
 COPY server /connect
