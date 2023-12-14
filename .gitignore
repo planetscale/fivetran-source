@@ -9,3 +9,5 @@ server/*
 sources/*
 proto
 proto/*
+thirdparty/*
+server

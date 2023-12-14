@@ -4,7 +4,7 @@ agents:
 steps:
   - name: "Tests"
     label: "Tests"
-    command: "go test -race -v ./..."
+    command: "make test-ci"
     env:
       DOCKER_BUILDKIT: 1
     plugins:
@@ -13,7 +13,7 @@ steps:
 
   - name: "go vet"
     label: "Tests"
-    command: "go vet ./..."
+    command: "make vet"
     env:
       DOCKER_BUILDKIT: 1
     plugins:
@@ -31,7 +31,7 @@ steps:
 
   - name: "staticcheck"
     label: "Tests"
-    command: "go install honnef.co/go/tools/cmd/staticcheck@latest && $(go env GOPATH)/bin/staticcheck ./..."
+    command: "make lint"
     env:
       DOCKER_BUILDKIT: 1
     plugins:
@@ -39,7 +39,7 @@ steps:
           run: ci
 
   - name: "Verify dependency licenses %n"
-    command: "go get -v ./... && license_finder"
+    command: "make license-check"
     env:
       DOCKER_BUILDKIT: 1
     plugins:
