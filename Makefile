@@ -27,7 +27,8 @@ endif
 ifeq ($(OS),Darwin)
 	PROTOC_PLATFORM := osx
 endif
-FIVETRANSDK_PROTO_OUT := proto/fivetransdk
+FIVETRANSDK_PROTO_OUT := fivetran_sdk
+FIVETRAN_PROTO_VERSION := 8b110ac32f1859336ef46727537e32a07ac974bd
 
 .PHONY: all
 all: build test lint-fmt lint
@@ -36,16 +37,13 @@ all: build test lint-fmt lint
 bootstrap:
 	@go install mvdan.cc/gofumpt@latest
 
-.PHONY: build-proto
-build-proto:
-	@CGO_ENABLED=0 ./scripts/build_all.sh
 
 .PHONY: test
-test:
-	@go test ./...
+test-ci: proto
+	@go test -race -v ./...
 
 .PHONY: build
-build: build-proto
+build: proto/connector_sdk.proto
 	@CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" ./...
 
 .PHONY: fmt
@@ -53,15 +51,23 @@ fmt: bootstrap
 	$(GOBIN)/gofumpt -w .
 
 .PHONY: build-server
-build-server:
+build-server: proto
 	@CGO_ENABLED=0 go build -trimpath -ldflags="-s -w"  ./cmd/server
 
 .PHONY: server
-server: build-proto
+server: proto
 	@go run ./cmd/server/main.go -port 50051
 
+.PHONY: vet
+vet: proto
+	@go vet ./...
+
+.PHONY: license-check
+license-check: $(FIVETRANSDK_PROTO_OUT)/connector_sdk.pb.go
+	@go get -v ./... && license_finder
+
 .PHONY: lint
-lint:
+lint: proto
 	@go install honnef.co/go/tools/cmd/staticcheck@latest
 	@$(GOBIN)/staticcheck ./...
 
@@ -94,7 +100,7 @@ clean:
 	@echo "==> Cleaning artifacts"
 	@rm ${NAME}
 
-proto: $(FIVETRANSDK_PROTO_OUT)/v1alpha1/fivetran_source.pb.go
+proto: $(FIVETRANSDK_PROTO_OUT)/connector_sdk.pb.go
 $(BIN):
 	mkdir -p $(BIN)
 
@@ -103,9 +109,6 @@ $(BIN)/protoc-gen-go: | $(BIN)
 
 $(BIN)/protoc-gen-go-grpc: | $(BIN)
 	go install google.golang.org/grpc/cmd/protoc-gen-go-grpc
-
-$(BIN)/protoc-gen-go-vtproto: | $(BIN)
-	go install github.com/planetscale/vtprotobuf/cmd/protoc-gen-go-vtproto
 
 $(BIN)/protoc-gen-twirp: | $(BIN)
 	go install github.com/twitchtv/twirp/protoc-gen-twirp
@@ -117,20 +120,29 @@ $(BIN)/protoc: | $(BIN)
 	unzip -d tmp-protoc tmp-protoc/protoc.zip
 	mv tmp-protoc/bin/protoc $(BIN)/
 	rm -rf thirdparty/google/
-	mv tmp-protoc/include/google/ thirdparty/
+	mkdir -p thirdparty/google
+	mv tmp-protoc/include/google/ thirdparty/google/
 	rm -rf tmp-protoc
 
-PROTO_TOOLS := $(BIN)/protoc $(BIN)/protoc-gen-go $(BIN)/protoc-gen-go-grpc $(BIN)/protoc-gen-twirp
+PROTO_TOOLS := $(BIN)/protoc $(BIN)/protoc-gen-go $(BIN)/protoc-gen-go-grpc
 
-$(FIVETRANSDK_PROTO_OUT)/v1alpha1/fivetran_source.pb.go: $(PROTO_TOOLS) proto/fivetran_sdk.proto
-	mkdir -p $(FIVETRANSDK_PROTO_OUT)/v1alpha1
+$(FIVETRANSDK_PROTO_OUT)/connector_sdk.pb.go: $(PROTO_TOOLS) proto/connector_sdk.proto
+	mkdir -p $(FIVETRANSDK_PROTO_OUT)
 	$(BIN)/protoc \
-	  --plugin=protoc-gen-go=$(BIN)/protoc-gen-go \
-	  --plugin=protoc-gen-go-grpc=$(BIN)/protoc-gen-go-grpc \
-	  --go_out=$(FIVETRANSDK_PROTO_OUT)/v1alpha1 \
-	  --go-grpc_out=$(FIVETRANSDK_PROTO_OUT)/v1alpha1 \
-	  --go_opt=paths=source_relative \
-	  --go-grpc_opt=paths=source_relative \
-	  --go-grpc_opt=require_unimplemented_servers=false \
-	  -I proto \
-	  proto/fivetran_sdk.proto
+    --plugin=protoc-gen-go=$(BIN)/protoc-gen-go \
+    --plugin=protoc-gen-go-grpc=$(BIN)/protoc-gen-go-grpc \
+    --go_out=fivetran_sdk \
+    --go_opt=paths=source_relative \
+    --go-grpc_out=fivetran_sdk \
+    --proto_path=proto \
+    --go-grpc_opt=paths=source_relative \
+    -I thirdparty/google \
+    -I proto \
+    common.proto \
+    connector_sdk.proto
+
+proto/connector_sdk.proto:
+	rm -rf proto && \
+    git clone https://github.com/fivetran/fivetran_sdk proto/ && \
+    cd proto/ && \
+    git checkout ${FIVETRAN_PROTO_VERSION}

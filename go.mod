@@ -11,6 +11,7 @@ require (
 	github.com/spatial-go/geoos v1.1.3
 	github.com/stretchr/testify v1.8.4
 	google.golang.org/grpc v1.59.0
+	google.golang.org/grpc/cmd/protoc-gen-go-grpc v1.2.0
 	google.golang.org/protobuf v1.31.0
 	vitess.io/vitess v0.17.3
 )
