@@ -14,7 +14,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/planetscale/fivetran-source/lib"
+	"github.com/planetscale/connect-sdk/lib"
 
 	querypb "vitess.io/vitess/go/vt/proto/query"
 

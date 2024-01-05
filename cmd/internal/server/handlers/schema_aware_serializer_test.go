@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/planetscale/fivetran-source/lib"
+	"github.com/planetscale/connect-sdk/lib"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 

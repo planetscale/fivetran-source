@@ -8,7 +8,7 @@ import (
 
 	"github.com/planetscale/fivetran-source/cmd/internal/server/handlers"
 
-	"github.com/planetscale/fivetran-source/lib"
+	"github.com/planetscale/connect-sdk/lib"
 
 	"github.com/google/uuid"
 

@@ -3,8 +3,8 @@ package handlers
 import (
 	"fmt"
 
+	"github.com/planetscale/connect-sdk/lib"
 	fivetransdk "github.com/planetscale/fivetran-source/fivetran_sdk"
-	"github.com/planetscale/fivetran-source/lib"
 	"vitess.io/vitess/go/sqltypes"
 )
 

@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/planetscale/fivetran-source/lib"
+	"github.com/planetscale/connect-sdk/lib"
 
 	fivetransdk "github.com/planetscale/fivetran-source/fivetran_sdk"
 )

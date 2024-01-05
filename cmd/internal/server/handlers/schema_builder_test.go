@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/planetscale/fivetran-source/lib"
+	"github.com/planetscale/connect-sdk/lib"
 
 	fivetransdk "github.com/planetscale/fivetran-source/fivetran_sdk"
 	"github.com/stretchr/testify/assert"

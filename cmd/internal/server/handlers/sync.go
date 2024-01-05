@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/planetscale/fivetran-source/lib"
+	"github.com/planetscale/connect-sdk/lib"
 
 	psdbconnect "github.com/planetscale/airbyte-source/proto/psdbconnect/v1alpha1"
 	fivetransdk "github.com/planetscale/fivetran-source/fivetran_sdk"

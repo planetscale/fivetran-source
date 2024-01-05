@@ -7,7 +7,7 @@ import (
 
 	"github.com/pkg/errors"
 	psdbconnect "github.com/planetscale/airbyte-source/proto/psdbconnect/v1alpha1"
-	"github.com/planetscale/fivetran-source/lib"
+	"github.com/planetscale/connect-sdk/lib"
 
 	"github.com/planetscale/fivetran-source/cmd/internal/server/handlers"
 	fivetransdk "github.com/planetscale/fivetran-source/fivetran_sdk"
