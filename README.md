@@ -1,5 +1,5 @@
 # fivetran-source
-PlanetScale Source connector for FiveTran
+PlanetScale Source connector for Fivetran
 
 
 ## Testing locally

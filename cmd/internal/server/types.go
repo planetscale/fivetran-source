@@ -104,7 +104,7 @@ func SourceFromRequest(request ConfiguredRequest) (*lib.PlanetScaleSource, error
 	return psc, nil
 }
 
-// StateFromRequest unmarshals the stateJson saved in FiveTran
+// StateFromRequest unmarshals the stateJson saved in Fivetran
 // and turns that into a structure we can use within the connector to
 // incrementally sync tables from PlanetScale.
 func StateFromRequest(request StatefulRequest, source lib.PlanetScaleSource, shards []string, schemaSelection fivetransdk.Selection_WithSchema) (*lib.SyncState, error) {

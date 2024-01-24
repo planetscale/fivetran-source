@@ -9,7 +9,7 @@ import (
 	psdbconnect "github.com/planetscale/airbyte-source/proto/psdbconnect/v1alpha1"
 )
 
-// PlanetScaleSource defines a configured FiveTran Source for a PlanetScale database
+// PlanetScaleSource defines a configured Fivetran Source for a PlanetScale database
 // Consider this a connection string to a PlanetScale database.
 type PlanetScaleSource struct {
 	Host                  string `json:"host"`
@@ -60,7 +60,7 @@ func useSecureConnection() bool {
 }
 
 // GetInitialState will return the initial/blank state for a given keyspace in all of its shards.
-// This state can be round-tripped safely with FiveTran.
+// This state can be round-tripped safely with Fivetran.
 func (psc PlanetScaleSource) GetInitialState(keyspaceOrDatabase string, shards []string) (ShardStates, error) {
 	shardCursors := ShardStates{
 		Shards: map[string]*SerializedCursor{},

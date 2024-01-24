@@ -28,7 +28,7 @@ ifeq ($(OS),Darwin)
 	PROTOC_PLATFORM := osx
 endif
 FIVETRANSDK_PROTO_OUT := fivetran_sdk
-FIVETRAN_PROTO_VERSION := 8b110ac32f1859336ef46727537e32a07ac974bd
+FIVETRAN_PROTO_VERSION := d3af8f0cec22214e4b130af1b794f080602bfa38
 
 .PHONY: all
 all: build test lint-fmt lint
