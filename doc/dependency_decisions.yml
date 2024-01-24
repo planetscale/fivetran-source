@@ -163,7 +163,7 @@
   - github.com/planetscale/fivetran-sdk-grpc
   - &2
     :who: Frances
-    :why: PlanetScale's private fork of new FiveTran protos
+    :why: PlanetScale's private fork of new Fivetran protos
     :versions: []
     :when: 2023-07-27 19:42:15.786151000 Z
 - - :approve

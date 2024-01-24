@@ -37,7 +37,7 @@ type mysqlClient struct {
 // 1. Get all keyspaces for the PlanetScale database
 // 2. Get the schemas for all tables in a keyspace, for each keyspace
 // 2. Get columns and primary keys for each table from information_schema.columns
-// 3. Format results into FiveTran response
+// 3. Format results into Fivetran response
 func (p mysqlClient) BuildSchema(ctx context.Context, psc PlanetScaleSource, schemaBuilder SchemaBuilder) error {
 	keyspaces, err := p.GetKeyspaces(ctx, psc)
 	if err != nil {
