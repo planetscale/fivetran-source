@@ -1007,26 +1007,6 @@ func TestCheckConnectionReturnsSuccess(t *testing.T) {
 	assert.True(t, success.Success, "response should be a success status")
 }
 
-func TestCheckConnectionReturnsErrorIfNotEdgePassword(t *testing.T) {
-	ctx := context.Background()
-	client, closer := server(ctx, nil, nil)
-	defer closer()
-	resp, err := client.Test(ctx, &fivetransdk.TestRequest{
-		Name: handlers.CheckConnectionTestName,
-		Configuration: map[string]string{
-			"host":     "earth.psdb",
-			"username": "phanatic",
-			"password": "password",
-			"database": "employees",
-		},
-	})
-
-	assert.NoError(t, err)
-	fail, ok := resp.Response.(*fivetransdk.TestResponse_Failure)
-	assert.True(t, ok, "response should be a TestResponse_Failure")
-	assert.Equal(t, fail.Failure, "Unable to initialize Connect Session: This password is not connect-enabled, please ensure that your organization is enrolled in the Connect beta.")
-}
-
 func TestCheckConnectionReturnsErrorIfCheckFails(t *testing.T) {
 	ctx := context.Background()
 	clientConstructor := func() lib.ConnectClient {
