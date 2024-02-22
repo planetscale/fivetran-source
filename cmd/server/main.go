@@ -6,12 +6,14 @@ import (
 	"log"
 	"net"
 
+	_ "google.golang.org/grpc/encoding/gzip"
+
 	"github.com/planetscale/fivetran-source/cmd/internal/server"
 	fivetransdk "github.com/planetscale/fivetran-source/fivetran_sdk"
 	"google.golang.org/grpc"
 )
 
-var port = flag.Int("port", 8000, "The server port")
+var port = flag.Int("port", 50051, "The server port")
 
 func main() {
 	ss := server.NewConnectorServer()
