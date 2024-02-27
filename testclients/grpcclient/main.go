@@ -112,12 +112,9 @@ func tailTable() {
 		}
 
 		if operation, ok := res.Response.(*fivetran_sdk.UpdateResponse_Operation); ok {
-			//operation.Operation.Op
 			if rec, ok := operation.Operation.Op.(*fivetran_sdk.Operation_Record); ok {
-
 				fmt.Printf("[Record] : %v\n", rec.Record)
 			}
-
 		}
 	}
 }
