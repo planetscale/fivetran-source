@@ -12,9 +12,11 @@ import (
 	"google.golang.org/grpc/encoding/gzip"
 )
 
-var addr = flag.String("addr", "localhost:50051", "the address to connect to")
-var tableName = flag.String("table", "", "table to download")
-var schemaName = flag.String("schema", "", "schema for table to download")
+var (
+	addr       = flag.String("addr", "localhost:50051", "the address to connect to")
+	tableName  = flag.String("table", "", "table to download")
+	schemaName = flag.String("schema", "", "schema for table to download")
+)
 
 // fill in connection values
 var configuration = map[string]string{
@@ -83,7 +85,7 @@ func tailTable() {
 			Selection: &fivetran_sdk.Selection_WithSchema{
 				WithSchema: &fivetran_sdk.TablesWithSchema{
 					Schemas: []*fivetran_sdk.SchemaSelection{
-						&fivetran_sdk.SchemaSelection{
+						{
 							Included:   true,
 							SchemaName: *schemaName,
 							Tables: []*fivetran_sdk.TableSelection{
