@@ -12,7 +12,7 @@ require (
 	github.com/stretchr/testify v1.8.4
 	google.golang.org/grpc v1.62.0
 	google.golang.org/grpc/cmd/protoc-gen-go-grpc v1.2.0
-	google.golang.org/protobuf v1.32.0
+	google.golang.org/protobuf v1.33.0
 	vitess.io/vitess v0.17.3
 )
 
