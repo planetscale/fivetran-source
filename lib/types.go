@@ -77,3 +77,7 @@ type KeyspaceState struct {
 type SyncState struct {
 	Keyspaces map[string]KeyspaceState `json:"keyspaces"`
 }
+
+// A map of starting GTIDs for every keyspace and shard
+// i.e. { keyspace: { shard: gtid} }
+type StartingGtids map[string]map[string]string
