@@ -101,13 +101,17 @@ func SourceFromRequest(request ConfiguredRequest) (*lib.PlanetScaleSource, error
 		psc.UseReplica = b
 	}
 
+	if val, ok := configuration["starting_gtids"]; ok {
+		psc.StartingGtids = val
+	}
+
 	return psc, nil
 }
 
 // StateFromRequest unmarshals the stateJson saved in Fivetran
 // and turns that into a structure we can use within the connector to
 // incrementally sync tables from PlanetScale.
-func StateFromRequest(request StatefulRequest, source lib.PlanetScaleSource, shards []string, schemaSelection fivetransdk.Selection_WithSchema) (*lib.SyncState, error) {
+func StateFromRequest(logger handlers.Serializer, request StatefulRequest, source lib.PlanetScaleSource, shards []string, schemaSelection fivetransdk.Selection_WithSchema) (*lib.SyncState, error) {
 	syncState := lib.SyncState{
 		Keyspaces: map[string]lib.KeyspaceState{},
 	}

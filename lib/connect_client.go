@@ -120,7 +120,7 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 			logger.Info(preamble + "no new rows found, exiting")
 			return TableCursorToSerializedCursor(currentPosition)
 		}
-		logger.Info(fmt.Sprintf("new rows found, syncing rows for %v", readDuration))
+		logger.Info(fmt.Sprintf(preamble+"new rows found, syncing rows for %v", readDuration))
 		logger.Info(fmt.Sprintf(preamble+"syncing rows with cursor [%v]", currentPosition))
 
 		currentPosition, err = p.sync(ctx, logger, tableName, columns, currentPosition, latestCursorPosition, ps, tabletType, readDuration, onResult, onCursor, onUpdate)
@@ -144,7 +144,7 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 				logger.Info(fmt.Sprintf("%vFinished reading all rows for table [%v]", preamble, tableName))
 				return currentSerializedCursor, nil
 			} else {
-				logger.Info(fmt.Sprintf("non-grpc error [%v]]", err))
+				logger.Info(fmt.Sprintf(preamble+"non-grpc error [%v]]", err))
 				return currentSerializedCursor, err
 			}
 		}
@@ -159,6 +159,8 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 		err    error
 		client psdbconnect.ConnectClient
 	)
+
+	preamble := fmt.Sprintf("[%v:%v shard : %v] ", ps.Database, tableName, tc.Shard)
 
 	if p.clientFn == nil {
 		conn, err := grpcclient.Dial(ctx, ps.Host,
@@ -185,7 +187,7 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 		tc.Position = ""
 	}
 
-	logger.Info(fmt.Sprintf("Syncing with cursor position : [%v], using last known PK : %v, stop cursor is : [%v]", tc.Position, tc.LastKnownPk != nil, stopPosition))
+	logger.Info(fmt.Sprintf("%s Syncing with cursor position : [%v], using last known PK : %v, stop cursor is : [%v]", preamble, tc.Position, tc.LastKnownPk != nil, stopPosition))
 
 	sReq := &psdbconnect.SyncRequest{
 		TableName:      tableName,

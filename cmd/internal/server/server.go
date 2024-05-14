@@ -181,7 +181,7 @@ func (c *connectorServer) Update(request *fivetran_sdk.UpdateRequest, server fiv
 		return status.Errorf(codes.InvalidArgument, "unable to list shards for this database : %q", err)
 	}
 	var state *lib.SyncState
-	state, err = StateFromRequest(request, *psc, shards, *schemaSelection)
+	state, err = StateFromRequest(logger, request, *psc, shards, *schemaSelection)
 	if err != nil {
 		return status.Error(codes.InvalidArgument, fmt.Sprintf("request did not contain a valid stateJson : %q", err))
 	}

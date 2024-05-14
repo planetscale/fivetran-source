@@ -86,6 +86,14 @@ func (ConfigurationForm) Handle(ctx context.Context, _ *fivetransdk.Configuratio
 					},
 				},
 			},
+			{
+				Name:        "starting_gtids",
+				Label:       "JSON containing keyspace, shard, and starting GTIDs",
+				Description: &tinyIntDesc,
+				Type: &fivetransdk.FormField_TextField{
+					TextField: fivetransdk.TextField_PlainText,
+				},
+			},
 		},
 		Tests: []*fivetransdk.ConfigurationTest{
 			{

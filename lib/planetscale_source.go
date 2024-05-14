@@ -1,6 +1,7 @@
 package lib
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -19,6 +20,7 @@ type PlanetScaleSource struct {
 	Shards                string `json:"shards"`
 	TreatTinyIntAsBoolean bool   `json:"treat_tiny_int_as_boolean"`
 	UseReplica            bool   `json:"use_replica"`
+	StartingGtids         string `json:"starting_gtids"`
 }
 
 // DSN returns a DataSource that mysql libraries can use to connect to a PlanetScale database.
@@ -66,6 +68,9 @@ func (psc PlanetScaleSource) GetInitialState(keyspaceOrDatabase string, shards [
 		Shards: map[string]*SerializedCursor{},
 	}
 
+	var startingGtids StartingGtids
+	var err error
+
 	if len(psc.Shards) > 0 {
 		configuredShards := strings.Split(psc.Shards, ",")
 		foundShards := map[string]bool{}
@@ -85,13 +90,41 @@ func (psc PlanetScaleSource) GetInitialState(keyspaceOrDatabase string, shards [
 		shards = configuredShards
 	}
 
+	if len(psc.StartingGtids) > 0 {
+		startingGtids, err = psc.GetStartingGtids()
+		if err != nil {
+			return shardCursors, err
+		}
+	}
+
 	for _, shard := range shards {
+		var position string = ""
+
+		// If a starting GTID was specified, use it
+		if startingGtids != nil {
+			if _, ok := startingGtids[keyspaceOrDatabase]; ok {
+				if _, ok := startingGtids[keyspaceOrDatabase][shard]; ok {
+					position = startingGtids[keyspaceOrDatabase][shard]
+				}
+			}
+		}
+
 		shardCursors.Shards[shard], _ = TableCursorToSerializedCursor(&psdbconnect.TableCursor{
 			Shard:    shard,
 			Keyspace: keyspaceOrDatabase,
-			Position: "",
+			Position: position,
 		})
 	}
 
 	return shardCursors, nil
+}
+
+func (psc PlanetScaleSource) GetStartingGtids() (StartingGtids, error) {
+	var startingGtids StartingGtids
+
+	if err := json.Unmarshal([]byte(psc.StartingGtids), &startingGtids); err != nil {
+		return nil, fmt.Errorf("could not unmarshal starting gtids from string '%s'", psc.StartingGtids)
+	}
+
+	return startingGtids, nil
 }
