@@ -289,6 +289,7 @@ func getFivetranDataType(mType string, treatTinyIntAsBoolean bool) (fivetransdk.
 
 	if strings.HasPrefix(mysqlType, "set") ||
 		strings.HasPrefix(mysqlType, "geometry") ||
+		strings.HasPrefix(mysqlType, "geomcollection") ||
 		strings.HasPrefix(mysqlType, "geometrycollection") ||
 		strings.HasPrefix(mysqlType, "multipoint") ||
 		strings.HasPrefix(mysqlType, "multipolygon") ||
