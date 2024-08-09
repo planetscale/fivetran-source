@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -32,6 +33,8 @@ func NewMySQL(psc *PlanetScaleSource) (MysqlClient, error) {
 type mysqlClient struct {
 	db *sql.DB
 }
+
+var vreplRegex = regexp.MustCompile(`\b_(\w+|\d+)_\d+_vrepl\b`)
 
 // BuildSchema returns schemas for all tables in a PlanetScale database
 // 1. Get all keyspaces for the PlanetScale database
@@ -151,7 +154,12 @@ func (p mysqlClient) getKeyspaceTableNames(ctx context.Context, keyspaceName str
 			return tables, errors.Wrap(err, "unable to get table names")
 		}
 
-		tables = append(tables, name)
+		// Skip internal Vitess tables
+		match := vreplRegex.Match([]byte(name))
+
+		if !match {
+			tables = append(tables, name)
+		}
 	}
 
 	if err := tableNamesQR.Err(); err != nil {
