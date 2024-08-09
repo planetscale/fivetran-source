@@ -35,6 +35,7 @@ type mysqlClient struct {
 }
 
 var vreplRegex = regexp.MustCompile(`\b_(\w+|\d+)_\d+_vrepl\b`)
+var vtRegex = regexp.MustCompile(`\b_vt_(HOLD|PURGE|EVAC|DROP)_(\d+|\w+)\b`)
 
 // BuildSchema returns schemas for all tables in a PlanetScale database
 // 1. Get all keyspaces for the PlanetScale database
@@ -155,9 +156,10 @@ func (p mysqlClient) getKeyspaceTableNames(ctx context.Context, keyspaceName str
 		}
 
 		// Skip internal Vitess tables
-		match := vreplRegex.Match([]byte(name))
+		vreplMatch := vreplRegex.Match([]byte(name))
+		vtMatch := vtRegex.Match([]byte(name))
 
-		if !match {
+		if !vreplMatch && !vtMatch {
 			tables = append(tables, name)
 		}
 	}
