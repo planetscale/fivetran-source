@@ -18,6 +18,7 @@ func TestCanIgnoreVitessGCTables(t *testing.T) {
 	sb.OnTable("Employees", "_vt_HOLD_6ace8bcef73211ea87e9f875a4d24e90_20200915120410")
 	sb.OnTable("Employees", "_vt_EVAC_6ace8bcef73211ea87e9f875a4d24e90_20200915120410")
 	sb.OnTable("Employees", "_vt_PURGE_6ace8bcef73211ea87e9f875a4d24e90_20200915120410")
+	sb.OnTable("Employees", "_750a3e1f_e6f3_5249_82af_82f5d325ecab_20240528153135_vrepl")
 	resp, err := sb.(*FiveTranSchemaBuilder).BuildResponse()
 	assert.NoError(t, err)
 	schemaResponse, ok := resp.Response.(*fivetransdk.SchemaResponse_WithSchema)

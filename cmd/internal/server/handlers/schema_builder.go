@@ -12,7 +12,8 @@ import (
 )
 
 const (
-	gCTableNameExpression string = `^_vt_(HOLD|PURGE|EVAC|DROP)_([0-f]{32})_([0-9]{14})$`
+	gCTableNameExpression    string = `^_vt_(HOLD|PURGE|EVAC|DROP)_([0-f]{32})_([0-9]{14})$`
+	vreplTableNameExpression string = `\b_(\w+|\d+)_\d+_vrepl\b`
 )
 
 // Maps enum and set indices to their values
@@ -28,7 +29,10 @@ type SchemaWithMetadata struct {
 	EnumsAndSets SchemaEnumsAndSets
 }
 
-var gcTableNameRegexp = regexp.MustCompile(gCTableNameExpression)
+var (
+	gcTableNameRegexp = regexp.MustCompile(gCTableNameExpression)
+	vreplRegex        = regexp.MustCompile(vreplTableNameExpression)
+)
 
 type FiveTranSchemaBuilder struct {
 	schemas               map[string]*fivetransdk.Schema
@@ -65,6 +69,10 @@ func (s *FiveTranSchemaBuilder) OnKeyspace(keyspaceName string) {
 func (s *FiveTranSchemaBuilder) OnTable(keyspaceName, tableName string) {
 	// skip any that are Vitess's GC tables.
 	if gcTableNameRegexp.MatchString(tableName) {
+		return
+	}
+
+	if vreplRegex.MatchString(tableName) {
 		return
 	}
 
