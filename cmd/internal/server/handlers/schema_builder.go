@@ -29,8 +29,10 @@ type SchemaWithMetadata struct {
 	EnumsAndSets SchemaEnumsAndSets
 }
 
-var gcTableNameRegexp = regexp.MustCompile(gCTableNameExpression)
-var vreplRegex = regexp.MustCompile(vreplTableNameExpression)
+var (
+	gcTableNameRegexp = regexp.MustCompile(gCTableNameExpression)
+	vreplRegex        = regexp.MustCompile(vreplTableNameExpression)
+)
 
 type FiveTranSchemaBuilder struct {
 	schemas               map[string]*fivetransdk.Schema
