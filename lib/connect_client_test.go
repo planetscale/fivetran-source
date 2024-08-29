@@ -340,3 +340,56 @@ func TestRead_CanStopAtWellKnownCursor(t *testing.T) {
 	assert.Equal(t, 2*(nextVGtidPosition/3), insertedRowCounter)
 	assert.Equal(t, 2*(nextVGtidPosition/3), deletedRowCounter)
 }
+
+func TestRead_FiltersNonExistentColumns(t *testing.T) {
+	dbl := &dbLogger{}
+	ped := connectClient{}
+
+	getKeyspaceTableColumnsFunc := func(ctx context.Context, keyspaceName string, tableName string) ([]MysqlColumn, error) {
+		return []MysqlColumn{{Name: "id", Type: "bigint", IsPrimaryKey: true}, {Name: "email", Type: "varchar(256)", IsPrimaryKey: false}}, nil
+	}
+	mysqlClient := NewTestMysqlClient(getKeyspaceTableColumnsFunc)
+	ped.Mysql = &mysqlClient
+
+	tc := &psdbconnect.TableCursor{
+		Shard:    "-",
+		Position: "THIS_IS_A_SHARD_GTID",
+		Keyspace: "connect-test",
+	}
+
+	syncClient := &connectSyncClientMock{
+		syncResponses: []*psdbconnect.SyncResponse{
+			{
+				Cursor: tc,
+			},
+			{
+				Cursor: tc,
+			},
+		},
+	}
+
+	expectedColumns := []string{"id", "email"}
+	cc := clientConnectionMock{
+		syncFn: func(ctx context.Context, in *psdbconnect.SyncRequest, opts ...grpc.CallOption) (psdbconnect.Connect_SyncClient, error) {
+			assert.Equal(t, "current", in.Cursor.Position)
+			assert.Equal(t, expectedColumns, in.Columns)
+			return syncClient, nil
+		},
+	}
+	ped.clientFn = func(ctx context.Context, ps PlanetScaleSource) (psdbconnect.ConnectClient, error) {
+		return &cc, nil
+	}
+	ps := PlanetScaleSource{}
+	onRow := func(*sqltypes.Result, Operation) error {
+		return nil
+	}
+	onCursor := func(*psdbconnect.TableCursor) error {
+		return nil
+	}
+	sc, err := ped.Read(context.Background(), dbl, ps, "customers", []string{"id", "email", "nonexistent_column"}, tc, onRow, onCursor, nil)
+	assert.NoError(t, err)
+	esc, err := TableCursorToSerializedCursor(tc)
+	assert.NoError(t, err)
+	assert.Equal(t, esc, sc)
+	assert.Equal(t, 1, cc.syncFnInvokedCount)
+}
