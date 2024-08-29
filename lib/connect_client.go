@@ -190,22 +190,9 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 
 	logger.Info(fmt.Sprintf("%s Syncing with cursor position : [%v], using last known PK : %v, stop cursor is : [%v]", preamble, tc.Position, tc.LastKnownPk != nil, stopPosition))
 
-	existingColumns := []string{}
-	results, err := (*p.Mysql).GetKeyspaceTableColumns(ctx, ps.Database, tableName)
+	existingColumns, err := p.filterExistingColumns(ctx, ps, tableName, columns)
 	if err != nil {
 		logger.Info(fmt.Sprintf("%s Couldn't fetch existing columns, falling back to requested columns", preamble))
-		existingColumns = columns
-	} else {
-		columnSet := map[string]bool{}
-		for _, result := range results {
-			columnSet[result.Name] = true
-		}
-
-		for _, c := range columns {
-			if columnSet[c] {
-				existingColumns = append(existingColumns, c)
-			}
-		}
 	}
 
 	logger.Info(fmt.Sprintf("%s Filtering with columns %s", preamble, strings.Join(existingColumns, ",")))
@@ -293,6 +280,27 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 			return tc, io.EOF
 		}
 	}
+}
+
+func (p connectClient) filterExistingColumns(ctx context.Context, ps PlanetScaleSource, tableName string, columns []string) ([]string, error) {
+	existingColumns := []string{}
+	results, err := (*p.Mysql).GetKeyspaceTableColumns(ctx, ps.Database, tableName)
+	if err != nil {
+		existingColumns = columns
+	} else {
+		columnSet := map[string]bool{}
+		for _, result := range results {
+			columnSet[result.Name] = true
+		}
+
+		for _, c := range columns {
+			if columnSet[c] {
+				existingColumns = append(existingColumns, c)
+			}
+		}
+
+	}
+	return existingColumns, nil
 }
 
 func serializeQueryResult(result *query.QueryResult) *sqltypes.Result {
