@@ -223,6 +223,13 @@ func TestRead_CanReturnNewCursorIfNewFound(t *testing.T) {
 	onCursor := func(*psdbconnect.TableCursor) error {
 		return nil
 	}
+
+	getKeyspaceTableColumnsFunc := func(ctx context.Context, keyspaceName string, tableName string) ([]MysqlColumn, error) {
+		return []MysqlColumn{{Name: "id", Type: "bigint", IsPrimaryKey: true}, {Name: "email", Type: "varchar(256)", IsPrimaryKey: false}}, nil
+	}
+	mysqlClient := NewTestMysqlClient(getKeyspaceTableColumnsFunc)
+	ped.Mysql = &mysqlClient
+
 	sc, err := ped.Read(context.Background(), dbl, ps, "customers", nil, tc, onRow, onCursor, nil)
 	assert.NoError(t, err)
 	esc, err := TableCursorToSerializedCursor(newTC)
@@ -327,6 +334,13 @@ func TestRead_CanStopAtWellKnownCursor(t *testing.T) {
 	onCursor := func(*psdbconnect.TableCursor) error {
 		return nil
 	}
+
+	getKeyspaceTableColumnsFunc := func(ctx context.Context, keyspaceName string, tableName string) ([]MysqlColumn, error) {
+		return []MysqlColumn{{Name: "id", Type: "bigint", IsPrimaryKey: true}, {Name: "email", Type: "varchar(256)", IsPrimaryKey: false}}, nil
+	}
+	mysqlClient := NewTestMysqlClient(getKeyspaceTableColumnsFunc)
+	ped.Mysql = &mysqlClient
+
 	sc, err := ped.Read(context.Background(), dbl, ps, "customers", nil, responses[0].Cursor, onRow, onCursor, nil)
 
 	assert.NoError(t, err)
@@ -346,7 +360,11 @@ func TestRead_FiltersNonExistentColumns(t *testing.T) {
 	ped := connectClient{}
 
 	getKeyspaceTableColumnsFunc := func(ctx context.Context, keyspaceName string, tableName string) ([]MysqlColumn, error) {
-		return []MysqlColumn{{Name: "id", Type: "bigint", IsPrimaryKey: true}, {Name: "email", Type: "varchar(256)", IsPrimaryKey: false}}, nil
+		return []MysqlColumn{
+			{Name: "id", Type: "bigint", IsPrimaryKey: true},
+			{Name: "email", Type: "varchar(256)", IsPrimaryKey: false},
+			{Name: "name", Type: "varchar(256)", IsPrimaryKey: false},
+		}, nil
 	}
 	mysqlClient := NewTestMysqlClient(getKeyspaceTableColumnsFunc)
 	ped.Mysql = &mysqlClient

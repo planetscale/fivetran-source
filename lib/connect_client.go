@@ -190,15 +190,21 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 
 	logger.Info(fmt.Sprintf("%s Syncing with cursor position : [%v], using last known PK : %v, stop cursor is : [%v]", preamble, tc.Position, tc.LastKnownPk != nil, stopPosition))
 
-	var existingColumns []string
+	existingColumns := []string{}
 	results, err := (*p.Mysql).GetKeyspaceTableColumns(ctx, ps.Database, tableName)
 	if err != nil {
 		logger.Info(fmt.Sprintf("%s Couldn't fetch existing columns, falling back to requested columns", preamble))
 		existingColumns = columns
 	} else {
-		existingColumns = make([]string, len(results))
-		for i, result := range results {
-			existingColumns[i] = result.Name
+		columnSet := map[string]bool{}
+		for _, result := range results {
+			columnSet[result.Name] = true
+		}
+
+		for _, c := range columns {
+			if columnSet[c] {
+				existingColumns = append(existingColumns, c)
+			}
 		}
 	}
 
