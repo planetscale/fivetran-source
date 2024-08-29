@@ -356,23 +356,34 @@ func TestRead_FiltersNonExistentColumns(t *testing.T) {
 		Position: "THIS_IS_A_SHARD_GTID",
 		Keyspace: "connect-test",
 	}
+	newTC := &psdbconnect.TableCursor{
+		Shard:    "-",
+		Position: "I_AM_FARTHER_IN_THE_BINLOG",
+		Keyspace: "connect-test",
+	}
 
 	syncClient := &connectSyncClientMock{
 		syncResponses: []*psdbconnect.SyncResponse{
 			{
-				Cursor: tc,
+				Cursor: newTC,
 			},
 			{
-				Cursor: tc,
+				Cursor: newTC,
 			},
 		},
 	}
 
-	expectedColumns := []string{"id", "email"}
+	secondExpectedColumns := []string{"id", "email"}
+	var firstExpectedColumns []string
+	run := 1
 	cc := clientConnectionMock{
 		syncFn: func(ctx context.Context, in *psdbconnect.SyncRequest, opts ...grpc.CallOption) (psdbconnect.Connect_SyncClient, error) {
-			assert.Equal(t, "current", in.Cursor.Position)
-			assert.Equal(t, expectedColumns, in.Columns)
+			if run == 1 {
+				assert.Equal(t, firstExpectedColumns, in.Columns)
+			} else {
+				assert.Equal(t, secondExpectedColumns, in.Columns)
+			}
+			run += 1
 			return syncClient, nil
 		},
 	}
@@ -388,8 +399,8 @@ func TestRead_FiltersNonExistentColumns(t *testing.T) {
 	}
 	sc, err := ped.Read(context.Background(), dbl, ps, "customers", []string{"id", "email", "nonexistent_column"}, tc, onRow, onCursor, nil)
 	assert.NoError(t, err)
-	esc, err := TableCursorToSerializedCursor(tc)
+	esc, err := TableCursorToSerializedCursor(newTC)
 	assert.NoError(t, err)
 	assert.Equal(t, esc, sc)
-	assert.Equal(t, 1, cc.syncFnInvokedCount)
+	assert.Equal(t, 2, cc.syncFnInvokedCount)
 }
