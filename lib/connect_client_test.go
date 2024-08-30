@@ -7,6 +7,7 @@ import (
 
 	"vitess.io/vitess/go/vt/proto/query"
 
+	"github.com/pkg/errors"
 	psdbconnect "github.com/planetscale/airbyte-source/proto/psdbconnect/v1alpha1"
 
 	"github.com/stretchr/testify/assert"
@@ -356,69 +357,101 @@ func TestRead_CanStopAtWellKnownCursor(t *testing.T) {
 }
 
 func TestRead_FiltersNonExistentColumns(t *testing.T) {
-	dbl := &dbLogger{}
-	ped := connectClient{}
-
-	getKeyspaceTableColumnsFunc := func(ctx context.Context, keyspaceName string, tableName string) ([]MysqlColumn, error) {
-		return []MysqlColumn{
-			{Name: "id", Type: "bigint", IsPrimaryKey: true},
-			{Name: "email", Type: "varchar(256)", IsPrimaryKey: false},
-			{Name: "name", Type: "varchar(256)", IsPrimaryKey: false},
-		}, nil
-	}
-	mysqlClient := NewTestMysqlClient(getKeyspaceTableColumnsFunc)
-	ped.Mysql = &mysqlClient
-
-	tc := &psdbconnect.TableCursor{
-		Shard:    "-",
-		Position: "THIS_IS_A_SHARD_GTID",
-		Keyspace: "connect-test",
-	}
-	newTC := &psdbconnect.TableCursor{
-		Shard:    "-",
-		Position: "I_AM_FARTHER_IN_THE_BINLOG",
-		Keyspace: "connect-test",
-	}
-
-	syncClient := &connectSyncClientMock{
-		syncResponses: []*psdbconnect.SyncResponse{
-			{
-				Cursor: newTC,
+	tests := []struct {
+		name             string
+		tableColumns     []MysqlColumn
+		requestedColumns []string
+		expectedColumns  []string
+		err              error
+	}{
+		{
+			name: "filters nonexistent columns",
+			tableColumns: []MysqlColumn{
+				{Name: "id", Type: "bigint", IsPrimaryKey: true},
+				{Name: "email", Type: "varchar(256)", IsPrimaryKey: false},
+				{Name: "name", Type: "varchar(256)", IsPrimaryKey: false},
 			},
-			{
-				Cursor: newTC,
-			},
+			requestedColumns: []string{"id", "email", "nonexistent_column"},
+			expectedColumns:  []string{"id", "email"},
+		},
+		{
+			name:             "uses requested columns on error",
+			tableColumns:     nil,
+			requestedColumns: []string{"id", "email", "nonexistent_column"},
+			expectedColumns:  []string{"id", "email", "nonexistent_column"},
+			err:              errors.New("error fetching columns"),
 		},
 	}
 
-	secondExpectedColumns := []string{"id", "email"}
-	var firstExpectedColumns []string
-	run := 1
-	cc := clientConnectionMock{
-		syncFn: func(ctx context.Context, in *psdbconnect.SyncRequest, opts ...grpc.CallOption) (psdbconnect.Connect_SyncClient, error) {
-			if run == 1 {
-				assert.Equal(t, firstExpectedColumns, in.Columns)
-			} else {
-				assert.Equal(t, secondExpectedColumns, in.Columns)
+	ctx := context.Background()
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dbl := &dbLogger{}
+			ped := connectClient{}
+
+			getKeyspaceTableColumnsFunc := func(ctx context.Context, keyspaceName string, tableName string) ([]MysqlColumn, error) {
+				return tt.tableColumns, tt.err
 			}
-			run += 1
-			return syncClient, nil
-		},
+
+			newTC := &psdbconnect.TableCursor{
+				Shard:    "-",
+				Position: "I_AM_FARTHER_IN_THE_BINLOG",
+				Keyspace: "connect-test",
+			}
+
+			tc := &psdbconnect.TableCursor{
+				Shard:    "-",
+				Position: "THIS_IS_A_SHARD_GTID",
+				Keyspace: "connect-test",
+			}
+
+			syncClient := &connectSyncClientMock{
+				syncResponses: []*psdbconnect.SyncResponse{
+					{
+						Cursor: newTC,
+					},
+					{
+						Cursor: newTC,
+					},
+				},
+			}
+
+			var firstExpectedColumns []string
+			run := 1
+
+			syncFn := func(ctx context.Context, in *psdbconnect.SyncRequest, opts ...grpc.CallOption) (psdbconnect.Connect_SyncClient, error) {
+				if run == 1 {
+					assert.Equal(t, firstExpectedColumns, in.Columns)
+				} else {
+					assert.Equal(t, tt.expectedColumns, in.Columns)
+				}
+				run += 1
+				return syncClient, nil
+			}
+
+			mysqlClient := NewTestMysqlClient(getKeyspaceTableColumnsFunc)
+			ped.Mysql = &mysqlClient
+
+			cc := clientConnectionMock{
+				syncFn: syncFn,
+			}
+			ped.clientFn = func(ctx context.Context, ps PlanetScaleSource) (psdbconnect.ConnectClient, error) {
+				return &cc, nil
+			}
+			ps := PlanetScaleSource{}
+			onRow := func(*sqltypes.Result, Operation) error {
+				return nil
+			}
+			onCursor := func(*psdbconnect.TableCursor) error {
+				return nil
+			}
+			sc, err := ped.Read(ctx, dbl, ps, "customers", tt.requestedColumns, tc, onRow, onCursor, nil)
+			assert.NoError(t, err)
+			esc, err := TableCursorToSerializedCursor(newTC)
+			assert.NoError(t, err)
+			assert.Equal(t, esc, sc)
+			assert.Equal(t, 2, cc.syncFnInvokedCount)
+		})
 	}
-	ped.clientFn = func(ctx context.Context, ps PlanetScaleSource) (psdbconnect.ConnectClient, error) {
-		return &cc, nil
-	}
-	ps := PlanetScaleSource{}
-	onRow := func(*sqltypes.Result, Operation) error {
-		return nil
-	}
-	onCursor := func(*psdbconnect.TableCursor) error {
-		return nil
-	}
-	sc, err := ped.Read(context.Background(), dbl, ps, "customers", []string{"id", "email", "nonexistent_column"}, tc, onRow, onCursor, nil)
-	assert.NoError(t, err)
-	esc, err := TableCursorToSerializedCursor(newTC)
-	assert.NoError(t, err)
-	assert.Equal(t, esc, sc)
-	assert.Equal(t, 2, cc.syncFnInvokedCount)
 }
