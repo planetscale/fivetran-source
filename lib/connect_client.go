@@ -108,7 +108,7 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 
 	currentPosition := lastKnownPosition
 	readDuration := 1 * time.Minute
-	preamble := fmt.Sprintf("[%v:%v shard : %v] ", ps.Database, tableName, currentPosition.Shard)
+	preamble := fmt.Sprintf("[%v:%v shard:%v tabletType:%s] ", ps.Database, tableName, currentPosition.Shard, tabletType)
 
 	existingColumns, err := p.filterExistingColumns(ctx, ps, tableName, columns)
 	if err != nil {
