@@ -300,7 +300,7 @@ func (p connectClient) filterExistingColumns(ctx context.Context, ps PlanetScale
 		}
 
 	}
-	return existingColumns, nil
+	return existingColumns, err
 }
 
 func serializeQueryResult(result *query.QueryResult) *sqltypes.Result {
