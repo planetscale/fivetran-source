@@ -192,7 +192,7 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 
 	existingColumns, err := p.filterExistingColumns(ctx, ps, tableName, columns)
 	if err != nil {
-		logger.Info(fmt.Sprintf("%s Couldn't fetch existing columns, falling back to requested columns", preamble))
+		logger.Info(fmt.Sprintf("%s Couldn't fetch existing columns, falling back to requested columns: %s", preamble, err.Error()))
 	}
 
 	logger.Info(fmt.Sprintf("%s Filtering with columns %s", preamble, strings.Join(existingColumns, ",")))
