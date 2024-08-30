@@ -109,6 +109,14 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 	currentPosition := lastKnownPosition
 	readDuration := 1 * time.Minute
 	preamble := fmt.Sprintf("[%v:%v shard : %v] ", ps.Database, tableName, currentPosition.Shard)
+
+	existingColumns, err := p.filterExistingColumns(ctx, ps, tableName, columns)
+	if err != nil {
+		logger.Info(fmt.Sprintf("%s Couldn't fetch existing columns, falling back to requested columns: %s", preamble, err.Error()))
+	}
+
+	logger.Info(fmt.Sprintf("%s Filtering with columns %s", preamble, strings.Join(existingColumns, ",")))
+
 	for {
 		logger.Info(preamble + "peeking to see if there's any new rows")
 		latestCursorPosition, lcErr := p.getLatestCursorPosition(ctx, currentPosition.Shard, currentPosition.Keyspace, tableName, ps, tabletType)
@@ -124,7 +132,7 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 		logger.Info(fmt.Sprintf(preamble+"new rows found, syncing rows for %v", readDuration))
 		logger.Info(fmt.Sprintf(preamble+"syncing rows with cursor [%v]", currentPosition))
 
-		currentPosition, err = p.sync(ctx, logger, tableName, columns, currentPosition, latestCursorPosition, ps, tabletType, readDuration, onResult, onCursor, onUpdate)
+		currentPosition, err = p.sync(ctx, logger, tableName, existingColumns, currentPosition, latestCursorPosition, ps, tabletType, readDuration, onResult, onCursor, onUpdate)
 		if currentPosition.Position != "" {
 			currentSerializedCursor, sErr = TableCursorToSerializedCursor(currentPosition)
 			if sErr != nil {
@@ -190,18 +198,11 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 
 	logger.Info(fmt.Sprintf("%s Syncing with cursor position : [%v], using last known PK : %v, stop cursor is : [%v]", preamble, tc.Position, tc.LastKnownPk != nil, stopPosition))
 
-	existingColumns, err := p.filterExistingColumns(ctx, ps, tableName, columns)
-	if err != nil {
-		logger.Info(fmt.Sprintf("%s Couldn't fetch existing columns, falling back to requested columns: %s", preamble, err.Error()))
-	}
-
-	logger.Info(fmt.Sprintf("%s Filtering with columns %s", preamble, strings.Join(existingColumns, ",")))
-
 	sReq := &psdbconnect.SyncRequest{
 		TableName:      tableName,
 		Cursor:         tc,
 		TabletType:     tabletType,
-		Columns:        existingColumns,
+		Columns:        columns,
 		IncludeUpdates: true,
 		IncludeInserts: true,
 		IncludeDeletes: true,
