@@ -112,10 +112,10 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 
 	existingColumns, err := p.filterExistingColumns(ctx, ps, tableName, columns)
 	if err != nil {
-		logger.Info(fmt.Sprintf("%s Couldn't fetch existing columns, falling back to requested columns: %s", preamble, err.Error()))
+		logger.Info(fmt.Sprintf("%sCouldn't fetch existing columns, falling back to requested columns: %s", preamble, err.Error()))
 	}
 
-	logger.Info(fmt.Sprintf("%s Filtering with columns %s", preamble, strings.Join(existingColumns, ",")))
+	logger.Info(fmt.Sprintf("%sFiltering with columns %s", preamble, strings.Join(existingColumns, ",")))
 
 	for {
 		logger.Info(preamble + "peeking to see if there's any new rows")
@@ -144,7 +144,7 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 			if s, ok := status.FromError(err); ok {
 				// if the error is anything other than server timeout, keep going
 				if s.Code() != codes.DeadlineExceeded {
-					logger.Info(fmt.Sprintf("%v Got error [%v] with message [%q], Returning with cursor :[%v] after server timeout", preamble, s.Code(), err, currentPosition))
+					logger.Info(fmt.Sprintf("%vGot error [%v] with message [%q], Returning with cursor :[%v] after server timeout", preamble, s.Code(), err, currentPosition))
 					return currentSerializedCursor, nil
 				} else {
 					logger.Info(preamble + "Continuing with cursor after server timeout")
@@ -169,7 +169,7 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 		client psdbconnect.ConnectClient
 	)
 
-	preamble := fmt.Sprintf("[%v:%v shard : %v] ", ps.Database, tableName, tc.Shard)
+	preamble := fmt.Sprintf("[%v:%v shard:%v tabletType:%s] ", ps.Database, tableName, tc.Shard, tabletType)
 
 	if p.clientFn == nil {
 		conn, err := grpcclient.Dial(ctx, ps.Host,
@@ -196,7 +196,7 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 		tc.Position = ""
 	}
 
-	logger.Info(fmt.Sprintf("%s Syncing with cursor position : [%v], using last known PK : %v, stop cursor is : [%v]", preamble, tc.Position, tc.LastKnownPk != nil, stopPosition))
+	logger.Info(fmt.Sprintf("%sSyncing with cursor position : [%v], using last known PK : %v, stop cursor is : [%v]", preamble, tc.Position, tc.LastKnownPk != nil, stopPosition))
 
 	sReq := &psdbconnect.SyncRequest{
 		TableName:      tableName,
