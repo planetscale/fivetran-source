@@ -50,15 +50,25 @@ func (c *clientConnectionMock) Sync(ctx context.Context, in *psdbconnect.SyncReq
 }
 
 type (
-	BuildSchemaFunc     func(ctx context.Context, psc PlanetScaleSource, schemaBuilder SchemaBuilder) error
-	PingContextFunc     func(context.Context, PlanetScaleSource) error
-	GetVitessShardsFunc func(ctx context.Context, psc PlanetScaleSource) ([]string, error)
-	TestMysqlClient     struct {
-		BuildSchemaFn     BuildSchemaFunc
-		PingContextFn     PingContextFunc
-		GetVitessShardsFn GetVitessShardsFunc
+	BuildSchemaFunc             func(ctx context.Context, psc PlanetScaleSource, schemaBuilder SchemaBuilder) error
+	PingContextFunc             func(context.Context, PlanetScaleSource) error
+	GetVitessShardsFunc         func(ctx context.Context, psc PlanetScaleSource) ([]string, error)
+	GetKeyspaceTableColumnsFunc func(ctx context.Context, keyspaceName string, tableName string) ([]MysqlColumn, error)
+	TestMysqlClient             struct {
+		BuildSchemaFn             BuildSchemaFunc
+		PingContextFn             PingContextFunc
+		GetVitessShardsFn         GetVitessShardsFunc
+		GetKeyspaceTableColumnsFn GetKeyspaceTableColumnsFunc
 	}
 )
+
+func (t TestMysqlClient) GetKeyspaceTableColumns(ctx context.Context, keyspaceName string, tableName string) ([]MysqlColumn, error) {
+	if t.GetKeyspaceTableColumnsFn != nil {
+		return t.GetKeyspaceTableColumnsFn(ctx, keyspaceName, tableName)
+	}
+
+	panic("GetKeyspaceTableColumnsFunc is not implemented")
+}
 
 func (t TestMysqlClient) BuildSchema(ctx context.Context, psc PlanetScaleSource, schemaBuilder SchemaBuilder) error {
 	if t.BuildSchemaFn != nil {
@@ -80,11 +90,17 @@ func (t TestMysqlClient) GetVitessShards(ctx context.Context, psc PlanetScaleSou
 	if t.GetVitessShardsFn != nil {
 		return t.GetVitessShardsFn(ctx, psc)
 	}
-	panic("GetvitessShards is not implemented")
+	panic("GetVitessShards is not implemented")
 }
 
 func (t TestMysqlClient) Close() error {
 	return nil
+}
+
+func NewTestMysqlClient(gktc GetKeyspaceTableColumnsFunc) MysqlClient {
+	return &TestMysqlClient{
+		GetKeyspaceTableColumnsFn: gktc,
+	}
 }
 
 type (

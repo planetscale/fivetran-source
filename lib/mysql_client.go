@@ -15,6 +15,7 @@ type MysqlClient interface {
 	BuildSchema(ctx context.Context, psc PlanetScaleSource, schemaBuilder SchemaBuilder) error
 	PingContext(context.Context, PlanetScaleSource) error
 	GetVitessShards(ctx context.Context, psc PlanetScaleSource) ([]string, error)
+	GetKeyspaceTableColumns(ctx context.Context, keyspaceName string, tableName string) ([]MysqlColumn, error)
 	Close() error
 }
 
@@ -54,7 +55,7 @@ func (p mysqlClient) BuildSchema(ctx context.Context, psc PlanetScaleSource, sch
 		for _, tableName := range tableNames {
 			schemaBuilder.OnTable(keyspaceName, tableName)
 
-			columns, err := p.getKeyspaceTableColumns(ctx, keyspaceName, tableName)
+			columns, err := p.GetKeyspaceTableColumns(ctx, keyspaceName, tableName)
 			if err != nil {
 				return errors.Wrap(err, "Unable to build schema for database")
 			}
@@ -70,7 +71,7 @@ func (p mysqlClient) Close() error {
 	return p.db.Close()
 }
 
-func (p mysqlClient) getKeyspaceTableColumns(ctx context.Context, keyspaceName string, tableName string) ([]MysqlColumn, error) {
+func (p mysqlClient) GetKeyspaceTableColumns(ctx context.Context, keyspaceName string, tableName string) ([]MysqlColumn, error) {
 	var columns []MysqlColumn
 	columnNamesQR, err := p.db.QueryContext(
 		ctx,
