@@ -19,6 +19,11 @@ import (
 func TestRead_CanPeekBeforeRead(t *testing.T) {
 	dbl := &dbLogger{}
 	ped := connectClient{}
+	getKeyspaceTableColumnsFunc := func(ctx context.Context, keyspaceName string, tableName string) ([]MysqlColumn, error) {
+		return []MysqlColumn{{Name: "id", Type: "bigint", IsPrimaryKey: true}, {Name: "email", Type: "varchar(256)", IsPrimaryKey: false}}, nil
+	}
+	mysqlClient := NewTestMysqlClient(getKeyspaceTableColumnsFunc)
+	ped.Mysql = &mysqlClient
 	tc := &psdbconnect.TableCursor{
 		Shard:    "-",
 		Position: "THIS_IS_A_SHARD_GTID",
@@ -63,6 +68,11 @@ func TestRead_CanPeekBeforeRead(t *testing.T) {
 func TestRead_CanEarlyExitIfNoNewVGtidInPeek(t *testing.T) {
 	dbl := &dbLogger{}
 	ped := connectClient{}
+	getKeyspaceTableColumnsFunc := func(ctx context.Context, keyspaceName string, tableName string) ([]MysqlColumn, error) {
+		return []MysqlColumn{{Name: "id", Type: "bigint", IsPrimaryKey: true}, {Name: "email", Type: "varchar(256)", IsPrimaryKey: false}}, nil
+	}
+	mysqlClient := NewTestMysqlClient(getKeyspaceTableColumnsFunc)
+	ped.Mysql = &mysqlClient
 	tc := &psdbconnect.TableCursor{
 		Shard:    "-",
 		Position: "THIS_IS_A_SHARD_GTID",
@@ -103,6 +113,11 @@ func TestRead_CanEarlyExitIfNoNewVGtidInPeek(t *testing.T) {
 func TestRead_CanPickPrimaryForShardedKeyspaces(t *testing.T) {
 	dbl := &dbLogger{}
 	ped := connectClient{}
+	getKeyspaceTableColumnsFunc := func(ctx context.Context, keyspaceName string, tableName string) ([]MysqlColumn, error) {
+		return []MysqlColumn{{Name: "id", Type: "bigint", IsPrimaryKey: true}, {Name: "email", Type: "varchar(256)", IsPrimaryKey: false}}, nil
+	}
+	mysqlClient := NewTestMysqlClient(getKeyspaceTableColumnsFunc)
+	ped.Mysql = &mysqlClient
 	tc := &psdbconnect.TableCursor{
 		Shard:    "40-80",
 		Position: "THIS_IS_A_SHARD_GTID",
@@ -145,6 +160,11 @@ func TestRead_CanPickPrimaryForShardedKeyspaces(t *testing.T) {
 func TestRead_CanPickReplicaForShardedKeyspaces(t *testing.T) {
 	dbl := &dbLogger{}
 	ped := connectClient{}
+	getKeyspaceTableColumnsFunc := func(ctx context.Context, keyspaceName string, tableName string) ([]MysqlColumn, error) {
+		return []MysqlColumn{{Name: "id", Type: "bigint", IsPrimaryKey: true}, {Name: "email", Type: "varchar(256)", IsPrimaryKey: false}}, nil
+	}
+	mysqlClient := NewTestMysqlClient(getKeyspaceTableColumnsFunc)
+	ped.Mysql = &mysqlClient
 	tc := &psdbconnect.TableCursor{
 		Shard:    "40-80",
 		Position: "THIS_IS_A_SHARD_GTID",
@@ -351,7 +371,7 @@ func TestRead_CanStopAtWellKnownCursor(t *testing.T) {
 	assert.Equal(t, esc, sc)
 	assert.Equal(t, 2, cc.syncFnInvokedCount)
 
-	assert.Equal(t, "[connect-test:customers shard : -] Finished reading all rows for table [customers]", dbl.messages[len(dbl.messages)-1].message)
+	assert.Equal(t, "[connect-test:customers shard:- tabletType:primary] Finished reading all rows for table [customers]", dbl.messages[len(dbl.messages)-1].message)
 	assert.Equal(t, 2*(nextVGtidPosition/3), insertedRowCounter)
 	assert.Equal(t, 2*(nextVGtidPosition/3), deletedRowCounter)
 }
