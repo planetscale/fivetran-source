@@ -22,12 +22,17 @@ type testLogger struct {
 	truncateCalled bool
 }
 
-func (testLogger) Info(s string) {
+func (testLogger) Info(s string) error {
 	// TODO implement me
 	panic("implement me")
 }
 
-func (tl *testLogger) Log(level fivetransdk.LogLevel, s string) error {
+func (testLogger) Warning(s string) error {
+	// TODO implement me
+	panic("implement me")
+}
+
+func (tl *testLogger) Log(response *fivetransdk.UpdateResponse) error {
 	// TODO implement me
 	panic("implement me")
 }

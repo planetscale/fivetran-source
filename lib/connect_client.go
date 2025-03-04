@@ -31,7 +31,7 @@ type (
 )
 
 type DatabaseLogger interface {
-	Info(string)
+	Info(string) error
 }
 
 // ConnectClient is a general purpose interface
