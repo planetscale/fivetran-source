@@ -3,7 +3,7 @@ package handlers
 import (
 	"context"
 
-	fivetransdk "github.com/planetscale/fivetran-source/fivetran_sdk"
+	fivetransdk "github.com/planetscale/fivetran-source/fivetran_sdk.v2"
 )
 
 type ConfigurationForm struct{}

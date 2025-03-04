@@ -27,7 +27,7 @@ endif
 ifeq ($(OS),Darwin)
 	PROTOC_PLATFORM := osx
 endif
-FIVETRANSDK_PROTO_OUT := fivetran_sdk
+FIVETRANSDK_PROTO_OUT := fivetran_sdk.v2
 FIVETRAN_PROTO_VERSION := 466a61bddfc0e541bfec3cb0cc6a3cf3704d64be
 
 .PHONY: all
@@ -131,9 +131,9 @@ $(FIVETRANSDK_PROTO_OUT)/connector_sdk.pb.go: $(PROTO_TOOLS) proto/connector_sdk
 	$(BIN)/protoc \
     --plugin=protoc-gen-go=$(BIN)/protoc-gen-go \
     --plugin=protoc-gen-go-grpc=$(BIN)/protoc-gen-go-grpc \
-    --go_out=fivetran_sdk \
+    --go_out=$(FIVETRANSDK_PROTO_OUT) \
     --go_opt=paths=source_relative \
-    --go-grpc_out=fivetran_sdk \
+    --go-grpc_out=$(FIVETRANSDK_PROTO_OUT) \
     --proto_path=proto \
     --go-grpc_opt=paths=source_relative \
     -I thirdparty/google \

@@ -9,7 +9,7 @@ import (
 	_ "google.golang.org/grpc/encoding/gzip"
 
 	"github.com/planetscale/fivetran-source/cmd/internal/server"
-	fivetransdk "github.com/planetscale/fivetran-source/fivetran_sdk"
+	fivetransdk "github.com/planetscale/fivetran-source/fivetran_sdk.v2"
 	"google.golang.org/grpc"
 )
 

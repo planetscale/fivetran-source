@@ -4,7 +4,7 @@ bin/*
 *.prof
 *.test
 *.out
-fivetran_sdk/*
+fivetran_sdk.v2/*
 server/*
 sources/*
 proto

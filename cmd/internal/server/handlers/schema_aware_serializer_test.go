@@ -9,7 +9,7 @@ import (
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	fivetransdk "github.com/planetscale/fivetran-source/fivetran_sdk"
+	fivetransdk "github.com/planetscale/fivetran-source/fivetran_sdk.v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 

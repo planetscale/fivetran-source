@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"log"
 
-	fivetran_sdk_v2 "github.com/planetscale/fivetran-source/fivetran_sdk"
+	fivetran_sdk_v2 "github.com/planetscale/fivetran-source/fivetran_sdk.v2"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/encoding/gzip"

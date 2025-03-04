@@ -10,7 +10,7 @@ import (
 	"github.com/planetscale/fivetran-source/lib"
 
 	"github.com/planetscale/fivetran-source/cmd/internal/server/handlers"
-	fivetransdk "github.com/planetscale/fivetran-source/fivetran_sdk"
+	fivetransdk "github.com/planetscale/fivetran-source/fivetran_sdk.v2"
 )
 
 type ConfigurationFormHandler interface {

@@ -18,12 +18,12 @@ make server
 
 5. Fetch the configuration form:
 ``` bash
- grpcurl -proto connector_sdk.proto  -import-path ./proto -plaintext 127.0.0.1:50051 fivetran_sdk.Connector.ConfigurationForm
+ grpcurl -proto connector_sdk.proto  -import-path . -plaintext 127.0.0.1:50051 fivetran_sdk.v2.SourceConnector.ConfigurationForm
 ```
 
 6. Test connecting to your PlanetScale database:
 ```bash
-grpcurl -proto connector_sdk.proto -import-path . -plaintext -d '{"name": "check_connection", "configuration": {"host": "aws.connect.psdb.cloud","database": "my-database","username": "my-username", "password": "my-password"}}' 127.0.0.1:50051 fivetran_sdk.Connector.Test
+grpcurl -proto connector_sdk.proto -import-path . -plaintext -d '{"name": "check_connection", "configuration": {"host": "aws.connect.psdb.cloud","database": "my-database","username": "my-username", "password": "my-password"}}' 127.0.0.1:50051 fivetran_sdk.SourceConnector.Test
 ```
 
 7. Fetch the schema for your PlanetScale database:
