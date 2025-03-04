@@ -16,7 +16,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/pkg/errors"
-	"github.com/planetscale/fivetran-source/fivetran_sdk"
+	fivetran_sdk_v2 "github.com/planetscale/fivetran-source/fivetran_sdk"
 )
 
 type connectorServer struct {
@@ -26,7 +26,7 @@ type connectorServer struct {
 	checkConnection        CheckConnectionHandler
 	clientConstructor      edgeClientConstructor
 	mysqlClientConstructor mysqlClientConstructor
-	fivetran_sdk.UnimplementedConnectorServer
+	fivetran_sdk_v2.UnimplementedSourceConnectorServer
 }
 
 type (
@@ -34,7 +34,7 @@ type (
 	mysqlClientConstructor func() lib.MysqlClient
 )
 
-func NewConnectorServer() fivetran_sdk.ConnectorServer {
+func NewConnectorServer() fivetran_sdk_v2.SourceConnectorServer {
 	return &connectorServer{
 		configurationForm: NewConfigurationFormHandler(),
 		sync:              NewSyncHandler(),
@@ -43,14 +43,14 @@ func NewConnectorServer() fivetran_sdk.ConnectorServer {
 	}
 }
 
-func (c *connectorServer) ConfigurationForm(ctx context.Context, request *fivetran_sdk.ConfigurationFormRequest) (*fivetran_sdk.ConfigurationFormResponse, error) {
+func (c *connectorServer) ConfigurationForm(ctx context.Context, request *fivetran_sdk_v2.ConfigurationFormRequest) (*fivetran_sdk_v2.ConfigurationFormResponse, error) {
 	rLogger := newRequestLogger(newRequestID())
 
 	rLogger.Println("handling configuration form request")
 	return c.configurationForm.Handle(ctx, request)
 }
 
-func (c *connectorServer) Test(ctx context.Context, request *fivetran_sdk.TestRequest) (*fivetran_sdk.TestResponse, error) {
+func (c *connectorServer) Test(ctx context.Context, request *fivetran_sdk_v2.TestRequest) (*fivetran_sdk_v2.TestResponse, error) {
 	rLogger := newRequestLogger(newRequestID())
 
 	rLogger.Println("handling test request")
@@ -76,7 +76,7 @@ func (c *connectorServer) Test(ctx context.Context, request *fivetran_sdk.TestRe
 	return c.checkConnection.Handle(ctx, db, request.Name, psc)
 }
 
-func (c *connectorServer) Schema(ctx context.Context, request *fivetran_sdk.SchemaRequest) (*fivetran_sdk.SchemaResponse, error) {
+func (c *connectorServer) Schema(ctx context.Context, request *fivetran_sdk_v2.SchemaRequest) (*fivetran_sdk_v2.SchemaResponse, error) {
 	logger := newRequestLogger(newRequestID())
 
 	logger.Println("handling schema request")
@@ -123,7 +123,7 @@ func (c *connectorServer) Schema(ctx context.Context, request *fivetran_sdk.Sche
 	return c.schema.Handle(ctx, psc, &mysqlClient)
 }
 
-func (c *connectorServer) Update(request *fivetran_sdk.UpdateRequest, server fivetran_sdk.Connector_UpdateServer) error {
+func (c *connectorServer) Update(request *fivetran_sdk_v2.UpdateRequest, server fivetran_sdk_v2.SourceConnector_UpdateServer) error {
 	requestId := newRequestID()
 	rLogger := newRequestLogger(requestId)
 
@@ -137,7 +137,7 @@ func (c *connectorServer) Update(request *fivetran_sdk.UpdateRequest, server fiv
 		return status.Error(codes.InvalidArgument, "request did not contain a valid selection")
 	}
 
-	schemaSelection, ok := request.Selection.Selection.(*fivetran_sdk.Selection_WithSchema)
+	schemaSelection, ok := request.Selection.Selection.(*fivetran_sdk_v2.Selection_WithSchema)
 	if !ok {
 		return status.Error(codes.InvalidArgument, "request did not contain a Selection_WithSchema")
 	}
@@ -190,13 +190,13 @@ func (c *connectorServer) Update(request *fivetran_sdk.UpdateRequest, server fiv
 	checkConn, err := c.checkConnection.Handle(context.Background(), db, handlers.CheckConnectionTestName, psc)
 	if err != nil {
 		msg := fmt.Sprintf("unable to connect to PlanetScale database, failed with : %q", err)
-		logger.Log(fivetran_sdk.LogLevel_SEVERE, msg)
+		logger.Warning(msg)
 		return status.Error(codes.NotFound, msg)
 	}
 
 	if checkConn.GetFailure() != "" {
 		msg := fmt.Sprintf("unable to connect to PlanetScale database, failed with : %q", checkConn.GetFailure())
-		logger.Log(fivetran_sdk.LogLevel_SEVERE, msg)
+		logger.Warning(msg)
 		return status.Error(codes.NotFound, msg)
 	}
 

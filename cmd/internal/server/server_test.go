@@ -33,7 +33,7 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 )
 
-func server(ctx context.Context, clientConstructor edgeClientConstructor, mysqlConstructor mysqlClientConstructor) (fivetransdk.ConnectorClient, func()) {
+func server(ctx context.Context, clientConstructor edgeClientConstructor, mysqlConstructor mysqlClientConstructor) (fivetransdk.SourceConnectorClient, func()) {
 	buffer := 101024 * 1024
 	lis := bufconn.Listen(buffer)
 
@@ -41,7 +41,7 @@ func server(ctx context.Context, clientConstructor edgeClientConstructor, mysqlC
 	cs := NewConnectorServer()
 	cs.(*connectorServer).clientConstructor = clientConstructor
 	cs.(*connectorServer).mysqlClientConstructor = mysqlConstructor
-	fivetransdk.RegisterConnectorServer(baseServer, cs)
+	fivetransdk.RegisterSourceConnectorServer(baseServer, cs)
 	go func() {
 		if err := baseServer.Serve(lis); err != nil {
 			log.Printf("error serving server: %v", err)
@@ -63,7 +63,7 @@ func server(ctx context.Context, clientConstructor edgeClientConstructor, mysqlC
 		baseServer.Stop()
 	}
 
-	client := fivetransdk.NewConnectorClient(conn)
+	client := fivetransdk.NewSourceConnectorClient(conn)
 
 	return client, closer
 }
@@ -314,13 +314,13 @@ func geometryTypeTest(t *testing.T, geometry []byte, geojson string) {
 	assert.Len(t, rows, 5)
 	operation := rows[1].GetOperation()
 	require.NotNil(t, operation)
-	record, ok := operation.Op.(*fivetransdk.Operation_Record)
+	record, ok := operation.(*fivetransdk.UpdateResponse_Record)
 	assert.True(t, ok)
 	assert.NotNil(t, record)
 	assert.Equal(t, "SalesDB", *record.Record.SchemaName)
 	assert.Equal(t, "customers", record.Record.TableName)
 
-	assert.Equal(t, record.Record.Type, fivetransdk.OpType_UPSERT)
+	assert.Equal(t, record.Record.Type, fivetransdk.RecordType_UPSERT)
 
 	assert.Equal(t, "UPSERT", record.Record.Type.String())
 	value := record.Record.Data["Type_GEOMETRY"]
@@ -412,20 +412,20 @@ func TestUpdateReturnsInserts(t *testing.T) {
 	assert.Len(t, rows, 7)
 	operation := rows[3].GetOperation()
 	require.NotNil(t, operation)
-	record, ok := operation.Op.(*fivetransdk.Operation_Record)
+	record, ok := operation.(*fivetransdk.UpdateResponse_Record)
 	assert.True(t, ok)
 	assert.NotNil(t, record)
 	assert.Equal(t, "SalesDB", *record.Record.SchemaName)
 	assert.Equal(t, "customers", record.Record.TableName)
 
-	assert.Equal(t, record.Record.Type, fivetransdk.OpType_UPSERT)
+	assert.Equal(t, record.Record.Type, fivetransdk.RecordType_UPSERT)
 	for _, field := range allTypesResult.Fields {
 		assert.NotEmpty(t, record.Record.Data[field.Name].Inner, "expected value for %q field", field.Name)
 		assert.NotNil(t, record.Record.Data[field.Name].Inner, "expected value for %q field", field.Name)
 	}
 
 	operation = rows[len(rows)-1].GetOperation()
-	checkpoint, ok := operation.Op.(*fivetransdk.Operation_Checkpoint)
+	checkpoint, ok := operation.(*fivetransdk.UpdateResponse_Checkpoint)
 	assert.True(t, ok)
 	assert.NotNil(t, checkpoint)
 
@@ -613,19 +613,19 @@ func TestUpdateReturnsDeletes(t *testing.T) {
 	assert.Len(t, rows, 7)
 	operation := rows[3].GetOperation()
 	assert.NotNil(t, operation)
-	record, ok := operation.Op.(*fivetransdk.Operation_Record)
+	record, ok := operation.(*fivetransdk.UpdateResponse_Record)
 	assert.True(t, ok)
 	assert.NotNil(t, record)
 	assert.Equal(t, "SalesDB", *record.Record.SchemaName)
 	assert.Equal(t, "customers", record.Record.TableName)
 
-	assert.Equal(t, record.Record.Type, fivetransdk.OpType_DELETE)
+	assert.Equal(t, record.Record.Type, fivetransdk.RecordType_DELETE)
 	assert.Equal(t, 1, len(record.Record.Data))
 
 	assert.Equal(t, &fivetransdk.ValueType_Int{Int: 12}, record.Record.Data["Type_INT8"].Inner)
 
 	operation = rows[len(rows)-1].GetOperation()
-	checkpoint, ok := operation.Op.(*fivetransdk.Operation_Checkpoint)
+	checkpoint, ok := operation.(*fivetransdk.UpdateResponse_Checkpoint)
 	assert.True(t, ok)
 	assert.NotNil(t, checkpoint)
 
@@ -732,13 +732,13 @@ func TestUpdateReturnsUpdates(t *testing.T) {
 	assert.Len(t, rows, 7)
 	operation := rows[3].GetOperation()
 	assert.NotNil(t, operation)
-	record, ok := operation.Op.(*fivetransdk.Operation_Record)
+	record, ok := operation.(*fivetransdk.UpdateResponse_Record)
 	assert.True(t, ok)
 	assert.NotNil(t, record)
 	assert.Equal(t, "SalesDB", *record.Record.SchemaName)
 	assert.Equal(t, "customers", record.Record.TableName)
 
-	assert.Equal(t, record.Record.Type, fivetransdk.OpType_UPDATE)
+	assert.Equal(t, record.Record.Type, fivetransdk.RecordType_UPDATE)
 	assert.Equal(t, 10, len(record.Record.Data))
 
 	assert.Equal(t, &fivetransdk.ValueType_Int{Int: 17}, record.Record.Data["Type_INT8"].Inner)
@@ -752,7 +752,7 @@ func TestUpdateReturnsUpdates(t *testing.T) {
 	assert.Equal(t, &fivetransdk.ValueType_Long{Long: 17}, record.Record.Data["Type_INT64"].Inner)
 
 	operation = rows[len(rows)-1].GetOperation()
-	checkpoint, ok := operation.Op.(*fivetransdk.Operation_Checkpoint)
+	checkpoint, ok := operation.(*fivetransdk.UpdateResponse_Checkpoint)
 	assert.True(t, ok)
 	assert.NotNil(t, checkpoint)
 
@@ -974,7 +974,7 @@ func TestUpdateReturnsState(t *testing.T) {
 	assert.Len(t, rows, 3)
 	operation := rows[1].GetOperation()
 	assert.NotNil(t, operation)
-	checkpoint, ok := operation.Op.(*fivetransdk.Operation_Checkpoint)
+	checkpoint, ok := operation.(*fivetransdk.UpdateResponse_Checkpoint)
 	require.True(t, ok)
 	assert.NotNil(t, checkpoint)
 	assert.Equal(t, "{\"keyspaces\":{\"SalesDB\":{\"streams\":{\"SalesDB:customers\":{\"shards\":{\"-\":{\"cursor\":\"GhRUSElTX0lTX0FfVkFMSURfR1RJRA==\"}}}}}}}", checkpoint.Checkpoint.StateJson)
