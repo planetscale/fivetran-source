@@ -17,6 +17,7 @@ func (ConfigurationForm) Handle(ctx context.Context, _ *fivetransdk.Configuratio
 	passwordDesc := "Password to connect to your PlanetScale database"
 	tinyIntDesc := "Enable this setting to serialize tinyint(1) as boolean values"
 	useReplicaDesc := "Only set to true if your PlanetScale branch has a replica. PlanetScale Development branches do not have replicas."
+	required := true
 	resp := &fivetransdk.ConfigurationFormResponse{
 		Fields: []*fivetransdk.FormField{
 			{
@@ -26,7 +27,7 @@ func (ConfigurationForm) Handle(ctx context.Context, _ *fivetransdk.Configuratio
 				Type: &fivetransdk.FormField_TextField{
 					TextField: fivetransdk.TextField_PlainText,
 				},
-				Required: true,
+				Required: &required,
 			},
 			{
 				Name:        "database",
@@ -35,7 +36,7 @@ func (ConfigurationForm) Handle(ctx context.Context, _ *fivetransdk.Configuratio
 				Type: &fivetransdk.FormField_TextField{
 					TextField: fivetransdk.TextField_PlainText,
 				},
-				Required: true,
+				Required: &required,
 			},
 			{
 				Name:        "username",
@@ -44,7 +45,7 @@ func (ConfigurationForm) Handle(ctx context.Context, _ *fivetransdk.Configuratio
 				Type: &fivetransdk.FormField_TextField{
 					TextField: fivetransdk.TextField_PlainText,
 				},
-				Required: true,
+				Required: &required,
 			},
 			{
 				Name:        "password",
@@ -53,7 +54,7 @@ func (ConfigurationForm) Handle(ctx context.Context, _ *fivetransdk.Configuratio
 				Type: &fivetransdk.FormField_TextField{
 					TextField: fivetransdk.TextField_Password,
 				},
-				Required: true,
+				Required: &required,
 			},
 			{
 				Name:  "shards",
