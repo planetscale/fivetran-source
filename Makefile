@@ -28,7 +28,7 @@ ifeq ($(OS),Darwin)
 	PROTOC_PLATFORM := osx
 endif
 FIVETRANSDK_PROTO_OUT := fivetran_sdk
-FIVETRAN_PROTO_VERSION := d3af8f0cec22214e4b130af1b794f080602bfa38
+FIVETRAN_PROTO_VERSION := 466a61bddfc0e541bfec3cb0cc6a3cf3704d64be
 
 .PHONY: all
 all: build test lint-fmt lint
@@ -143,6 +143,6 @@ $(FIVETRANSDK_PROTO_OUT)/connector_sdk.pb.go: $(PROTO_TOOLS) proto/connector_sdk
 
 proto/connector_sdk.proto:
 	rm -rf proto && \
-    git clone https://github.com/fivetran/fivetran_sdk proto/ && \
+    git clone -b v2 --single-branch https://github.com/fivetran/fivetran_sdk proto/ && \
     cd proto/ && \
     git checkout ${FIVETRAN_PROTO_VERSION}
