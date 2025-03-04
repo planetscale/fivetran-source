@@ -15,13 +15,6 @@ import (
 	"vitess.io/vitess/go/sqltypes"
 )
 
-// var fivetranOpMap = map[lib.Operation]fivetransdk.OpType{
-// 	lib.OpType_Insert:   fivetransdk.OpType_UPSERT,
-// 	lib.OpType_Delete:   fivetransdk.OpType_DELETE,
-// 	lib.OpType_Update:   fivetransdk.OpType_UPDATE,
-// 	lib.OpType_Truncate: fivetransdk.OpType_TRUNCATE,
-// }
-
 var fivetranOpMap = map[lib.Operation]fivetransdk.RecordType{
 	lib.OpType_Insert:   fivetransdk.RecordType_UPSERT,
 	lib.OpType_Delete:   fivetransdk.RecordType_DELETE,
