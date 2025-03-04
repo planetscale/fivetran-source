@@ -23,7 +23,7 @@ func main() {
 		log.Fatalf("failed to listen: %v", err)
 	}
 	s := grpc.NewServer()
-	fivetransdk.RegisterConnectorServer(s, ss)
+	fivetransdk.RegisterSourceConnectorServer(s, ss)
 	fmt.Printf("server listening at %v\n", lis.Addr())
 	if err := s.Serve(lis); err != nil {
 		log.Fatalf("failed to serve: %v", err)
