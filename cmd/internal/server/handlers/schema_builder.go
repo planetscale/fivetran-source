@@ -144,8 +144,12 @@ func (s *FiveTranSchemaBuilder) OnColumns(keyspaceName, tableName string, column
 		table.Columns = append(table.Columns, &fivetransdk.Column{
 			Name:       column.Name,
 			Type:       dataType,
-			Decimal:    decimalParams,
 			PrimaryKey: column.IsPrimaryKey,
+			Params: &fivetransdk.DataTypeParams{
+				Params: &fivetransdk.DataTypeParams_Decimal{
+					Decimal: decimalParams,
+				},
+			},
 		})
 
 		if isEnumOrSet(column.Type) {
