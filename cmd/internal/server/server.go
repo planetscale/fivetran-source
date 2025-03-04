@@ -129,6 +129,7 @@ func (c *connectorServer) Update(request *fivetran_sdk_v2.UpdateRequest, server 
 
 	rLogger.Println("handling update request")
 	psc, err := SourceFromRequest(request)
+
 	if err != nil {
 		return status.Error(codes.InvalidArgument, "request did not contain a valid configuration")
 	}

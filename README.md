@@ -23,17 +23,17 @@ make server
 
 6. Test connecting to your PlanetScale database:
 ```bash
-grpcurl -proto connector_sdk.proto -import-path . -plaintext -d '{"name": "check_connection", "configuration": {"host": "aws.connect.psdb.cloud","database": "my-database","username": "my-username", "password": "my-password"}}' 127.0.0.1:50051 fivetran_sdk.SourceConnector.Test
+grpcurl -proto connector_sdk.proto -import-path . -plaintext -d '{"name": "check_connection", "configuration": {"host": "aws.connect.psdb.cloud","database": "my-database","username": "my-username", "password": "my-password"}}' 127.0.0.1:50051 fivetran_sdk.v2.SourceConnector.Test
 ```
 
 7. Fetch the schema for your PlanetScale database:
 ```bash
-grpcurl -proto connector_sdk.proto -import-path . -plaintext -d '{"configuration": {"host": "aws.connect.psdb.cloud","database": "my-database","username": "my-username", "password": "my-password"}}' 127.0.0.1:50051 fivetran_sdk.Connector.Schema
+grpcurl -proto connector_sdk.proto -import-path . -plaintext -d '{"configuration": {"host": "aws.connect.psdb.cloud","database": "my-database","username": "my-username", "password": "my-password"}}' 127.0.0.1:50051 fivetran_sdk.v2.SourceConnector.Schema
 ```
 
 8. Simulate copying data from your PlanetScale database:
 ```bash
-grpcurl -proto connector_sdk.proto -import-path . -plaintext -d '{"selection": {"with_schema": {"include_new_schemas": true, "schemas": [{"included": true, "schema_name": "my-database", "include_new_tables": true, "tables": [{"included": true, "table_name": "my-table", "columns": {"column-1": true, "column-2": true}, "include_new_columns": true}]}]}}, "configuration": {"host": "aws.connect.psdb.cloud","database": "my-database","username": "my-username", "password": "my-password"}}' 127.0.0.1:50051 fivetran_sdk.Connector.Update
+grpcurl -proto connector_sdk.proto -import-path . -plaintext -d '{"selection": {"with_schema": {"include_new_schemas": true, "schemas": [{"included": true, "schema_name": "my-database", "include_new_tables": true, "tables": [{"included": true, "table_name": "my-table", "columns": {"column-1": true, "column-2": true}, "include_new_columns": true}]}]}}, "configuration": {"host": "aws.connect.psdb.cloud","database": "my-database","username": "my-username", "password": "my-password"}}' 127.0.0.1:50051 fivetran_sdk.v2.SourceConnector.Update
 ```
 
 - This will execute an initial copy phase, and maintain the `Update` stream for a while. Any changes (inserts/deletes/updates) to your PlanetScale database during this time should show up in the stream during the subsequent replication phase.
