@@ -8,7 +8,7 @@ import (
 
 	"github.com/planetscale/fivetran-source/lib"
 
-	fivetransdk "github.com/planetscale/fivetran-source/fivetran_sdk"
+	fivetransdk "github.com/planetscale/fivetran-source/fivetran_sdk.v2"
 )
 
 const (
@@ -144,8 +144,12 @@ func (s *FiveTranSchemaBuilder) OnColumns(keyspaceName, tableName string, column
 		table.Columns = append(table.Columns, &fivetransdk.Column{
 			Name:       column.Name,
 			Type:       dataType,
-			Decimal:    decimalParams,
 			PrimaryKey: column.IsPrimaryKey,
+			Params: &fivetransdk.DataTypeParams{
+				Params: &fivetransdk.DataTypeParams_Decimal{
+					Decimal: decimalParams,
+				},
+			},
 		})
 
 		if isEnumOrSet(column.Type) {

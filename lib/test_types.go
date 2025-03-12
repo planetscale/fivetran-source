@@ -17,10 +17,12 @@ type dbLogger struct {
 	messages []dbLogMessage
 }
 
-func (dbl *dbLogger) Info(s string) {
+func (dbl *dbLogger) Info(s string) error {
 	dbl.messages = append(dbl.messages, dbLogMessage{
 		message: s,
 	})
+
+	return nil
 }
 
 type clientConnectionMock struct {

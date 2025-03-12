@@ -3,7 +3,7 @@ package handlers
 import (
 	"fmt"
 
-	fivetransdk "github.com/planetscale/fivetran-source/fivetran_sdk"
+	fivetransdk "github.com/planetscale/fivetran-source/fivetran_sdk.v2"
 	"github.com/planetscale/fivetran-source/lib"
 	"vitess.io/vitess/go/sqltypes"
 )
@@ -22,12 +22,17 @@ type testLogger struct {
 	truncateCalled bool
 }
 
-func (testLogger) Info(s string) {
+func (testLogger) Info(s string) error {
 	// TODO implement me
 	panic("implement me")
 }
 
-func (tl *testLogger) Log(level fivetransdk.LogLevel, s string) error {
+func (testLogger) Warning(s string) error {
+	// TODO implement me
+	panic("implement me")
+}
+
+func (tl *testLogger) Log(response *fivetransdk.UpdateResponse) error {
 	// TODO implement me
 	panic("implement me")
 }

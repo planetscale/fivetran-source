@@ -9,7 +9,7 @@ import (
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	fivetransdk "github.com/planetscale/fivetran-source/fivetran_sdk"
+	fivetransdk "github.com/planetscale/fivetran-source/fivetran_sdk.v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -44,13 +44,12 @@ func TestCanSerializeInsert(t *testing.T) {
 		assert.NotNil(t, tl.lastResponse)
 	}
 
-	operation, ok := tl.lastResponse.Response.(*fivetransdk.UpdateResponse_Operation)
-	require.Truef(t, ok, "recordResponse Operation is not of type %s", "UpdateResponse_Operation")
+	operation := tl.lastResponse
 
-	operationRecord, ok := operation.Operation.Op.(*fivetransdk.Operation_Record)
-	assert.Truef(t, ok, "recordResponse Operation.Op is not of type %s", "Operation_Record")
+	operationRecord, ok := operation.Operation.(*fivetransdk.UpdateResponse_Record)
+	assert.Truef(t, ok, "recordResponse Operation is not of type %s", "UpdateResponse_Record")
 
-	assert.Equal(t, fivetransdk.OpType_UPSERT, operationRecord.Record.Type)
+	assert.Equal(t, fivetransdk.RecordType_UPSERT, operationRecord.Record.Type)
 	data := operationRecord.Record.Data
 	assert.NotNil(t, data)
 
@@ -152,13 +151,12 @@ func TestCanSerializeMappedEnumsAndSets(t *testing.T) {
 		assert.NotNil(t, tl.lastResponse)
 	}
 
-	operation, ok := tl.lastResponse.Response.(*fivetransdk.UpdateResponse_Operation)
-	require.Truef(t, ok, "recordResponse Operation is not of type %s", "UpdateResponse_Operation")
+	operation := tl.lastResponse
 
-	operationRecord, ok := operation.Operation.Op.(*fivetransdk.Operation_Record)
-	assert.Truef(t, ok, "recordResponse Operation.Op is not of type %s", "Operation_Record")
+	operationRecord, ok := operation.Operation.(*fivetransdk.UpdateResponse_Record)
+	assert.Truef(t, ok, "recordResponse Operation is not of type %s", "UpdateResponse_Record")
 
-	assert.Equal(t, fivetransdk.OpType_UPSERT, operationRecord.Record.Type)
+	assert.Equal(t, fivetransdk.RecordType_UPSERT, operationRecord.Record.Type)
 	data := operationRecord.Record.Data
 	assert.NotNil(t, data)
 
@@ -242,13 +240,12 @@ func TestCanSerializeIndexedEnumsAndSets(t *testing.T) {
 		assert.NotNil(t, tl.lastResponse)
 	}
 
-	operation, ok := tl.lastResponse.Response.(*fivetransdk.UpdateResponse_Operation)
-	require.Truef(t, ok, "recordResponse Operation is not of type %s", "UpdateResponse_Operation")
+	operation := tl.lastResponse
 
-	operationRecord, ok := operation.Operation.Op.(*fivetransdk.Operation_Record)
-	assert.Truef(t, ok, "recordResponse Operation.Op is not of type %s", "Operation_Record")
+	operationRecord, ok := operation.Operation.(*fivetransdk.UpdateResponse_Record)
+	assert.Truef(t, ok, "recordResponse Operation is not of type %s", "UpdateResponse_Record")
 
-	assert.Equal(t, fivetransdk.OpType_UPSERT, operationRecord.Record.Type)
+	assert.Equal(t, fivetransdk.RecordType_UPSERT, operationRecord.Record.Type)
 	data := operationRecord.Record.Data
 	assert.NotNil(t, data)
 
@@ -307,13 +304,11 @@ func TestCanSerializeNulLValues(t *testing.T) {
 		assert.NotNil(t, tl.lastResponse)
 	}
 
-	operation, ok := tl.lastResponse.Response.(*fivetransdk.UpdateResponse_Operation)
-	require.Truef(t, ok, "recordResponse Operation is not of type %s", "UpdateResponse_Operation")
+	operation := tl.lastResponse
+	operationRecord, ok := operation.Operation.(*fivetransdk.UpdateResponse_Record)
+	assert.Truef(t, ok, "recordResponse Operation is not of type %s", "UpdateResponse_Record")
 
-	operationRecord, ok := operation.Operation.Op.(*fivetransdk.Operation_Record)
-	assert.Truef(t, ok, "recordResponse Operation.Op is not of type %s", "Operation_Record")
-
-	assert.Equal(t, fivetransdk.OpType_DELETE, operationRecord.Record.Type)
+	assert.Equal(t, fivetransdk.RecordType_DELETE, operationRecord.Record.Type)
 	data := operationRecord.Record.Data
 	assert.NotNil(t, data)
 	assert.Equal(t, 2, len(data), "should serialize only primary keys for deleted rows")
@@ -350,13 +345,12 @@ func TestCanSerializeDelete(t *testing.T) {
 		assert.NotNil(t, tl.lastResponse)
 	}
 
-	operation, ok := tl.lastResponse.Response.(*fivetransdk.UpdateResponse_Operation)
-	require.Truef(t, ok, "recordResponse Operation is not of type %s", "UpdateResponse_Operation")
+	operation := tl.lastResponse
 
-	operationRecord, ok := operation.Operation.Op.(*fivetransdk.Operation_Record)
-	assert.Truef(t, ok, "recordResponse Operation.Op is not of type %s", "Operation_Record")
+	operationRecord, ok := operation.Operation.(*fivetransdk.UpdateResponse_Record)
+	assert.Truef(t, ok, "recordResponse Operation is not of type %s", "UpdateResponse_Record")
 
-	assert.Equal(t, fivetransdk.OpType_DELETE, operationRecord.Record.Type)
+	assert.Equal(t, fivetransdk.RecordType_DELETE, operationRecord.Record.Type)
 	data := operationRecord.Record.Data
 	assert.NotNil(t, data)
 	assert.Equal(t, 2, len(data), "should serialize only primary keys for deleted rows")
@@ -398,13 +392,12 @@ func TestCanSerializeUpdate(t *testing.T) {
 		assert.NotNil(t, tl.lastResponse)
 	}
 
-	operation, ok := tl.lastResponse.Response.(*fivetransdk.UpdateResponse_Operation)
-	require.Truef(t, ok, "recordResponse Operation is not of type %s", "UpdateResponse_Operation")
+	operation := tl.lastResponse
 
-	operationRecord, ok := operation.Operation.Op.(*fivetransdk.Operation_Record)
-	assert.Truef(t, ok, "recordResponse Operation.Op is not of type %s", "Operation_Record")
+	operationRecord, ok := operation.Operation.(*fivetransdk.UpdateResponse_Record)
+	assert.Truef(t, ok, "recordResponse Operation is not of type %s", "UpdateResponse_Record")
 
-	assert.Equal(t, fivetransdk.OpType_UPDATE, operationRecord.Record.Type)
+	assert.Equal(t, fivetransdk.RecordType_UPDATE, operationRecord.Record.Type)
 	data := operationRecord.Record.Data
 	assert.NotNil(t, data)
 	assert.Equal(t, 2, len(data))
@@ -435,13 +428,12 @@ func TestCanSerializeTruncate(t *testing.T) {
 		assert.NotNil(t, tl.lastResponse)
 	}
 
-	operation, ok := tl.lastResponse.Response.(*fivetransdk.UpdateResponse_Operation)
-	require.Truef(t, ok, "recordResponse Operation is not of type %s", "UpdateResponse_Operation")
+	operation := tl.lastResponse
 
-	operationRecord, ok := operation.Operation.Op.(*fivetransdk.Operation_Record)
-	assert.Truef(t, ok, "recordResponse Operation.Op is not of type %s", "Operation_Record")
+	operationRecord, ok := operation.Operation.(*fivetransdk.UpdateResponse_Record)
+	assert.Truef(t, ok, "recordResponse Operation is not of type %s", "UpdateResponse_Record")
 
-	assert.Equal(t, fivetransdk.OpType_TRUNCATE, operationRecord.Record.Type)
+	assert.Equal(t, fivetransdk.RecordType_TRUNCATE, operationRecord.Record.Type)
 	assert.Nil(t, operationRecord.Record.Data)
 }
 
@@ -771,11 +763,10 @@ func TestCanSkipColumns(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, tl.lastResponse)
 
-	operation, ok := tl.lastResponse.Response.(*fivetransdk.UpdateResponse_Operation)
-	require.Truef(t, ok, "recordResponse Operation is not of type %s", "UpdateResponse_Operation")
+	operation := tl.lastResponse
 
-	operationRecord, ok := operation.Operation.Op.(*fivetransdk.Operation_Record)
-	assert.Truef(t, ok, "recordResponse Operation.Op is not of type %s", "Operation_Record")
+	operationRecord, ok := operation.Operation.(*fivetransdk.UpdateResponse_Record)
+	assert.Truef(t, ok, "recordResponse Operation is not of type %s", "UpdateResponse_Record")
 
 	data := operationRecord.Record.Data
 	assert.NotNil(t, data)
