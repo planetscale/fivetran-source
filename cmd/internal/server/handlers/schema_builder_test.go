@@ -14,6 +14,16 @@ func TestCanIgnoreVitessGCTables(t *testing.T) {
 	sb := NewSchemaBuilder(true)
 	sb.OnKeyspace("Employees")
 
+	// Newer style Vitess tables to filter:
+	sb.OnTable("Employees", "_vt_hld_6ace8bcef73211ea87e9f875a4d24e90_20200915120410_")
+	sb.OnTable("Employees", "_vt_prg_6ace8bcef73211ea87e9f875a4d24e90_20200915120410_")
+	sb.OnTable("Employees", "_vt_evc_6ace8bcef73211ea87e9f875a4d24e90_20200915120410_")
+	sb.OnTable("Employees", "_vt_drp_6ace8bcef73211ea87e9f875a4d24e90_20200915120410_")
+	sb.OnTable("Employees", "_vt_vrp_6ace8bcef73211ea87e9f875a4d24e90_20200915120410_")
+	sb.OnTable("Employees", "_vt_gho_6ace8bcef73211ea87e9f875a4d24e90_20200915120410_")
+	sb.OnTable("Employees", "_vt_ghc_6ace8bcef73211ea87e9f875a4d24e90_20200915120410_")
+	sb.OnTable("Employees", "_vt_del_6ace8bcef73211ea87e9f875a4d24e90_20200915120410_")
+
 	sb.OnTable("Employees", "_vt_DROP_6ace8bcef73211ea87e9f875a4d24e90_20200915120410")
 	sb.OnTable("Employees", "_vt_HOLD_6ace8bcef73211ea87e9f875a4d24e90_20200915120410")
 	sb.OnTable("Employees", "_vt_EVAC_6ace8bcef73211ea87e9f875a4d24e90_20200915120410")
