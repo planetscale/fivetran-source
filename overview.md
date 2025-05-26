@@ -1,10 +1,10 @@
 ---
 name: PlanetScale
-title: 
+title: PlanetScale Database Platform | Fivetran implementation docs
 description: Fivetran for PlanetScale documentation includes a setup guide and more. Learn how our data pipelines make it easy for analysts to use SQL or analytics tools.
 ---
 
-# PlanetScale {% typeBadge connector="planetscale" /%} {% availabilityBadge connector="planetscale" /%}
+# PlanetScale {% badge text="Partner-Built" /%} {% availabilityBadge connector="planetscale" /%}
 
 [PlanetScale](https://planetscale.com) is a MySQL database platform built on top of Vitess, the popular open-source database management technology created at YouTube. Vitess enables horizontal sharding of MySQL abstracted from the application layer. It’s designed to improve database management and provide a performant, fault-tolerant database that can handle large workloads.
 
@@ -14,19 +14,15 @@ PlanetScale provides customers with the power of Vitess, offering a fully manage
 
 ----
 
-{% featureTable %}
-Capture deletes: All tables and fields
-Data blocking: Column level, table level, and schema level
-Column Hashing
-Re-sync: Table level
-Private networking: AWS Private Link, GCP Private Service Connect
-{% /featureTable %}
+## Features
+
+{% featureTable connector="planetscale" /%}
 
 ----
 
 ## Setup guide
 
-Follow the [step-by-step PlanetScale setup guide](/docs/databases/planetscale/setup-guide) to connect your PlanetScale database with Fivetran.
+Follow the [step-by-step PlanetScale setup guide](/docs/connectors/databases/planetscale/setup-guide) to connect your PlanetScale database with Fivetran.
 
 ----
 
@@ -37,13 +33,17 @@ Once Fivetran is connected to your PlanetScale primary or read replica, we pull 
 
 ### Syncing empty tables and columns
 
-Fivetran can sync empty tables and columns for your PlanetScale connector. For more information, see our [Features documentation](/docs/using-fivetran/features#syncingemptytablesandcolumns).
+Fivetran can sync empty tables and columns for your PlanetScale connection. For more information, see our [Features documentation](/docs/using-fivetran/features#syncingemptytablesandcolumns).
+
+### Safe migrations 
+
+We recommend you enable the [safe migrations](https://planetscale.com/docs/concepts/safe-migrations) option in PlanetScale. This highly recommended feature ensures schema changes are performed without downtime, lock contention, or data loss.
 
 ----
 
 ## Schema information
 
-Fivetran tries to replicate the exact schema and tables from your PlanetScale source database to your destination according to our [standard database update strategies](/docs/databases#transformationandmappingoverview). For every schema in the PlanetScale database you connect, we create a schema in your destination that maps directly to its native schema. This ensures that the data in your destination is in a familiar format to work with.
+Fivetran tries to replicate the exact schema and tables from your PlanetScale source database to your destination according to our [standard database update strategies](/docs/connectors/databases#transformationandmappingoverview). For every schema in the PlanetScale database you connect, we create a schema in your destination that maps directly to its native schema. This ensures that the data in your destination is in a familiar format to work with.
 
 ### Fivetran-generated columns
 
@@ -54,7 +54,7 @@ Fivetran adds the following columns to every table in your destination:
 - `_fivetran_index` (INTEGER) shows the order of updates for tables that do not have a primary key.
 - `_fivetran_id` (STRING) is the hash of the non-Fivetran values of each row. It's a unique ID that Fivetran uses to avoid duplicate rows in tables that do not have a primary key.
 
-We add these columns to give you insight into the state of your data and the progress of your data syncs.
+We add these columns to give you insight into the state of your data and the progress of your data syncs. For more information about these columns, see [our System Columns and Tables documentation](/docs/core-concepts/system-columns-and-tables).
 
 ### Type transformations and mapping
 
@@ -95,7 +95,7 @@ The following table illustrates how we transform your MySQL data types into Five
 | TIME | STRING | True |
 | TIMESTAMP | TIMESTAMP | True | MYSQL always stores timestamps in UTC. Invalid values will be loaded as NULL or EPOCH if the type is a primary key. |
 | TINYBLOB | BINARY | True |
-| TINYINT | BOOLEAN | True | If you select `Treat TinyInt(1) as boolean` in the connector configuration, we will enforce that the tinyint is either 1 or 0 and return true/false accordingly. |
+| TINYINT | BOOLEAN | True | If you select `Treat TinyInt(1) as boolean` in the connection configuration, we will enforce that the tinyint is either 1 or 0 and return true/false accordingly. |
 | TINYINT | INTEGER | True | In all other cases, the destination type for TINYINT columns will be INTEGER. If the width isn't specified to be exactly 1 (either no specification or a value other than 1), the destination type will be INTEGER, even if the column contains only 1s or 0s. |
 | TINYTEXT | STRING | True |
 | UNSIGNED BIGINT | BIGDECIMAL | True |
@@ -111,7 +111,7 @@ In some cases, when loading data into your destination, we may need to convert F
 
 ### Unparsable values
 
-When we encounter [an unparsable value](/docs/databases/mysql#unparsablevalues) of one of the following data types, we substitute it with a default value. Which default value we use depends on whether the unparsable value is in a primary key column or non-primary key column:
+When we encounter [an unparsable value](/docs/connectors/databases/mysql#unparsablevalues) of one of the following data types, we substitute it with a default value. Which default value we use depends on whether the unparsable value is in a primary key column or non-primary key column:
 
 | MySQL Type | Primary Key Value | Non-Primary Key Value |
 | - | - | - |
@@ -123,13 +123,15 @@ Although we may be able to read some values outside the supported DATE, DATETIME
 
 ### Excluding source data
 
-If you don’t want to sync all the data from your master database, you can exclude schemas, tables, or columns from your syncs on your Fivetran dashboard. To do so, go to your connector details page and uncheck the objects you want to omit from syncing. For more information, see our [Column Blocking documentation](/docs/using-fivetran/features/column-blocking-hashing#columnblocking).
+If you don’t want to sync all the data from your primary database, you can exclude schemas, tables, or columns from your syncs on your Fivetran dashboard. To do so, go to your connection details page and uncheck the objects you want to omit from syncing. 
+
+For more information, see our [Data Blocking documentation](/docs/using-fivetran/features/data-blocking-column-hashing).
 
 ----
 
 ## Initial sync
 
-When Fivetran connects to a new database, we first copy all rows from every table in every schema for which we have SELECT permission (except those you have excluded in your Fivetran dashboard) and add [Fivetran-generated columns](/docs/databases/mysql#fivetrangeneratedcolumns). Tables are copied in ascending size order (from smallest to largest). We copy rows by performing a SELECT statement on each table. For large tables, we copy a limited number of rows at a time so that we don't have to start the sync again from the beginning if our connection is lost midway.
+When Fivetran connects to a new database, we first copy all rows from every table in every schema for which we have SELECT permission (except those you have excluded in your Fivetran dashboard) and add [Fivetran-generated columns](/docs/connectors/databases/mysql#fivetrangeneratedcolumns). Tables are copied in ascending size order (from smallest to largest). We copy rows by performing a SELECT statement on each table. For large tables, we copy a limited number of rows at a time so that we don't have to start the sync again from the beginning if our connection is lost midway.
 
 The duration of initial syncs can vary depending on the number and size of tables to be imported. We, therefore, interleave incremental updates with the table imports during the initial sync.
 
@@ -141,7 +143,7 @@ Fivetran performs incremental updates of any new or modified data from your sour
 
 ### Deleted rows
 
-We don't delete rows from the destination. We handle deletes as part of streaming changes from VStream. Note that we only process DELETE events from the stream.
+We don't delete rows from the destination. We handle deletes as part of streaming changes from VStream. Note that we only process `DELETE` events from the stream.
 
 ### Deleted columns
 
