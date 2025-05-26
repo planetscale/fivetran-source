@@ -1,10 +1,10 @@
 ---
-name: PlanetScale Setup Guide
+name: Setup Guide
 title: PlanetScale database connector by Fivetran | Setup Guide
 description: Read step-by-step instructions on how to connect PlanetScale with your destination using Fivetran connectors.
 ---
 
-# PlanetScale Setup Guide {% typeBadge connector="planetscale" /%} {% availabilityBadge connector="planetscale" /%}
+# PlanetScale Setup Guide {% badge text="Partner-Built" /%} {% availabilityBadge connector="planetscale" /%}
 
 Follow these instructions to replicate your PlanetScale database to your destination using Fivetran.
 
@@ -14,7 +14,7 @@ Follow these instructions to replicate your PlanetScale database to your destina
 
 ## Prerequisites
 
-To connect your PlanetScale database to Fivetran, you need a PlanetScale database
+To connect your PlanetScale database to Fivetran, you need a PlanetScale database.
 
 --------
 
@@ -22,53 +22,52 @@ To connect your PlanetScale database to Fivetran, you need a PlanetScale databas
 
 ### <span class="step-item">Choose connection method</span>
 
-#### Connect directly
+<details><summary>Connect directly</summary>
 
 Fivetran connects directly to your PlanetScale database.
 
-#### Connect using private networking
+</details>
 
-> IMPORTANT: You must have a Business Critical plan to use private networking.
+<details><summary>Connect using private networking</summary>
+
+> IMPORTANT: You must have a [Business Critical plan](https://www.fivetran.com/pricing/features) to use private networking.
 
 We support the following providers:
 
-- AWS PrivateLink - used for VPCs and AWS-hosted or on-premises services. See our [AWS Private Link setup guide](/docs/databases/connection-options#awsprivatelink) for details.
-- GCP Private Service Connect - used for VPCs and Google-hosted or on-premises services. See our [GCP Private Service Connect setup guide](/docs/databases/connection-options#googlecloudprivateserviceconnect) for details.
+- AWS PrivateLink - used for VPCs and AWS-hosted or on-premises services. See our [AWS Private Link setup guide](/docs/connectors/databases/connection-options#awsprivatelink) for details.
+- GCP Private Service Connect - used for VPCs and Google-hosted or on-premises services. See our [GCP Private Service Connect setup guide](/docs/connectors/databases/connection-options#googlecloudprivateserviceconnect) for details.
+
+</details>
 
 ### <span class="step-item">Configure PlanetScale connection string</span>
 
 1. In [PlanetScale](https://app.planetscale.com), navigate to the database you want to connect to Fivetran and click the **Connect** button.
-
 2. Create a new password for your main branch with [read-only permissions](https://planetscale.com/docs/concepts/password-roles#overview).
-
-3. In the **Connect with** dropdown, select **General** and leave this tab open, as you'll need to copy these credentials shortly.
+3. In the **Connect with** dropdown, select **General** and make a note of the username and password. You will need them to configure Fivetran.
 
 ### <span class="step-item">Finish Fivetran configuration</span>
 
-Back in Fivetran, in your [connector setup form](/docs/using-fivetran/fivetran-dashboard/connectors#addanewconnector), enter the connector values as follows:
-
-1. **Destination schema** - this prefix applies to each replicated schema and cannot be changed once your connector is created. Note: Each replicated schema is appended with `_planetscale` at the end of your chosen name.
-2. **Database host name** - paste in the copied value for `host`.
-3. **Database name** - paste in the copied value for `database`.
-4. **Database username** - paste in the copied value for `username`.
-5. **Database password** - paste in the copied value for `password`.
-6. **Comma-separated list of shards to sync (optional)** - if your PlanetScale database is *not* sharded, ignore this field. If the database is sharded, by default, the PlanetScale connector will download rows from all shards in the database. To pick which shards are synced by the connector, you can optionally provide a comma-separated list of shards in the connector configuration.
-7. **Use replica?**: In PlanetScale, VStream will connect to the primary tablet for your database, which also serves queries to your database. To lessen the load on the primary tablet, set this to `true` to make Vstream read from a replica of your database.
-   - Please note that only PlanetScale production branches have replica tablets. If connecting to a development branch, please set `useReplica` to `false`.
-8. **Treat tinyint(1) as boolean (optional)** - you can choose to have the connector transform tinyint(1) type columns in your database to either `true` or `false`.
-9. **Fivetran IPs (optional)** - if your connection string was created with [IP restrictions](https://planetscale.com/docs/concepts/connection-strings#ip-restrictions), ensure that the [Fivetran IP ranges](/docs/using-fivetran/ips) are added to the password.
-
+1. In the [connection setup form](/docs/using-fivetran/fivetran-dashboard/connectors#addanewconnection), enter a **Destination schema prefix**. This prefix applies to each replicated schema and cannot be changed once your connection is created.
+2. In the **Database host name**, enter your PlanetScale instance host name (e.g., `1.2.3.4`) or domain name (e.g., `your.server.com`).
+3. Enter the name of the PlanetScale database you wish to connect to.
+4. Enter the **Database username**.
+5. Enter the **Database password**.
+6. (Optional) Provide a **Comma-separated list of shards to sync**. If your PlanetScale database is not sharded, ignore this field. If the database is sharded, by default, the PlanetScale connection downloads rows from all shards in the database. To pick which shards are synced by the connection, you can optionally provide a comma-separated list of shards in the connection configuration.
+7. Set **Use Replica?** to `true` if your PlanetScale branch has a replica. VStream will connect to the primary tablet for your database, which also serves queries to your database. To lessen the load on the primary tablet, set this to `true` to make Vstream read from a replica of your database.
+   > IMPORTANT: Note that only PlanetScale production branches have replica tablets. If connecting to a development branch, set `useReplica` to `false`.
+8. Set **Treat tinyint(1) as boolean** to `true` to have the connection transform tinyint(1) type columns to boolean values.
+9. (Optional) Copy the [Fivetran's IP addresses (or CIDR)](/docs/using-fivetran/ips) that you _must_ safelist in your firewall. Ensure that the [Fivetran IP ranges](/docs/using-fivetran/ips) are added to the password.
 10. Click **Save & Test**. Fivetran tests and validates our connection to your PlanetScale database. Upon successful completion of the setup tests, you can sync your data using Fivetran.
 
-_____
+-----
 
 ## Related articles
 
-[<i aria-hidden="true" class="material-icons">description</i> Connector Overview](/docs/databases/planetscale)
+[<i aria-hidden="true" class="material-icons">description</i> Connector Overview](/docs/connectors/databases/planetscale)
 
 <b> </b>
 
-[<i aria-hidden="true" class="material-icons">account_tree</i> Schema Information](/docs/databases/planetscale#schemainformation)
+[<i aria-hidden="true" class="material-icons">account_tree</i> Schema Information](/docs/connectors/databases/planetscale#schemainformation)
 
 <b> </b>
 
