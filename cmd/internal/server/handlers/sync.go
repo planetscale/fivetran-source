@@ -66,6 +66,7 @@ func (s *Sync) Handle(psc *lib.PlanetScaleSource, db *lib.ConnectClient, logger 
 					// if we get any new state, we assign it here.
 					// otherwise, the older state is round-tripped back to Fivetran.
 					state.Keyspaces[ks.SchemaName].Streams[stateKey].Shards[shardName] = sc
+					logger.State(*state) // Checkpoint after every shard
 				}
 			}
 		}
