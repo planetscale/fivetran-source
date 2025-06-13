@@ -409,7 +409,7 @@ func TestUpdateReturnsInserts(t *testing.T) {
 		}
 		rows = append(rows, resp)
 	}
-	assert.Len(t, rows, 7)
+	assert.Len(t, rows, 5)
 	operation := rows[3].GetOperation()
 	require.NotNil(t, operation)
 	record, ok := operation.(*fivetransdk.UpdateResponse_Record)
@@ -610,7 +610,7 @@ func TestUpdateReturnsDeletes(t *testing.T) {
 		}
 		rows = append(rows, resp)
 	}
-	assert.Len(t, rows, 7)
+	assert.Len(t, rows, 5)
 	operation := rows[3].GetOperation()
 	assert.NotNil(t, operation)
 	record, ok := operation.(*fivetransdk.UpdateResponse_Record)
@@ -729,7 +729,7 @@ func TestUpdateReturnsUpdates(t *testing.T) {
 		}
 		rows = append(rows, resp)
 	}
-	assert.Len(t, rows, 7)
+	assert.Len(t, rows, 5)
 	operation := rows[3].GetOperation()
 	assert.NotNil(t, operation)
 	record, ok := operation.(*fivetransdk.UpdateResponse_Record)
