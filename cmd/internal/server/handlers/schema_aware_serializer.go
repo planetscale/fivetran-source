@@ -25,7 +25,8 @@ var fivetranOpMap = map[lib.Operation]fivetransdk.RecordType{
 type Serializer interface {
 	Info(string) error
 	Warning(string) error
-	Log(*fivetransdk.UpdateResponse) error
+	Severe(string) error
+	Log(string, string) error
 	Record(*sqltypes.Result, *fivetransdk.SchemaSelection, *fivetransdk.TableSelection, lib.Operation) error
 	State(lib.SyncState) error
 	Update(*lib.UpdatedRow, *fivetransdk.SchemaSelection, *fivetransdk.TableSelection) error
@@ -154,29 +155,21 @@ func NewSchemaAwareSerializer(sender LogSender, prefix string, serializeTinyIntA
 }
 
 func (l *schemaAwareSerializer) Info(msg string) error {
-	return l.Log(&fivetransdk.UpdateResponse{
-		Operation: &fivetransdk.UpdateResponse_Task{
-			Task: &fivetransdk.Task{
-				Message: msg,
-			},
-		},
-	})
+	return l.Log("INFO", msg)
 }
 
 func (l *schemaAwareSerializer) Warning(msg string) error {
-	return l.Log(&fivetransdk.UpdateResponse{
-		Operation: &fivetransdk.UpdateResponse_Warning{
-			Warning: &fivetransdk.Warning{
-				Message: msg,
-			},
-		},
-	})
+	return l.Log("WARNING", msg)
+}
+
+func (l *schemaAwareSerializer) Severe(msg string) error {
+	return l.Log("SEVERE", msg)
 }
 
 func (l *schemaAwareSerializer) State(sc lib.SyncState) error {
 	state, err := json.Marshal(sc)
 	if err != nil {
-		return l.Warning(fmt.Sprintf("marshal schema aware json serializer : %q", err))
+		return l.Severe(fmt.Sprintf("marshal schema aware json serializer : %q", err))
 	}
 	return l.sender.Send(&fivetransdk.UpdateResponse{
 		Operation: &fivetransdk.UpdateResponse_Checkpoint{
@@ -187,8 +180,15 @@ func (l *schemaAwareSerializer) State(sc lib.SyncState) error {
 	})
 }
 
-func (l *schemaAwareSerializer) Log(response *fivetransdk.UpdateResponse) error {
-	return l.sender.Send(response)
+func (l *schemaAwareSerializer) Log(level string, msg string) error {
+	log := map[string]interface{}{
+		"level":          level,
+		"message":        msg,
+		"message-origin": "sdk_connector",
+	}
+	logJSON, _ := json.Marshal(log)
+	fmt.Println(string(logJSON))
+	return nil
 }
 
 // Update is responsible for creating a record that has the following values :
@@ -236,7 +236,7 @@ func (l *schemaAwareSerializer) serializeResult(before *sqltypes.Result, after *
 	rows, err := rs.Serialize(before, after, opType)
 	if err != nil {
 		msg := fmt.Sprintf("record schema aware json serializer : %q", err)
-		if err := l.Warning(msg); err != nil {
+		if err := l.Severe(msg); err != nil {
 			return status.Error(codes.Internal, err.Error())
 		}
 		return status.Error(codes.Internal, msg)
@@ -247,7 +247,7 @@ func (l *schemaAwareSerializer) serializeResult(before *sqltypes.Result, after *
 		operationRecord, ok := updateResponse.Operation.(*fivetransdk.UpdateResponse_Record)
 		if !ok {
 			msg := fmt.Sprintf("recordResponse Operation is of type %T not UpdateResponse_Record", updateResponse.Operation)
-			if err := l.Warning(msg); err != nil {
+			if err := l.Severe(msg); err != nil {
 				return status.Error(codes.Internal, err.Error())
 			}
 			return status.Error(codes.Internal, msg)

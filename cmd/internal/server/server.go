@@ -190,13 +190,13 @@ func (c *connectorServer) Update(request *fivetran_sdk_v2.UpdateRequest, server 
 	checkConn, err := c.checkConnection.Handle(context.Background(), db, handlers.CheckConnectionTestName, psc)
 	if err != nil {
 		msg := fmt.Sprintf("unable to connect to PlanetScale database, failed with : %q", err)
-		logger.Warning(msg)
+		logger.Severe(msg)
 		return status.Error(codes.NotFound, msg)
 	}
 
 	if checkConn.GetFailure() != "" {
 		msg := fmt.Sprintf("unable to connect to PlanetScale database, failed with : %q", checkConn.GetFailure())
-		logger.Warning(msg)
+		logger.Severe(msg)
 		return status.Error(codes.NotFound, msg)
 	}
 
