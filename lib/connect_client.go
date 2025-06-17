@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -110,12 +111,18 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 	readDuration := 1 * time.Minute
 	preamble := fmt.Sprintf("[%v:%v shard:%v tabletType:%s] ", ps.Database, tableName, currentPosition.Shard, tabletType)
 
+	// Timeout tracking variables
+	consecutiveTimeouts := 0
+	const maxConsecutiveTimeouts = 5
+	backoffDuration := 10 * time.Second
+
 	existingColumns, err := p.filterExistingColumns(ctx, ps, tableName, columns)
 	if err != nil {
 		logger.Info(fmt.Sprintf("%sCouldn't fetch existing columns, falling back to requested columns: %s", preamble, err.Error()))
 	}
 
 	logger.Info(fmt.Sprintf("%sFiltering with columns %s", preamble, strings.Join(existingColumns, ",")))
+	logger.Info(fmt.Sprintf("%sUsing read timeout: %v", preamble, readDuration))
 
 	for {
 		logger.Info(preamble + "peeking to see if there's any new rows")
@@ -144,10 +151,27 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 			if s, ok := status.FromError(err); ok {
 				// if the error is anything other than server timeout, keep going
 				if s.Code() != codes.DeadlineExceeded {
-					logger.Info(fmt.Sprintf("%vGot error [%v] with message [%q], Returning with cursor :[%v] after server timeout", preamble, s.Code(), err, currentPosition))
+					logger.Info(fmt.Sprintf("%vGot error [%v] with message [%q], Returning with cursor :[%v] after non-timeout error", preamble, s.Code(), err, currentPosition))
 					return currentSerializedCursor, nil
 				} else {
-					logger.Info(preamble + "Continuing with cursor after server timeout")
+					consecutiveTimeouts++
+					logger.Info(fmt.Sprintf("%sTimeout occurred (%d/%d consecutive timeouts)", preamble, consecutiveTimeouts, maxConsecutiveTimeouts))
+
+					if consecutiveTimeouts >= maxConsecutiveTimeouts {
+						logger.Info(fmt.Sprintf("%sReached maximum consecutive timeouts (%d), stopping sync", preamble, maxConsecutiveTimeouts))
+						return currentSerializedCursor, errors.New("maximum consecutive timeouts reached")
+					}
+
+					// Apply exponential backoff
+					logger.Info(fmt.Sprintf("%sApplying backoff delay: %v", preamble, backoffDuration))
+					time.Sleep(backoffDuration)
+					backoffDuration = time.Duration(math.Min(float64(backoffDuration)*2, float64(5*time.Minute))) // Cap at 5 minutes
+
+					// Increase readDuration by 20% on every retry
+					readDuration = time.Duration(float64(readDuration) * 1.2)
+					logger.Info(fmt.Sprintf("%sIncreased read timeout to: %v", preamble, readDuration))
+
+					logger.Info(fmt.Sprintf("%sContinuing with cursor after server timeout (attempt %d/%d)", preamble, consecutiveTimeouts, maxConsecutiveTimeouts))
 				}
 			} else if errors.Is(err, io.EOF) {
 				logger.Info(fmt.Sprintf("%vFinished reading all rows for table [%v]", preamble, tableName))
@@ -155,6 +179,15 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 			} else {
 				logger.Info(fmt.Sprintf(preamble+"non-grpc error [%v]]", err))
 				return currentSerializedCursor, err
+			}
+		} else {
+			// Reset timeout counter on successful sync
+			if consecutiveTimeouts > 0 {
+				logger.Info(fmt.Sprintf("%sSync successful, resetting timeout counter (was %d)", preamble, consecutiveTimeouts))
+				consecutiveTimeouts = 0
+				backoffDuration = 10 * time.Second // Reset backoff
+				readDuration = 1 * time.Minute     // Reset read duration to original value
+				logger.Info(fmt.Sprintf("%sReset read timeout to: %v", preamble, readDuration))
 			}
 		}
 	}
