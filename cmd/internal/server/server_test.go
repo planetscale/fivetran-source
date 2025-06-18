@@ -311,7 +311,7 @@ func geometryTypeTest(t *testing.T, geometry []byte, geojson string) {
 		}
 		rows = append(rows, resp)
 	}
-	assert.Len(t, rows, 5)
+	assert.Len(t, rows, 4)
 	operation := rows[1].GetOperation()
 	require.NotNil(t, operation)
 	record, ok := operation.(*fivetransdk.UpdateResponse_Record)
@@ -409,8 +409,8 @@ func TestUpdateReturnsInserts(t *testing.T) {
 		}
 		rows = append(rows, resp)
 	}
-	assert.Len(t, rows, 5)
-	operation := rows[3].GetOperation()
+	assert.Len(t, rows, 4)
+	operation := rows[2].GetOperation()
 	require.NotNil(t, operation)
 	record, ok := operation.(*fivetransdk.UpdateResponse_Record)
 	assert.True(t, ok)
@@ -610,8 +610,8 @@ func TestUpdateReturnsDeletes(t *testing.T) {
 		}
 		rows = append(rows, resp)
 	}
-	assert.Len(t, rows, 5)
-	operation := rows[3].GetOperation()
+	assert.Len(t, rows, 4)
+	operation := rows[2].GetOperation()
 	assert.NotNil(t, operation)
 	record, ok := operation.(*fivetransdk.UpdateResponse_Record)
 	assert.True(t, ok)
@@ -729,8 +729,8 @@ func TestUpdateReturnsUpdates(t *testing.T) {
 		}
 		rows = append(rows, resp)
 	}
-	assert.Len(t, rows, 5)
-	operation := rows[3].GetOperation()
+	assert.Len(t, rows, 4)
+	operation := rows[2].GetOperation()
 	assert.NotNil(t, operation)
 	record, ok := operation.(*fivetransdk.UpdateResponse_Record)
 	assert.True(t, ok)

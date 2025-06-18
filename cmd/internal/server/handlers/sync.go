@@ -39,6 +39,30 @@ func (s *Sync) Handle(psc *lib.PlanetScaleSource, db *lib.ConnectClient, logger 
 				return logger.Update(upd, ks, table)
 			}
 
+			// First pass: check if all shards have empty positions
+			allShardsHaveEmptyPosition := true
+			hasShards := false
+
+			for _, shardState := range streamState.Shards {
+				hasShards = true
+				tc, err := shardState.SerializedCursorToTableCursor()
+				if err != nil {
+					return status.Error(codes.Internal, fmt.Sprintf("invalid cursor for stream %v, failed with [%v]", stateKey, err))
+				}
+
+				// Check if this shard has data (non-empty position)
+				if tc.Position != "" {
+					allShardsHaveEmptyPosition = false
+					break // No need to check remaining shards
+				}
+			}
+
+			// Call truncate before any Read operations if all shards are empty
+			if hasShards && allShardsHaveEmptyPosition {
+				logger.Truncate(ks, table)
+			}
+
+			// Second pass: perform the actual sync for each shard
 			for shardName, shardState := range streamState.Shards {
 				onCursor := func(cursor *psdbconnect.TableCursor) error {
 					sc, err := lib.TableCursorToSerializedCursor(cursor)
@@ -51,10 +75,6 @@ func (s *Sync) Handle(psc *lib.PlanetScaleSource, db *lib.ConnectClient, logger 
 				tc, err := shardState.SerializedCursorToTableCursor()
 				if err != nil {
 					return status.Error(codes.Internal, fmt.Sprintf("invalid cursor for stream %v, failed with [%v]", stateKey, err))
-				}
-
-				if tc.Position == "" {
-					logger.Truncate(ks, table)
 				}
 
 				columns := includedColumns(table)
