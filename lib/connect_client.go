@@ -159,7 +159,7 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 
 					if consecutiveTimeouts >= maxConsecutiveTimeouts {
 						logger.Info(fmt.Sprintf("%sReached maximum consecutive timeouts (%d), stopping sync", preamble, maxConsecutiveTimeouts))
-						return currentSerializedCursor, errors.New("maximum consecutive timeouts reached")
+						return currentSerializedCursor, nil
 					}
 
 					// Apply exponential backoff
