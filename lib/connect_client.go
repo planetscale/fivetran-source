@@ -114,6 +114,8 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 	// Timeout tracking variables
 	consecutiveTimeouts := 0
 	const maxConsecutiveTimeouts = 5
+	const maxTimeout = 1 * time.Hour
+	const timeoutMultiplier = 2.8
 	backoffDuration := 10 * time.Second
 
 	existingColumns, err := p.filterExistingColumns(ctx, ps, tableName, columns)
@@ -167,10 +169,15 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 					time.Sleep(backoffDuration)
 					backoffDuration = time.Duration(math.Min(float64(backoffDuration)*2, float64(5*time.Minute))) // Cap at 5 minutes
 
-					// Increase readDuration by 20% on every retry
-					readDuration = time.Duration(float64(readDuration) * 1.2)
-					logger.Info(fmt.Sprintf("%sIncreased read timeout to: %v", preamble, readDuration))
+					newReadDuration := time.Duration(float64(readDuration) * timeoutMultiplier)
+					readDuration = func() time.Duration {
+						if newReadDuration > maxTimeout {
+							return maxTimeout
+						}
+						return newReadDuration
+					}()
 
+					logger.Info(fmt.Sprintf("%sIncreased read timeout to: %v", preamble, readDuration))
 					logger.Info(fmt.Sprintf("%sContinuing with cursor after server timeout (attempt %d/%d)", preamble, consecutiveTimeouts, maxConsecutiveTimeouts))
 				}
 			} else if errors.Is(err, io.EOF) {
