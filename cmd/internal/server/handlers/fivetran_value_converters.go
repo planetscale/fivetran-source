@@ -148,9 +148,18 @@ var converters = map[fivetransdk.DataType]ConverterFunc{
 	fivetransdk.DataType_UTC_DATETIME: func(value sqltypes.Value) (*fivetransdk.ValueType, error) {
 		// The TIMESTAMP data type is used for values that contain both date and time parts.
 		// TIMESTAMP has a range of '1970-01-01 00:00:01' UTC to '2038-01-19 03:14:07' UTC.
-		t, err := time.Parse("2006-01-02 15:04:05", value.ToString())
-		if err != nil {
-			return nil, errors.Wrap(err, "failed to serialize DataType_UTC_DATETIME")
+
+		// Check for zero date
+		var t time.Time
+		if strings.Contains(value.ToString(), "0000-00-0") {
+			// Use zero epoch time to represent non-null zero date
+			t = time.Unix(0, 0).UTC()
+		} else {
+			var err error
+			t, err = time.Parse("2006-01-02 15:04:05", value.ToString())
+			if err != nil {
+				return nil, errors.Wrap(err, "failed to serialize DataType_UTC_DATETIME")
+			}
 		}
 		return &fivetransdk.ValueType{
 			Inner: &fivetransdk.ValueType_UtcDatetime{UtcDatetime: timestamppb.New(t)},
