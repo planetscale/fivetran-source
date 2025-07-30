@@ -154,14 +154,14 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 				// if the error is anything other than server timeout, keep going
 				if s.Code() != codes.DeadlineExceeded {
 					logger.Info(fmt.Sprintf("%vGot error [%v] with message [%q], Returning with cursor :[%v] after non-timeout error", preamble, s.Code(), err, currentPosition))
-					return currentSerializedCursor, nil
+					return nil, nil
 				} else {
 					consecutiveTimeouts++
 					logger.Info(fmt.Sprintf("%sTimeout occurred (%d/%d consecutive timeouts)", preamble, consecutiveTimeouts, maxConsecutiveTimeouts))
 
 					if consecutiveTimeouts >= maxConsecutiveTimeouts {
 						logger.Info(fmt.Sprintf("%sReached maximum consecutive timeouts (%d), stopping sync", preamble, maxConsecutiveTimeouts))
-						return currentSerializedCursor, nil
+						return nil, nil
 					}
 
 					// Apply exponential backoff
