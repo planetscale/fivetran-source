@@ -151,15 +151,15 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 		}
 		if err != nil {
 			if s, ok := status.FromError(err); ok {
-				// Check for specific error message that requires historical sync
-				if IsBinlogsExpirationError(err) {
-					logger.Info(fmt.Sprintf("%sDetected error requiring historical sync: %q", preamble, err.Error()))
-					return nil, BinLogsExpirationError
-				}
-
 				// if the error is anything other than server timeout, keep going
 				if s.Code() != codes.DeadlineExceeded {
 					logger.Info(fmt.Sprintf("%vGot error [%v] with message [%q], Returning with cursor :[%v] after non-timeout error", preamble, s.Code(), err, currentPosition))
+
+					if IsBinlogsExpirationError(err) {
+						logger.Info(fmt.Sprintf("%sBinlogs have expired. Will perform historical sync of table %s in next sync", preamble, tableName))
+						return nil, BinLogsExpirationError
+					}
+
 					return currentSerializedCursor, nil
 				} else {
 					consecutiveTimeouts++
@@ -190,11 +190,6 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 				logger.Info(fmt.Sprintf("%vFinished reading all rows for table [%v]", preamble, tableName))
 				return currentSerializedCursor, nil
 			} else {
-				// Check for historical sync error in non-gRPC errors too
-				if IsBinlogsExpirationError(err) {
-					logger.Info(fmt.Sprintf("%sDetected non-gRPC error requiring historical sync: %q", preamble, err.Error()))
-					return nil, BinLogsExpirationError
-				}
 				logger.Info(fmt.Sprintf(preamble+"non-grpc error [%v]]", err))
 				return currentSerializedCursor, err
 			}
