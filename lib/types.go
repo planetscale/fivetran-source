@@ -2,7 +2,6 @@ package lib
 
 import (
 	"encoding/base64"
-	"strings"
 
 	"vitess.io/vitess/go/sqltypes"
 
@@ -82,12 +81,3 @@ type SyncState struct {
 // A map of starting GTIDs for every keyspace and shard
 // i.e. { keyspace: { shard: gtid} }
 type StartingGtids map[string]map[string]string
-
-var BinLogsExpirationError = errors.New("Historical sync required due to binlog expiration")
-
-func IsBinlogsExpirationError(err error) bool {
-	if err == nil {
-		return false
-	}
-	return strings.Contains(err.Error(), "Cannot replicate because the source purged required binary logs")
-}
