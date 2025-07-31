@@ -81,7 +81,6 @@ func (s *Sync) Handle(psc *lib.PlanetScaleSource, db *lib.ConnectClient, logger 
 				columns := includedColumns(table)
 				sc, err := (*db).Read(ctx, logger, *psc, table.TableName, columns, tc, onRow, onCursor, onUpdate)
 				if err != nil {
-					// Check if this is a historical sync requirement
 					if errors.Is(err, lib.BinLogsExpirationError) {
 						logger.Info(fmt.Sprintf("Historical sync required for table %s, resetting cursor position", table.TableName))
 
@@ -89,22 +88,17 @@ func (s *Sync) Handle(psc *lib.PlanetScaleSource, db *lib.ConnectClient, logger 
 						emptyCursor := &psdbconnect.TableCursor{
 							Shard:    tc.Shard,
 							Keyspace: tc.Keyspace,
-							Position: "", // Empty position triggers historical sync
+							Position: "",
 						}
 
-						// Convert to serialized cursor and update state
 						emptySerializedCursor, serErr := lib.TableCursorToSerializedCursor(emptyCursor)
 						if serErr != nil {
 							return status.Error(codes.Internal, fmt.Sprintf("failed to serialize empty cursor for historical sync: %s", serErr.Error()))
 						}
 
-						// Update state with empty cursor
 						state.Keyspaces[ks.SchemaName].Streams[stateKey].Shards[shardName] = emptySerializedCursor
 
-						// Trigger truncate for this table since we're doing historical sync
-						logger.Truncate(ks, table)
-
-						// Retry the read with empty cursor
+						// Retry syncing with empty cursor
 						sc, err = (*db).Read(ctx, logger, *psc, table.TableName, columns, emptyCursor, onRow, onCursor, onUpdate)
 						if err != nil {
 							return status.Error(codes.Internal, fmt.Sprintf("failed to download rows for table after historical sync reset: %s, error: %s", table.TableName, err.Error()))
