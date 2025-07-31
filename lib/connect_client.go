@@ -154,6 +154,16 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 				// if the error is anything other than server timeout, keep going
 				if s.Code() != codes.DeadlineExceeded {
 					logger.Info(fmt.Sprintf("%vGot error [%v] with message [%q], Returning with cursor :[%v] after non-timeout error", preamble, s.Code(), err, currentPosition))
+
+					// Check for binlog expiration error and reset cursor for historical sync
+					if IsBinlogsExpirationError(err) {
+						logger.Info(fmt.Sprintf("%sBinlogs have expired. Resetting cursor position to trigger historical sync", preamble))
+						// Reset the cursor position to empty to trigger historical sync on next iteration
+						currentPosition.Position = ""
+						currentPosition.LastKnownPk = nil
+						continue
+					}
+
 					return currentSerializedCursor, nil
 				} else {
 					consecutiveTimeouts++
@@ -412,4 +422,11 @@ func (p connectClient) getLatestCursorPosition(ctx context.Context, shard, keysp
 			return res.Cursor.Position, nil
 		}
 	}
+}
+
+func IsBinlogsExpirationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "Cannot replicate because the source purged required binary logs")
 }
