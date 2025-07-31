@@ -25,6 +25,14 @@ func (dbl *dbLogger) Info(s string) error {
 	return nil
 }
 
+func (dbl *dbLogger) Warning(s string) error {
+	dbl.messages = append(dbl.messages, dbLogMessage{
+		message: s,
+	})
+
+	return nil
+}
+
 type clientConnectionMock struct {
 	syncFn             func(ctx context.Context, in *psdbconnect.SyncRequest, opts ...grpc.CallOption) (psdbconnect.Connect_SyncClient, error)
 	syncFnInvoked      bool

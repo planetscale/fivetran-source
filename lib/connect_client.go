@@ -33,6 +33,7 @@ type (
 
 type DatabaseLogger interface {
 	Info(string) error
+	Warning(string) error
 }
 
 // ConnectClient is a general purpose interface
@@ -153,11 +154,11 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 			if s, ok := status.FromError(err); ok {
 				// if the error is anything other than server timeout, keep going
 				if s.Code() != codes.DeadlineExceeded {
-					logger.Info(fmt.Sprintf("%vGot error [%v] with message [%q], Returning with cursor :[%v] after non-timeout error", preamble, s.Code(), err, currentPosition))
+					logger.Warning(fmt.Sprintf("%vGot error [%v] with message [%q], Returning with cursor :[%v] after non-timeout error", preamble, s.Code(), err, currentPosition))
 
 					// Check for binlog expiration error and reset cursor for historical sync
 					if IsBinlogsExpirationError(err) {
-						logger.Info(fmt.Sprintf("%sBinlogs have expired. Resetting cursor position to trigger historical sync", preamble))
+						logger.Warning(fmt.Sprintf("%sBinlogs have expired. Resetting cursor position to trigger historical sync", preamble))
 						// Reset the cursor position to empty to trigger historical sync on next iteration
 						currentPosition.Position = ""
 						currentPosition.LastKnownPk = nil
@@ -194,7 +195,7 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 				logger.Info(fmt.Sprintf("%vFinished reading all rows for table [%v]", preamble, tableName))
 				return currentSerializedCursor, nil
 			} else {
-				logger.Info(fmt.Sprintf(preamble+"non-grpc error [%v]]", err))
+				logger.Warning(fmt.Sprintf(preamble+"non-grpc error [%v]]", err))
 				return currentSerializedCursor, err
 			}
 		} else {
