@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/planetscale/fivetran-source/lib"
@@ -81,38 +80,7 @@ func (s *Sync) Handle(psc *lib.PlanetScaleSource, db *lib.ConnectClient, logger 
 				columns := includedColumns(table)
 				sc, err := (*db).Read(ctx, logger, *psc, table.TableName, columns, tc, onRow, onCursor, onUpdate)
 				if err != nil {
-					if errors.Is(err, lib.BinLogsExpirationError) {
-						logger.Info(fmt.Sprintf("Historical sync required for table %s, resetting cursor position", table.TableName))
-
-						// Reset the cursor position to empty to trigger historical sync
-						emptyCursor := &psdbconnect.TableCursor{
-							Shard:    tc.Shard,
-							Keyspace: tc.Keyspace,
-							Position: "",
-						}
-
-						emptySerializedCursor, serErr := lib.TableCursorToSerializedCursor(emptyCursor)
-						if serErr != nil {
-							return status.Error(codes.Internal, fmt.Sprintf("failed to serialize empty cursor for historical sync: %s", serErr.Error()))
-						}
-
-						// Update the state with empty cursor
-						state.Keyspaces[ks.SchemaName].Streams[stateKey].Shards[shardName] = emptySerializedCursor
-
-						// Trigger truncate since we're doing historical sync
-						logger.Truncate(ks, table)
-
-						// Update tc to the empty cursor for the next iteration
-						tc = emptyCursor
-
-						// Retry the Read operation with the empty cursor
-						sc, err = (*db).Read(ctx, logger, *psc, table.TableName, columns, tc, onRow, onCursor, onUpdate)
-						if err != nil {
-							return status.Error(codes.Internal, fmt.Sprintf("failed to download rows for table after historical sync reset: %s, error: %s", table.TableName, err.Error()))
-						}
-					} else {
-						return status.Error(codes.Internal, fmt.Sprintf("failed to download rows for table : %s , error : %s", table.TableName, err.Error()))
-					}
+					return status.Error(codes.Internal, fmt.Sprintf("failed to download rows for table : %s , error : %s", table.TableName, err.Error()))
 				}
 				if sc != nil {
 					// if we get any new state, we assign it here.

@@ -155,9 +155,14 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 				if s.Code() != codes.DeadlineExceeded {
 					logger.Info(fmt.Sprintf("%vGot error [%v] with message [%q], Returning with cursor :[%v] after non-timeout error", preamble, s.Code(), err, currentPosition))
 
+					// Check for binlog expiration error and reset cursor for historical sync
 					if IsBinlogsExpirationError(err) {
-						logger.Info(fmt.Sprintf("%sBinlogs have expired. Will perform historical sync of table %s in next sync", preamble, tableName))
-						return nil, BinLogsExpirationError
+						logger.Info(fmt.Sprintf("%sBinlogs have expired. Resetting cursor position to trigger historical sync", preamble))
+						// Reset the cursor position to empty to trigger historical sync on next iteration
+						currentPosition.Position = ""
+						currentPosition.LastKnownPk = nil
+						// Continue the loop to retry with empty position
+						continue
 					}
 
 					return currentSerializedCursor, nil
@@ -190,6 +195,15 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 				logger.Info(fmt.Sprintf("%vFinished reading all rows for table [%v]", preamble, tableName))
 				return currentSerializedCursor, nil
 			} else {
+				// Check for binlog expiration error in non-gRPC errors too
+				if IsBinlogsExpirationError(err) {
+					logger.Info(fmt.Sprintf("%sBinlogs have expired (non-gRPC error). Resetting cursor position to trigger historical sync", preamble))
+					// Reset the cursor position to empty to trigger historical sync on next iteration
+					currentPosition.Position = ""
+					currentPosition.LastKnownPk = nil
+					// Continue the loop to retry with empty position
+					continue
+				}
 				logger.Info(fmt.Sprintf(preamble+"non-grpc error [%v]]", err))
 				return currentSerializedCursor, err
 			}
