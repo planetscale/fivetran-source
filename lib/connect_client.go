@@ -195,15 +195,6 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 				logger.Info(fmt.Sprintf("%vFinished reading all rows for table [%v]", preamble, tableName))
 				return currentSerializedCursor, nil
 			} else {
-				// Check for binlog expiration error in non-gRPC errors too
-				if IsBinlogsExpirationError(err) {
-					logger.Warning(fmt.Sprintf("%sBinlogs have expired (non-gRPC error). Resetting cursor position to trigger historical sync", preamble))
-					// Reset the cursor position to empty to trigger historical sync on next iteration
-					currentPosition.Position = ""
-					currentPosition.LastKnownPk = nil
-					// Continue the loop to retry with empty position
-					continue
-				}
 				logger.Warning(fmt.Sprintf(preamble+"non-grpc error [%v]]", err))
 				return currentSerializedCursor, err
 			}
