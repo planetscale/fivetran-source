@@ -96,10 +96,17 @@ func (s *Sync) Handle(psc *lib.PlanetScaleSource, db *lib.ConnectClient, logger 
 							return status.Error(codes.Internal, fmt.Sprintf("failed to serialize empty cursor for historical sync: %s", serErr.Error()))
 						}
 
+						// Update the state with empty cursor
 						state.Keyspaces[ks.SchemaName].Streams[stateKey].Shards[shardName] = emptySerializedCursor
 
-						// Retry syncing with empty cursor
-						sc, err = (*db).Read(ctx, logger, *psc, table.TableName, columns, emptyCursor, onRow, onCursor, onUpdate)
+						// Trigger truncate since we're doing historical sync
+						logger.Truncate(ks, table)
+
+						// Update tc to the empty cursor for the next iteration
+						tc = emptyCursor
+
+						// Retry the Read operation with the empty cursor
+						sc, err = (*db).Read(ctx, logger, *psc, table.TableName, columns, tc, onRow, onCursor, onUpdate)
 						if err != nil {
 							return status.Error(codes.Internal, fmt.Sprintf("failed to download rows for table after historical sync reset: %s, error: %s", table.TableName, err.Error()))
 						}
