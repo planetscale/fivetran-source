@@ -274,17 +274,6 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 			return tc, err
 		}
 
-		if res.Cursor != nil {
-			tc = res.Cursor
-		}
-
-		// Because of the ordering of events in a vstream
-		// we receive the vgtid event first and then the rows.
-		// the vgtid event might repeat, but they're ordered.
-		// so we once we reach the desired stop vgtid, we stop the sync session
-		// if we get a newer vgtid.
-		watchForVgGtidChange = watchForVgGtidChange || tc.Position == stopPosition
-
 		if onResult != nil {
 			for _, insertedRow := range res.Result {
 				qr := sqltypes.Proto3ToResult(insertedRow)
@@ -324,6 +313,17 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 				}
 			}
 		}
+
+		if res.Cursor != nil {
+			tc = res.Cursor
+		}
+
+		// Because of the ordering of events in a vstream
+		// we receive the vgtid event first and then the rows.
+		// the vgtid event might repeat, but they're ordered.
+		// so we once we reach the desired stop vgtid, we stop the sync session
+		// if we get a newer vgtid.
+		watchForVgGtidChange = watchForVgGtidChange || tc.Position == stopPosition
 
 		if watchForVgGtidChange && tc.Position != stopPosition {
 			if err := onCursor(tc); err != nil {
