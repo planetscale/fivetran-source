@@ -31,6 +31,7 @@ type Serializer interface {
 	State(lib.SyncState) error
 	Update(*lib.UpdatedRow, *fivetransdk.SchemaSelection, *fivetransdk.TableSelection) error
 	Truncate(*fivetransdk.SchemaSelection, *fivetransdk.TableSelection) error
+	SendWarningAlert(string) error
 }
 
 type LogSender interface {
@@ -164,6 +165,18 @@ func (l *schemaAwareSerializer) Warning(msg string) error {
 
 func (l *schemaAwareSerializer) Severe(msg string) error {
 	return l.Log("SEVERE", msg)
+}
+
+func (l *schemaAwareSerializer) SendWarningAlert(message string) error {
+	warning := &fivetransdk.Warning{
+		Message: message,
+	}
+
+	return l.sender.Send(&fivetransdk.UpdateResponse{
+		Operation: &fivetransdk.UpdateResponse_Warning{
+			Warning: warning,
+		},
+	})
 }
 
 func (l *schemaAwareSerializer) State(sc lib.SyncState) error {
