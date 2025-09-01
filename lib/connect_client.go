@@ -173,19 +173,17 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 					if consecutiveTimeouts >= maxConsecutiveTimeouts {
 						logger.Info(fmt.Sprintf("%sReached maximum consecutive timeouts (%d), stopping sync", preamble, maxConsecutiveTimeouts))
 
-						if onResult != nil {
-							warningMessage := fmt.Sprintf("Timeout occurred while reading table %s after %d consecutive attempts. Stopping sync.", tableName, consecutiveTimeouts)
+						warningMessage := fmt.Sprintf("Timeout occurred while reading table %s after %d consecutive attempts. Stopping sync.", tableName, consecutiveTimeouts)
 
-							if serializer, ok := logger.(interface {
-								SendWarningAlert(string) error
-							}); ok {
-								if err := serializer.SendWarningAlert(warningMessage); err != nil {
-									logger.Warning(fmt.Sprintf("Failed to send warning message: %v", err))
-								}
-							} else {
-								// Fallback to regular warning log if serializer doesn't support SendWarningAlert
-								logger.Warning(warningMessage)
+						if serializer, ok := logger.(interface {
+							SendWarningAlert(string) error
+						}); ok {
+							if err := serializer.SendWarningAlert(warningMessage); err != nil {
+								logger.Warning(fmt.Sprintf("Failed to send warning message: %v", err))
 							}
+						} else {
+							// Fallback to regular warning log if serializer doesn't support SendWarningAlert
+							logger.Warning(warningMessage)
 						}
 
 						return currentSerializedCursor, nil
