@@ -32,6 +32,11 @@ func (testLogger) Warning(s string) error {
 	panic("implement me")
 }
 
+func (testLogger) SendWarningAlert(s string) error {
+	// TODO implement me
+	panic("implement me")
+}
+
 func (t *testLogger) Severe(s string) error {
 	// TODO implement me
 	panic("implement me")
