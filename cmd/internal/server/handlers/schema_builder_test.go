@@ -256,3 +256,30 @@ func TestCanDetectDecimalPrecision(t *testing.T) {
 		})
 	}
 }
+
+//Adding an additional unit test for the tinyint(1) as bool handling since the orginals were not wide enough
+
+func TestGetFivetranDataType_TinyintBooleanHandling(t *testing.T) {
+	tests := []struct {
+		mysqlType             string
+		treatTinyIntAsBoolean bool
+		expected              fivetransdk.DataType
+	}{
+		{"tinyint(1)", true, fivetransdk.DataType_BOOLEAN},
+		{"tinyint(1) NOT NULL", true, fivetransdk.DataType_BOOLEAN},
+		{"tinyint(1) unsigned", true, fivetransdk.DataType_BOOLEAN},
+		{"tinyint(2)", true, fivetransdk.DataType_INT},
+		{"tinyint", true, fivetransdk.DataType_INT},
+		{"TINYINT(1)", true, fivetransdk.DataType_BOOLEAN},
+		{"tinyint(1)", false, fivetransdk.DataType_INT},
+	}
+
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%s_bool_%t", tt.mysqlType, tt.treatTinyIntAsBoolean), func(t *testing.T) {
+			got, _ := getFivetranDataType(tt.mysqlType, tt.treatTinyIntAsBoolean)
+			if got != tt.expected {
+				t.Errorf("For input '%s', expected %s but got %s", tt.mysqlType, tt.expected, got)
+			}
+		})
+	}
+}
