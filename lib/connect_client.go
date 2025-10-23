@@ -162,6 +162,16 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 						// Reset the cursor position to empty to trigger historical sync on next iteration
 						currentPosition.Position = ""
 						currentPosition.LastKnownPk = nil
+
+						// Mark the error as binlog expiration in the state
+						if currentSerializedCursor != nil {
+							currentSerializedCursor.SetBinlogExpirationError(fmt.Sprintf("Binlogs have expired. Cursor reset to trigger historical sync. Original error: %v", err.Error()))
+						} else {
+							currentSerializedCursor, _ = TableCursorToSerializedCursor(currentPosition)
+							currentSerializedCursor.SetBinlogExpirationError(fmt.Sprintf("Binlogs have expired. Cursor reset to trigger historical sync. Original error: %v", err.Error()))
+						}
+
+						// Continue with historical sync instead of returning error
 						continue
 					}
 

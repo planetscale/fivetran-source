@@ -63,7 +63,19 @@ func TableCursorToSerializedCursor(cursor *psdbconnect.TableCursor) (*Serialized
 }
 
 type SerializedCursor struct {
-	Cursor string `json:"cursor"`
+	Cursor       string  `json:"cursor"`
+	ErrorMessage *string `json:"error_message,omitempty"`
+	ErrorCode    *string `json:"error_code,omitempty"`
+}
+
+// SetBinlogExpirationError sets a binlog expiration error on the cursor
+func (sc *SerializedCursor) SetBinlogExpirationError(errorMessage string) {
+	sc.ErrorCode = stringPtr("BINLOG_EXPIRATION_ERROR")
+	sc.ErrorMessage = &errorMessage
+}
+
+func stringPtr(s string) *string {
+	return &s
 }
 
 type ShardStates struct {
