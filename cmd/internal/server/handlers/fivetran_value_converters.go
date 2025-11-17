@@ -25,7 +25,7 @@ type ConverterFunc func(sqltypes.Value) (*fivetransdk.ValueType, error)
 var converters = map[fivetransdk.DataType]ConverterFunc{
 	fivetransdk.DataType_STRING: func(value sqltypes.Value) (*fivetransdk.ValueType, error) {
 		return &fivetransdk.ValueType{
-			Inner: &fivetransdk.ValueType_String_{String_: value.ToString()},
+			Inner: &fivetransdk.ValueType_String_{String_: CleanStringValue(value.ToString())},
 		}, nil
 	},
 	fivetransdk.DataType_BOOLEAN: func(value sqltypes.Value) (*fivetransdk.ValueType, error) {
@@ -93,7 +93,7 @@ var converters = map[fivetransdk.DataType]ConverterFunc{
 	},
 	fivetransdk.DataType_DECIMAL: func(value sqltypes.Value) (*fivetransdk.ValueType, error) {
 		return &fivetransdk.ValueType{
-			Inner: &fivetransdk.ValueType_Decimal{Decimal: value.ToString()},
+			Inner: &fivetransdk.ValueType_Decimal{Decimal: CleanStringValue(value.ToString())},
 		}, nil
 	},
 
@@ -209,11 +209,11 @@ var converters = map[fivetransdk.DataType]ConverterFunc{
 			gj := geojson.GeojsonEncoder{}
 			geoJson := gj.Encode(got.Geom())
 			return &fivetransdk.ValueType{
-				Inner: &fivetransdk.ValueType_Json{Json: string(geoJson)},
+				Inner: &fivetransdk.ValueType_Json{Json: CleanStringValue(string(geoJson))},
 			}, nil
 		}
 		return &fivetransdk.ValueType{
-			Inner: &fivetransdk.ValueType_Json{Json: value.ToString()},
+			Inner: &fivetransdk.ValueType_Json{Json: CleanStringValue(value.ToString())},
 		}, nil
 	},
 }
@@ -233,7 +233,7 @@ func GetEnumConverter(enumValues []string) (ConverterFunc, error) {
 		if err != nil {
 			// If value is not an integer (index), we just serialize it as a string
 			return &fivetransdk.ValueType{
-				Inner: &fivetransdk.ValueType_String_{String_: parsedValue},
+				Inner: &fivetransdk.ValueType_String_{String_: CleanStringValue(parsedValue)},
 			}, nil
 		}
 
@@ -247,14 +247,14 @@ func GetEnumConverter(enumValues []string) (ConverterFunc, error) {
 		for i, v := range enumValues {
 			if int(index-1) == i {
 				return &fivetransdk.ValueType{
-					Inner: &fivetransdk.ValueType_String_{String_: v},
+					Inner: &fivetransdk.ValueType_String_{String_: CleanStringValue(v)},
 				}, nil
 			}
 		}
 
 		// Just return the value as a string if we can't find the enum value
 		return &fivetransdk.ValueType{
-			Inner: &fivetransdk.ValueType_String_{String_: parsedValue},
+			Inner: &fivetransdk.ValueType_String_{String_: CleanStringValue(parsedValue)},
 		}, nil
 	}, nil
 }
@@ -266,7 +266,7 @@ func GetSetConverter(setValues []string) (ConverterFunc, error) {
 		if err != nil {
 			// if value is not an integer, we just serialize as a strong
 			return &fivetransdk.ValueType{
-				Inner: &fivetransdk.ValueType_Json{Json: parsedValue},
+				Inner: &fivetransdk.ValueType_Json{Json: CleanStringValue(parsedValue)},
 			}, nil
 		}
 		mappedValues := []string{}
@@ -285,12 +285,12 @@ func GetSetConverter(setValues []string) (ConverterFunc, error) {
 		// If we can't find the values, just serialize as a string
 		if len(mappedValues) == 0 {
 			return &fivetransdk.ValueType{
-				Inner: &fivetransdk.ValueType_Json{Json: parsedValue},
+				Inner: &fivetransdk.ValueType_Json{Json: CleanStringValue(parsedValue)},
 			}, nil
 		}
 
 		return &fivetransdk.ValueType{
-			Inner: &fivetransdk.ValueType_Json{Json: strings.Join(mappedValues, ",")},
+			Inner: &fivetransdk.ValueType_Json{Json: CleanStringValue(strings.Join(mappedValues, ","))},
 		}, nil
 	}, nil
 }
