@@ -230,8 +230,20 @@ func parseEnumOrSetValues(mType string) ValueMap {
 // Convert columnType to fivetran type
 func getFivetranDataType(mType string, treatTinyIntAsBoolean bool) (fivetransdk.DataType, *fivetransdk.DecimalParams) {
 	mysqlType := strings.ToLower(mType)
+	// only interested in first part of the schema output to avoid issues with NOT NULL
+	parts := strings.Fields(mysqlType)
+
+	//empty schema condition
+	if len(parts) == 0 {
+		return fivetransdk.DataType_UNSPECIFIED, nil
+	}
+
+	//get first entry from non zero length slice of column type definition
+	baseType := parts[0]
+
+	//modified conditional to include baseType to only accept tinyint(1)
 	if strings.HasPrefix(mysqlType, "tinyint") {
-		if treatTinyIntAsBoolean && mysqlType == "tinyint(1)" {
+		if treatTinyIntAsBoolean && baseType == "tinyint(1)" {
 			return fivetransdk.DataType_BOOLEAN, nil
 		}
 
