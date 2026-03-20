@@ -304,6 +304,12 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 
 		res, err := c.Recv()
 		if err != nil {
+			if errors.Is(err, io.EOF) {
+				// Natural end of stream: all rows up to tc have been delivered.
+				return tc, err
+			}
+			// Mid-stream error (e.g. context canceled): return the last cursor
+			// where rows were confirmed written, not the potentially advanced tc.
 			return lastSafeTC, err
 		}
 
