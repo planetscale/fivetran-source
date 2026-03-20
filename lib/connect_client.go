@@ -152,9 +152,12 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 		}
 		if err != nil {
 			if s, ok := status.FromError(err); ok {
-				// if the error is anything other than server timeout, keep going
-				if s.Code() != codes.DeadlineExceeded {
-					logger.Warning(fmt.Sprintf("%vGot error [%v] with message [%q], Returning with cursor :[%v] after non-timeout error", preamble, s.Code(), err, currentPosition))
+				// context.Canceled is treated the same as DeadlineExceeded: both are
+				// transient connectivity errors where retrying from the last safe cursor
+				// is correct. Returning immediately on Canceled would checkpoint an
+				// advanced cursor whose rows may not have been delivered yet.
+				if s.Code() != codes.DeadlineExceeded && s.Code() != codes.Canceled {
+					logger.Warning(fmt.Sprintf("%vGot error [%v] with message [%q], Returning with cursor :[%v] after non-retryable error", preamble, s.Code(), err, currentPosition))
 
 					// Check for binlog expiration error and reset cursor for historical sync
 					if IsBinlogsExpirationError(err) {
@@ -291,12 +294,24 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 
 	// stop when we've reached the well known stop position for this sync session.
 	watchForVgGtidChange := false
+	// lastSafeTC tracks the last cursor position where rows were confirmed written to
+	// the destination. VStream sends the VGTID event before the corresponding row events,
+	// so tc may advance to a new position before those rows are received. On a context
+	// cancellation, returning lastSafeTC ensures the next sync re-streams from a position
+	// where all rows are known to have been delivered, preventing silent data loss.
+	lastSafeTC := tc
 	for {
 
 		res, err := c.Recv()
 		if err != nil {
-			return tc, err
+			return lastSafeTC, err
 		}
+
+		// Determine whether this response carries any row data before processing.
+		// A cursor-only response (bare VGTID event) has no rows and should not
+		// advance lastSafeTC — if the stream is canceled after such a response,
+		// the rows for that VGTID haven't arrived yet and must be re-streamed.
+		rowsInResponse := len(res.Result) > 0 || len(res.Deletes) > 0 || len(res.Updates) > 0
 
 		if onResult != nil {
 			for _, insertedRow := range res.Result {
@@ -307,7 +322,7 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 					}
 					sqlResult.Rows = append(sqlResult.Rows, row)
 					if err := onResult(sqlResult, OpType_Insert); err != nil {
-						return tc, status.Error(codes.Internal, "unable to serialize row")
+						return lastSafeTC, status.Error(codes.Internal, "unable to serialize row")
 					}
 				}
 			}
@@ -320,7 +335,7 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 					}
 					sqlResult.Rows = append(sqlResult.Rows, row)
 					if err := onResult(sqlResult, OpType_Delete); err != nil {
-						return nil, status.Error(codes.Internal, "unable to serialize row")
+						return lastSafeTC, status.Error(codes.Internal, "unable to serialize row")
 					}
 				}
 			}
@@ -333,13 +348,19 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 					After:  serializeQueryResult(update.After),
 				}
 				if err := onUpdate(updatedRow); err != nil {
-					return nil, status.Error(codes.Internal, "unable to serialize update")
+					return lastSafeTC, status.Error(codes.Internal, "unable to serialize update")
 				}
 			}
 		}
 
 		if res.Cursor != nil {
 			tc = res.Cursor
+			// Only advance lastSafeTC when rows have been written at this cursor.
+			// A cursor-only VGTID event leaves lastSafeTC at its previous value so
+			// that a subsequent cancellation rolls back to a safe replay point.
+			if rowsInResponse {
+				lastSafeTC = tc
+			}
 		}
 
 		// Because of the ordering of events in a vstream
