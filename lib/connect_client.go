@@ -152,11 +152,12 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 		}
 		if err != nil {
 			if s, ok := status.FromError(err); ok {
-				// context.Canceled is treated the same as DeadlineExceeded: both are
-				// transient connectivity errors where retrying from the last safe cursor
-				// is correct. Returning immediately on Canceled would checkpoint an
-				// advanced cursor whose rows may not have been delivered yet.
-				if s.Code() != codes.DeadlineExceeded && s.Code() != codes.Canceled {
+				// codes.DeadlineExceeded is a server-side timeout and is safe to retry
+				// from the last checkpointed cursor. codes.Canceled means the client's
+				// own context was canceled (e.g., Fivetran requesting shutdown) — the
+				// parent context is already done, so retrying would just burn through
+				// backoff sleeps without making progress. Treat it as non-retryable.
+				if s.Code() != codes.DeadlineExceeded {
 					logger.Warning(fmt.Sprintf("%vGot error [%v] with message [%q], Returning with cursor :[%v] after non-retryable error", preamble, s.Code(), err, currentPosition))
 
 					// Check for binlog expiration error and reset cursor for historical sync
@@ -295,10 +296,12 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 	// stop when we've reached the well known stop position for this sync session.
 	watchForVgGtidChange := false
 	// lastSafeTC tracks the last cursor position where rows were confirmed written to
-	// the destination. VStream sends the VGTID event before the corresponding row events,
-	// so tc may advance to a new position before those rows are received. On a context
-	// cancellation, returning lastSafeTC ensures the next sync re-streams from a position
-	// where all rows are known to have been delivered, preventing silent data loss.
+	// the destination. VStream delivers rows and their VGTID in the same SyncResponse,
+	// so tc and lastSafeTC only diverge on cursor-only responses (heartbeats, DDL events,
+	// or transactions for unrelated tables that carry no rows for this table). On any
+	// mid-stream error, returning lastSafeTC avoids checkpointing a cursor that has no
+	// corresponding rows in the destination, forcing a safe re-stream from the last
+	// confirmed write position.
 	lastSafeTC := tc
 	for {
 
@@ -314,9 +317,10 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 		}
 
 		// Determine whether this response carries any row data before processing.
-		// A cursor-only response (bare VGTID event) has no rows and should not
-		// advance lastSafeTC — if the stream is canceled after such a response,
-		// the rows for that VGTID haven't arrived yet and must be re-streamed.
+		// Cursor-only responses (heartbeats, DDL events, unrelated-table transactions)
+		// carry no rows for this table. lastSafeTC is only advanced when rows have been
+		// delivered, so a mid-stream error after a cursor-only response re-streams from
+		// the last position where rows were confirmed written.
 		rowsInResponse := len(res.Result) > 0 || len(res.Deletes) > 0 || len(res.Updates) > 0
 
 		if onResult != nil {
@@ -362,8 +366,9 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 		if res.Cursor != nil {
 			tc = res.Cursor
 			// Only advance lastSafeTC when rows have been written at this cursor.
-			// A cursor-only VGTID event leaves lastSafeTC at its previous value so
-			// that a subsequent cancellation rolls back to a safe replay point.
+			// Cursor-only responses (heartbeats, DDL, unrelated-table events) leave
+			// lastSafeTC unchanged so a mid-stream error replays from the last
+			// confirmed write rather than an intermediate cursor with no row data.
 			if rowsInResponse {
 				lastSafeTC = tc
 			}
