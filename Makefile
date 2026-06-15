@@ -43,6 +43,10 @@ bootstrap:
 test-ci: proto
 	@go test -race -v ./...
 
+.PHONY: test-bugbash
+test-bugbash: proto
+	@go test -tags=integration -run TestBugbash -count=1 -v ./cmd/internal/server/handlers
+
 .PHONY: build
 build: proto/connector_sdk.proto
 	@CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" ./...
