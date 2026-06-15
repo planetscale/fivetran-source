@@ -241,3 +241,111 @@
     :why: 
     :versions: []
     :when: 2023-12-14 12:08:59.192694000 Z
+- - :approve
+  - github.com/DataDog/go-sqllexer
+  - :who:
+    :why: Transitive dependency of Vitess v0.24.1; MIT.
+    :versions: []
+    :when: 2026-06-15 18:00:00.000000000 Z
+- - :approve
+  - github.com/cenkalti/backoff/v5
+  - :who:
+    :why: Transitive dependency of Vitess v0.24.1; MIT.
+    :versions: []
+    :when: 2026-06-15 18:00:00.000000000 Z
+- - :approve
+  - github.com/cilium/ebpf
+  - :who:
+    :why: Transitive dependency of Vitess v0.24.1; MIT/BSD.
+    :versions: []
+    :when: 2026-06-15 18:00:00.000000000 Z
+- - :approve
+  - github.com/davecgh/go-spew
+  - :who:
+    :why: Transitive dependency of Vitess v0.24.1; ISC.
+    :versions: []
+    :when: 2026-06-15 18:00:00.000000000 Z
+- - :approve
+  - github.com/go-viper/mapstructure/v2
+  - :who:
+    :why: Transitive dependency of Vitess v0.24.1; MIT.
+    :versions: []
+    :when: 2026-06-15 18:00:00.000000000 Z
+- - :approve
+  - github.com/godbus/dbus/v5
+  - :who:
+    :why: Transitive dependency of Vitess v0.24.1; BSD.
+    :versions: []
+    :when: 2026-06-15 18:00:00.000000000 Z
+- - :approve
+  - github.com/hashicorp/go-version
+  - :who:
+    :why: Transitive dependency of Vitess v0.24.1; MPL-2.0.
+    :versions: []
+    :when: 2026-06-15 18:00:00.000000000 Z
+- - :approve
+  - github.com/json-iterator/go
+  - :who:
+    :why: Transitive dependency of Vitess v0.24.1; MIT.
+    :versions: []
+    :when: 2026-06-15 18:00:00.000000000 Z
+- - :approve
+  - github.com/klauspost/cpuid/v2
+  - :who:
+    :why: Transitive dependency of Vitess v0.24.1; MIT.
+    :versions: []
+    :when: 2026-06-15 18:00:00.000000000 Z
+- - :approve
+  - github.com/lmittmann/tint
+  - :who:
+    :why: Transitive dependency of Vitess v0.24.1; MIT.
+    :versions: []
+    :when: 2026-06-15 18:00:00.000000000 Z
+- - :approve
+  - github.com/mattn/go-isatty
+  - :who:
+    :why: Transitive dependency of Vitess v0.24.1; MIT.
+    :versions: []
+    :when: 2026-06-15 18:00:00.000000000 Z
+- - :approve
+  - github.com/sagikazarmark/locafero
+  - :who:
+    :why: Transitive dependency of Vitess v0.24.1; MIT.
+    :versions: []
+    :when: 2026-06-15 18:00:00.000000000 Z
+- - :approve
+  - github.com/sirupsen/logrus
+  - :who:
+    :why: Transitive dependency of Vitess v0.24.1; MIT.
+    :versions: []
+    :when: 2026-06-15 18:00:00.000000000 Z
+- - :approve
+  - github.com/stretchr/testify
+  - :who:
+    :why: Test dependency updated with Vitess v0.24.1; MIT.
+    :versions: []
+    :when: 2026-06-15 18:00:00.000000000 Z
+- - :approve
+  - github.com/trailofbits/go-mutexasserts
+  - :who:
+    :why: Transitive dependency of Vitess v0.24.1; MIT.
+    :versions: []
+    :when: 2026-06-15 18:00:00.000000000 Z
+- - :approve
+  - go.uber.org/multierr
+  - :who:
+    :why: Transitive dependency of Vitess v0.24.1; MIT.
+    :versions: []
+    :when: 2026-06-15 18:00:00.000000000 Z
+- - :approve
+  - go.uber.org/zap
+  - :who:
+    :why: Transitive dependency of Vitess v0.24.1; MIT.
+    :versions: []
+    :when: 2026-06-15 18:00:00.000000000 Z
+- - :approve
+  - go.yaml.in/yaml/v3
+  - :who:
+    :why: Transitive dependency of Vitess v0.24.1; MIT.
+    :versions: []
+    :when: 2026-06-15 18:00:00.000000000 Z
