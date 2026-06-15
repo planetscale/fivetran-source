@@ -18,6 +18,7 @@ import (
 	clientoptions "github.com/planetscale/psdb/core/pool/options"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 
 	"vitess.io/vitess/go/sqltypes"
 
@@ -271,6 +272,7 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 	if tc.LastKnownPk != nil {
 		tc.Position = ""
 	}
+	syncStartCursor := cloneTableCursor(tc)
 
 	logger.Info(fmt.Sprintf("%sSyncing with cursor position : [%v], using last known PK : %v, stop cursor is : [%v]", preamble, tc.Position, tc.LastKnownPk != nil, stopPosition))
 
@@ -308,7 +310,7 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 					}
 					sqlResult.Rows = append(sqlResult.Rows, row)
 					if err := onResult(sqlResult, OpType_Insert); err != nil {
-						return tc, status.Error(codes.Internal, "unable to serialize row")
+						return syncStartCursor, status.Error(codes.Internal, "unable to serialize row")
 					}
 				}
 			}
@@ -321,7 +323,7 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 					}
 					sqlResult.Rows = append(sqlResult.Rows, row)
 					if err := onResult(sqlResult, OpType_Delete); err != nil {
-						return tc, status.Error(codes.Internal, "unable to serialize row")
+						return syncStartCursor, status.Error(codes.Internal, "unable to serialize row")
 					}
 				}
 			}
@@ -334,7 +336,7 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 					After:  serializeQueryResult(update.After),
 				}
 				if err := onUpdate(updatedRow); err != nil {
-					return tc, status.Error(codes.Internal, "unable to serialize update")
+					return syncStartCursor, status.Error(codes.Internal, "unable to serialize update")
 				}
 			}
 		}
@@ -357,6 +359,13 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 			return tc, io.EOF
 		}
 	}
+}
+
+func cloneTableCursor(tc *psdbconnect.TableCursor) *psdbconnect.TableCursor {
+	if tc == nil {
+		return nil
+	}
+	return proto.Clone(tc).(*psdbconnect.TableCursor)
 }
 
 func (p connectClient) filterExistingColumns(ctx context.Context, ps PlanetScaleSource, tableName string, columns []string) ([]string, error) {

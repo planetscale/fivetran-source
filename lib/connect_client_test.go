@@ -279,8 +279,8 @@ func TestRead_DeleteCallbackErrorReturnsCursor(t *testing.T) {
 	}
 	syncClient := &connectSyncClientMock{
 		syncResponses: []*psdbconnect.SyncResponse{
+			{Cursor: newTC},
 			{
-				Cursor: newTC,
 				Deletes: []*psdbconnect.DeletedRow{
 					{
 						Result: sqltypes.ResultToProto3(sqltypes.MakeTestResult(testFields, "12|deleted_monitor")),
@@ -332,6 +332,77 @@ func TestRead_DeleteCallbackErrorReturnsCursor(t *testing.T) {
 	assert.Equal(t, esc, sc)
 }
 
+func TestRead_InsertCallbackErrorReturnsCursor(t *testing.T) {
+	dbl := &dbLogger{}
+	ped := connectClient{}
+	testFields := sqltypes.MakeTestFields("pid|description", "int64|varbinary")
+	tc := &psdbconnect.TableCursor{
+		Shard:    "-",
+		Position: "THIS_IS_A_SHARD_GTID",
+		Keyspace: "connect-test",
+	}
+	newTC := &psdbconnect.TableCursor{
+		Shard:    "-",
+		Position: "I_AM_FARTHER_IN_THE_BINLOG",
+		Keyspace: "connect-test",
+	}
+
+	getCurrentVGtidClient := &connectSyncClientMock{
+		syncResponses: []*psdbconnect.SyncResponse{{Cursor: newTC}},
+	}
+	syncClient := &connectSyncClientMock{
+		syncResponses: []*psdbconnect.SyncResponse{
+			{Cursor: newTC},
+			{
+				Result: []*query.QueryResult{
+					sqltypes.ResultToProto3(sqltypes.MakeTestResult(testFields, "12|new_monitor")),
+				},
+			},
+		},
+	}
+
+	cc := clientConnectionMock{
+		syncFn: func(ctx context.Context, in *psdbconnect.SyncRequest, opts ...grpc.CallOption) (psdbconnect.Connect_SyncClient, error) {
+			if in.Cursor.Position == "current" {
+				return getCurrentVGtidClient, nil
+			}
+			return syncClient, nil
+		},
+	}
+	ped.clientFn = func(ctx context.Context, ps PlanetScaleSource) (psdbconnect.ConnectClient, error) {
+		return &cc, nil
+	}
+	getKeyspaceTableColumnsFunc := func(ctx context.Context, keyspaceName string, tableName string) ([]MysqlColumn, error) {
+		return []MysqlColumn{{Name: "id", Type: "bigint", IsPrimaryKey: true}, {Name: "email", Type: "varchar(256)", IsPrimaryKey: false}}, nil
+	}
+	mysqlClient := NewTestMysqlClient(getKeyspaceTableColumnsFunc)
+	ped.Mysql = &mysqlClient
+	ps := PlanetScaleSource{
+		Database: "connect-test",
+	}
+	onRow := func(res *sqltypes.Result, op Operation) error {
+		if op == OpType_Insert {
+			return errors.New("serialize failed")
+		}
+		return nil
+	}
+	onCursor := func(*psdbconnect.TableCursor) error {
+		return nil
+	}
+
+	var (
+		sc  *SerializedCursor
+		err error
+	)
+	assert.NotPanics(t, func() {
+		sc, err = ped.Read(context.Background(), dbl, ps, "customers", nil, tc, onRow, onCursor, nil)
+	})
+	assert.NoError(t, err)
+	esc, err := TableCursorToSerializedCursor(tc)
+	assert.NoError(t, err)
+	assert.Equal(t, esc, sc)
+}
+
 func TestRead_UpdateCallbackErrorReturnsCursor(t *testing.T) {
 	dbl := &dbLogger{}
 	ped := connectClient{}
@@ -352,8 +423,8 @@ func TestRead_UpdateCallbackErrorReturnsCursor(t *testing.T) {
 	}
 	syncClient := &connectSyncClientMock{
 		syncResponses: []*psdbconnect.SyncResponse{
+			{Cursor: newTC},
 			{
-				Cursor: newTC,
 				Updates: []*psdbconnect.UpdatedRow{
 					{
 						Before: sqltypes.ResultToProto3(sqltypes.MakeTestResult(testFields, "12|old_monitor")),
