@@ -155,7 +155,7 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 			if s, ok := status.FromError(err); ok {
 				// if the error is anything other than server timeout, keep going
 				if s.Code() != codes.DeadlineExceeded {
-					logger.Warning(fmt.Sprintf("%vGot error [%v] with message [%q], Returning with cursor :[%v] after non-timeout error", preamble, s.Code(), err, currentPosition))
+					logger.Warning(fmt.Sprintf("%vGot error [%v] with message [%q], returning error with cursor :[%v] after non-timeout error", preamble, s.Code(), err, currentPosition))
 
 					// Check for binlog expiration error and reset cursor for historical sync
 					if IsBinlogsExpirationError(err) {
@@ -176,7 +176,7 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 						continue
 					}
 
-					return currentSerializedCursor, nil
+					return currentSerializedCursor, err
 				} else {
 					consecutiveTimeouts++
 					logger.Info(fmt.Sprintf("%sTimeout occurred (%d/%d consecutive timeouts)", preamble, consecutiveTimeouts, maxConsecutiveTimeouts))

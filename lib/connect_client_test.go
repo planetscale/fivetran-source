@@ -326,7 +326,8 @@ func TestRead_DeleteCallbackErrorReturnsCursor(t *testing.T) {
 	assert.NotPanics(t, func() {
 		sc, err = ped.Read(context.Background(), dbl, ps, "customers", nil, tc, onRow, onCursor, nil)
 	})
-	assert.NoError(t, err)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "unable to serialize row")
 	esc, err := TableCursorToSerializedCursor(tc)
 	assert.NoError(t, err)
 	assert.Equal(t, esc, sc)
@@ -397,7 +398,8 @@ func TestRead_InsertCallbackErrorReturnsCursor(t *testing.T) {
 	assert.NotPanics(t, func() {
 		sc, err = ped.Read(context.Background(), dbl, ps, "customers", nil, tc, onRow, onCursor, nil)
 	})
-	assert.NoError(t, err)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "unable to serialize row")
 	esc, err := TableCursorToSerializedCursor(tc)
 	assert.NoError(t, err)
 	assert.Equal(t, esc, sc)
@@ -468,7 +470,8 @@ func TestRead_UpdateCallbackErrorReturnsCursor(t *testing.T) {
 	assert.NotPanics(t, func() {
 		sc, err = ped.Read(context.Background(), dbl, ps, "customers", nil, tc, nil, onCursor, onUpdate)
 	})
-	assert.NoError(t, err)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "unable to serialize update")
 	esc, err := TableCursorToSerializedCursor(tc)
 	assert.NoError(t, err)
 	assert.Equal(t, esc, sc)
@@ -693,4 +696,70 @@ func TestRead_FiltersNonExistentColumns(t *testing.T) {
 			assert.Equal(t, 2, cc.syncFnInvokedCount)
 		})
 	}
+}
+
+func TestRead_ReturnsNonTimeoutCallbackErrors(t *testing.T) {
+	dbl := &dbLogger{}
+	ped := connectClient{}
+
+	tc := &psdbconnect.TableCursor{
+		Shard:    "-",
+		Position: "",
+		Keyspace: "connect-test",
+	}
+	stopCursor := &psdbconnect.TableCursor{
+		Shard:    "-",
+		Position: "I_AM_THE_CURRENT_BINLOG_POSITION",
+		Keyspace: "connect-test",
+	}
+	testFields := sqltypes.MakeTestFields(
+		"id|description",
+		"int64|varbinary",
+	)
+
+	getCurrentVGtidClient := &connectSyncClientMock{
+		syncResponses: []*psdbconnect.SyncResponse{
+			{Cursor: stopCursor},
+		},
+	}
+	syncClient := &connectSyncClientMock{
+		syncResponses: []*psdbconnect.SyncResponse{
+			{
+				Cursor: stopCursor,
+				Result: []*query.QueryResult{
+					sqltypes.ResultToProto3(sqltypes.MakeTestResult(testFields, "1|keyboard")),
+				},
+			},
+		},
+	}
+
+	cc := clientConnectionMock{
+		syncFn: func(ctx context.Context, in *psdbconnect.SyncRequest, opts ...grpc.CallOption) (psdbconnect.Connect_SyncClient, error) {
+			if in.Cursor.Position == "current" {
+				return getCurrentVGtidClient, nil
+			}
+			return syncClient, nil
+		},
+	}
+	ped.clientFn = func(ctx context.Context, ps PlanetScaleSource) (psdbconnect.ConnectClient, error) {
+		return &cc, nil
+	}
+	getKeyspaceTableColumnsFunc := func(ctx context.Context, keyspaceName string, tableName string) ([]MysqlColumn, error) {
+		return []MysqlColumn{{Name: "id", Type: "bigint", IsPrimaryKey: true}, {Name: "description", Type: "varchar(256)", IsPrimaryKey: false}}, nil
+	}
+	mysqlClient := NewTestMysqlClient(getKeyspaceTableColumnsFunc)
+	ped.Mysql = &mysqlClient
+
+	onRow := func(*sqltypes.Result, Operation) error {
+		return errors.New("serializer rejected row")
+	}
+	onCursor := func(*psdbconnect.TableCursor) error {
+		return nil
+	}
+
+	sc, err := ped.Read(context.Background(), dbl, PlanetScaleSource{Database: "connect-test"}, "customers", nil, tc, onRow, onCursor, nil)
+	assert.Error(t, err)
+	assert.Nil(t, sc)
+	assert.Contains(t, err.Error(), "unable to serialize row")
+	assert.Equal(t, 2, cc.syncFnInvokedCount)
 }
