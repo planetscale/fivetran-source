@@ -112,6 +112,69 @@ func TestRead_CanEarlyExitIfNoNewVGtidInPeek(t *testing.T) {
 	assert.Contains(t, dbl.messages[len(dbl.messages)-1].message, "no new rows found, exiting")
 }
 
+func TestRead_ReturnsLatestCursorSyncError(t *testing.T) {
+	dbl := &dbLogger{}
+	ped := connectClient{}
+	getKeyspaceTableColumnsFunc := func(ctx context.Context, keyspaceName string, tableName string) ([]MysqlColumn, error) {
+		return []MysqlColumn{{Name: "id", Type: "bigint", IsPrimaryKey: true}, {Name: "email", Type: "varchar(256)", IsPrimaryKey: false}}, nil
+	}
+	mysqlClient := NewTestMysqlClient(getKeyspaceTableColumnsFunc)
+	ped.Mysql = &mysqlClient
+	tc := &psdbconnect.TableCursor{
+		Shard:    "-",
+		Position: "THIS_IS_A_SHARD_GTID",
+		Keyspace: "connect-test",
+	}
+
+	cc := clientConnectionMock{
+		syncFn: func(ctx context.Context, in *psdbconnect.SyncRequest, opts ...grpc.CallOption) (psdbconnect.Connect_SyncClient, error) {
+			assert.Equal(t, "current", in.Cursor.Position)
+			return nil, errors.New("sync unavailable")
+		},
+	}
+	ped.clientFn = func(ctx context.Context, ps PlanetScaleSource) (psdbconnect.ConnectClient, error) {
+		return &cc, nil
+	}
+
+	sc, err := ped.Read(context.Background(), dbl, PlanetScaleSource{}, "customers", nil, tc, nil, nil, nil)
+	assert.Nil(t, sc)
+	assert.ErrorContains(t, err, "Unable to get latest cursor position")
+	assert.ErrorContains(t, err, "sync unavailable")
+	assert.Equal(t, 1, cc.syncFnInvokedCount)
+}
+
+func TestRead_ReturnsLatestCursorRecvError(t *testing.T) {
+	dbl := &dbLogger{}
+	ped := connectClient{}
+	getKeyspaceTableColumnsFunc := func(ctx context.Context, keyspaceName string, tableName string) ([]MysqlColumn, error) {
+		return []MysqlColumn{{Name: "id", Type: "bigint", IsPrimaryKey: true}, {Name: "email", Type: "varchar(256)", IsPrimaryKey: false}}, nil
+	}
+	mysqlClient := NewTestMysqlClient(getKeyspaceTableColumnsFunc)
+	ped.Mysql = &mysqlClient
+	tc := &psdbconnect.TableCursor{
+		Shard:    "-",
+		Position: "THIS_IS_A_SHARD_GTID",
+		Keyspace: "connect-test",
+	}
+
+	getCurrentVGtidClient := &connectSyncClientMock{}
+	cc := clientConnectionMock{
+		syncFn: func(ctx context.Context, in *psdbconnect.SyncRequest, opts ...grpc.CallOption) (psdbconnect.Connect_SyncClient, error) {
+			assert.Equal(t, "current", in.Cursor.Position)
+			return getCurrentVGtidClient, nil
+		},
+	}
+	ped.clientFn = func(ctx context.Context, ps PlanetScaleSource) (psdbconnect.ConnectClient, error) {
+		return &cc, nil
+	}
+
+	sc, err := ped.Read(context.Background(), dbl, PlanetScaleSource{}, "customers", nil, tc, nil, nil, nil)
+	assert.Nil(t, sc)
+	assert.ErrorContains(t, err, "Unable to get latest cursor position")
+	assert.ErrorContains(t, err, "EOF")
+	assert.Equal(t, 1, cc.syncFnInvokedCount)
+}
+
 func TestRead_CanPickPrimaryForShardedKeyspaces(t *testing.T) {
 	dbl := &dbLogger{}
 	ped := connectClient{}
