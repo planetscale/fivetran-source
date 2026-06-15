@@ -247,7 +247,8 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 	preamble := fmt.Sprintf("[%v:%v shard:%v tabletType:%s] ", ps.Database, tableName, tc.Shard, tabletType)
 
 	if p.clientFn == nil {
-		conn, err := grpcclient.Dial(ctx, ps.Host,
+		conn, err := grpcclient.Dial(
+			ctx, ps.Host,
 			clientoptions.WithDefaultTLSConfig(),
 			clientoptions.WithCompression(true),
 			clientoptions.WithConnectionPool(1),
@@ -401,7 +402,8 @@ func (p connectClient) getLatestCursorPosition(ctx context.Context, shard, keysp
 	)
 
 	if p.clientFn == nil {
-		conn, err := grpcclient.Dial(ctx, ps.Host,
+		conn, err := grpcclient.Dial(
+			ctx, ps.Host,
 			clientoptions.WithDefaultTLSConfig(),
 			clientoptions.WithCompression(true),
 			clientoptions.WithConnectionPool(1),

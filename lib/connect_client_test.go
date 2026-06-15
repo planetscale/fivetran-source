@@ -265,7 +265,8 @@ func TestRead_CanStopAtWellKnownCursor(t *testing.T) {
 
 	testFields := sqltypes.MakeTestFields(
 		"pid|description",
-		"int64|varbinary")
+		"int64|varbinary",
+	)
 	numResponses := 10
 	// when the client tries to get the "current" vgtid,
 	// we return the ante-penultimate element of the array.
@@ -282,19 +283,22 @@ func TestRead_CanStopAtWellKnownCursor(t *testing.T) {
 			)
 			if x == 2 {
 				inserts = []*query.QueryResult{
-					sqltypes.ResultToProto3(sqltypes.MakeTestResult(testFields,
+					sqltypes.ResultToProto3(sqltypes.MakeTestResult(
+						testFields,
 						fmt.Sprintf("%v|keyboard", i+1),
 						fmt.Sprintf("%v|monitor", i+2),
 					)),
 				}
 				deletes = []*psdbconnect.DeletedRow{
 					{
-						Result: sqltypes.ResultToProto3(sqltypes.MakeTestResult(testFields,
+						Result: sqltypes.ResultToProto3(sqltypes.MakeTestResult(
+							testFields,
 							fmt.Sprintf("%v|deleted_monitor", i+12),
 						)),
 					},
 					{
-						Result: sqltypes.ResultToProto3(sqltypes.MakeTestResult(testFields,
+						Result: sqltypes.ResultToProto3(sqltypes.MakeTestResult(
+							testFields,
 							fmt.Sprintf("%v|deleted_monitor", i+12),
 						)),
 					},
