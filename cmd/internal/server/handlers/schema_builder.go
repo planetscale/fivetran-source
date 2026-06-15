@@ -9,6 +9,8 @@ import (
 	"github.com/planetscale/fivetran-source/lib"
 
 	fivetransdk "github.com/planetscale/fivetran-source/fivetran_sdk.v2"
+	vtschema "vitess.io/vitess/go/vt/schema"
+	"vitess.io/vitess/go/vt/vtenv"
 )
 
 const (
@@ -32,7 +34,16 @@ type SchemaWithMetadata struct {
 var (
 	gcTableNameRegexp = regexp.MustCompile(gCTableNameExpression)
 	vreplRegex        = regexp.MustCompile(vreplTableNameExpression)
+	enumSetParserEnv  = newEnumSetParserEnv()
 )
+
+func newEnumSetParserEnv() *vtenv.Environment {
+	env, err := vtenv.New(vtenv.Options{})
+	if err != nil {
+		return vtenv.NewTestEnv()
+	}
+	return env
+}
 
 type FiveTranSchemaBuilder struct {
 	schemas               map[string]*fivetransdk.Schema
@@ -205,14 +216,17 @@ func isEnumOrSet(mType string) bool {
 // Takes enum or set column type like ENUM('a','b','c') or SET('a','b','c')
 // and returns a slice of values []string{'a', 'b', 'c'}
 func parseEnumOrSetValues(mType string) ValueMap {
-	values := []string{}
-	var columnType string
-	if strings.HasPrefix(mType, "enum") {
-		columnType = "enum"
-	} else if strings.HasPrefix(mType, "set") {
-		columnType = "set"
+	columnType, rawValues, ok := enumOrSetTypeAndRawValues(mType)
+	if ok {
+		if values, err := parseEnumOrSetTokens(rawValues); err == nil {
+			return ValueMap{
+				columnType: columnType,
+				values:     values,
+			}
+		}
 	}
 
+	values := []string{}
 	re := regexp.MustCompile(`\((.+)\)`)
 	res := re.FindString(mType)
 	res = strings.Trim(res, "(")
@@ -225,6 +239,39 @@ func parseEnumOrSetValues(mType string) ValueMap {
 		columnType: columnType,
 		values:     values,
 	}
+}
+
+func enumOrSetTypeAndRawValues(mType string) (string, string, bool) {
+	mysqlType := strings.ToLower(strings.TrimSpace(mType))
+	var columnType string
+	if strings.HasPrefix(mysqlType, "enum") {
+		columnType = "enum"
+	} else if strings.HasPrefix(mysqlType, "set") {
+		columnType = "set"
+	} else {
+		return "", "", false
+	}
+
+	begin := strings.Index(mType, "(")
+	end := strings.LastIndex(mType, ")")
+	if begin == -1 || end <= begin {
+		return columnType, "", false
+	}
+
+	return columnType, mType[begin+1 : end], true
+}
+
+func parseEnumOrSetTokens(rawValues string) ([]string, error) {
+	tokensMap, err := vtschema.ParseEnumOrSetTokensMap(enumSetParserEnv, rawValues)
+	if err != nil {
+		return nil, err
+	}
+
+	values := make([]string, 0, len(tokensMap))
+	for i := 1; i <= len(tokensMap); i++ {
+		values = append(values, tokensMap[i])
+	}
+	return values, nil
 }
 
 // Convert columnType to fivetran type
