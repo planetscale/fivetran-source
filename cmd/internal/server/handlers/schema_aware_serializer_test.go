@@ -76,6 +76,36 @@ func TestCanSerializeInsert(t *testing.T) {
 	assert.Equal(t, "string:\"enum_value\"", data["enum_value"].String())
 }
 
+func TestConvertRowToMapRequiresMatchingColumnCount(t *testing.T) {
+	tests := []struct {
+		name    string
+		row     sqltypes.Row
+		columns []string
+		wantErr string
+	}{
+		{
+			name:    "extra value",
+			row:     sqltypes.Row{sqltypes.NewInt32(1), sqltypes.NewVarChar("extra")},
+			columns: []string{"id"},
+			wantErr: "row value count 2 does not match column count 1",
+		},
+		{
+			name:    "missing value",
+			row:     sqltypes.Row{sqltypes.NewInt32(1)},
+			columns: []string{"id", "name"},
+			wantErr: "row value count 1 does not match column count 2",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := convertRowToMap(&tt.row, tt.columns)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
 func TestCanSerializeMappedEnumsAndSets(t *testing.T) {
 	fivetranSchema := fivetransdk.Schema{
 		Name: "Customers",
