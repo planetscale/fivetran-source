@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"bytes"
-	"encoding/binary"
 	"fmt"
 	"math"
 	"strconv"
@@ -75,16 +74,9 @@ var converters = map[fivetransdk.DataType]ConverterFunc{
 			return nil, errors.Wrap(err, "failed to serialize Type_BIT")
 		}
 
-		// Varint decodes an int64 from buf and returns that value and the
-		// number of bytes read (> 0). If an error occurred, the value is 0
-		// and the number of bytes n is <= 0 with the following meaning:
-		//
-		//	n == 0: buf too small
-		//	n  < 0: value larger than 64 bits (overflow)
-		//	        and -n is the number of bytes read
-		i, n := binary.Varint(b)
-		if n <= 0 {
-			return nil, fmt.Errorf("failed to serialize DataType_LONG, read %v bytes", n)
+		i, err := bitBytesToInt64(b)
+		if err != nil {
+			return nil, err
 		}
 
 		return &fivetransdk.ValueType{
@@ -228,6 +220,22 @@ var converters = map[fivetransdk.DataType]ConverterFunc{
 			Inner: &fivetransdk.ValueType_Json{Json: jsonString},
 		}, nil
 	},
+}
+
+func bitBytesToInt64(b []byte) (int64, error) {
+	if len(b) > 8 {
+		return 0, fmt.Errorf("failed to serialize Type_BIT: value uses %d bytes", len(b))
+	}
+
+	var u uint64
+	for _, by := range b {
+		u = (u << 8) | uint64(by)
+	}
+	if u > math.MaxInt64 {
+		return 0, fmt.Errorf("failed to serialize Type_BIT: value %d overflows int64", u)
+	}
+
+	return int64(u), nil
 }
 
 func GetConverter(dataType fivetransdk.DataType) (ConverterFunc, error) {
