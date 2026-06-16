@@ -43,6 +43,14 @@ bootstrap:
 test-ci: proto
 	@go test -race -v ./...
 
+.PHONY: test-integration
+test-integration: proto
+	@go test -tags=integration -run TestIntegration -count=1 -v ./cmd/internal/server/handlers
+
+.PHONY: test-integration-stress
+test-integration-stress: proto
+	@INTEGRATION_STRESS=1 go test -tags=integration -run TestIntegration -count=1 -v ./cmd/internal/server/handlers
+
 .PHONY: build
 build: proto/connector_sdk.proto
 	@CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" ./...
