@@ -76,12 +76,20 @@ func (s *schemaAwareRecordSerializer) Serialize(before *sqltypes.Result, after *
 	)
 
 	if opType == lib.OpType_Update {
-		beforeMap = convertRowToMap(&before.Rows[0], columns)
+		var err error
+		beforeMap, err = convertRowToMap(&before.Rows[0], columns)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	for _, row := range after.Rows {
 		record := make(map[string]*fivetransdk.ValueType)
-		afterMap = convertRowToMap(&row, columns)
+		var err error
+		afterMap, err = convertRowToMap(&row, columns)
+		if err != nil {
+			return nil, err
+		}
 		for colName, val := range afterMap {
 			if selected := s.columnSelection[colName]; !selected {
 				continue
@@ -130,18 +138,18 @@ func (s *schemaAwareRecordSerializer) Serialize(before *sqltypes.Result, after *
 	return data, nil
 }
 
-func convertRowToMap(row *sqltypes.Row, columns []string) map[string]sqltypes.Value {
+func convertRowToMap(row *sqltypes.Row, columns []string) (map[string]sqltypes.Value, error) {
+	if len(*row) != len(columns) {
+		return nil, fmt.Errorf("row value count %d does not match column count %d", len(*row), len(columns))
+	}
+
 	record := map[string]sqltypes.Value{}
 	for idx, val := range *row {
-		if idx > len(columns) {
-			// if there's more values than columns, exit this loop
-			break
-		}
 		colName := columns[idx]
 		record[colName] = val
 	}
 
-	return record
+	return record, nil
 }
 
 func NewSchemaAwareSerializer(sender LogSender, prefix string, serializeTinyIntAsBool bool, schemaList *fivetransdk.SchemaList, enumsAndSets SchemaEnumsAndSets) Serializer {
