@@ -832,6 +832,122 @@ func TestRead_ReturnsLastKnownPKCursorAfterMaxTimeout(t *testing.T) {
 	assert.Equal(t, 2, cc.syncFnInvokedCount)
 }
 
+func TestRead_CancelDuringTimeoutBackoffReturnsImmediately(t *testing.T) {
+	originalMaxTimeouts := maxConsecutiveSyncTimeouts
+	maxConsecutiveSyncTimeouts = 2
+	t.Cleanup(func() {
+		maxConsecutiveSyncTimeouts = originalMaxTimeouts
+	})
+
+	dbl := &dbLogger{}
+	ped := connectClient{}
+	getKeyspaceTableColumnsFunc := func(ctx context.Context, keyspaceName string, tableName string) ([]MysqlColumn, error) {
+		return []MysqlColumn{{Name: "id", Type: "bigint", IsPrimaryKey: true}}, nil
+	}
+	mysqlClient := NewTestMysqlClient(getKeyspaceTableColumnsFunc)
+	ped.Mysql = &mysqlClient
+
+	startCursor := &psdbconnect.TableCursor{
+		Shard:    "-",
+		Keyspace: "connect-test",
+		Position: "START_GTID",
+	}
+	stopCursor := &psdbconnect.TableCursor{
+		Shard:    "-",
+		Keyspace: "connect-test",
+		Position: "STOP_GTID",
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	getCurrentVGtidClient := &connectSyncClientMock{
+		syncResponses: []*psdbconnect.SyncResponse{{Cursor: stopCursor}},
+	}
+	syncClient := &connectSyncClientMock{
+		recvFn: func() (*psdbconnect.SyncResponse, error) {
+			cancel()
+			return nil, status.Error(codes.DeadlineExceeded, "server deadline")
+		},
+	}
+
+	cc := clientConnectionMock{
+		syncFn: func(ctx context.Context, in *psdbconnect.SyncRequest, opts ...grpc.CallOption) (psdbconnect.Connect_SyncClient, error) {
+			if in.Cursor.Position == "current" {
+				return getCurrentVGtidClient, nil
+			}
+			return syncClient, nil
+		},
+	}
+	ped.clientFn = func(ctx context.Context, ps PlanetScaleSource) (psdbconnect.ConnectClient, error) {
+		return &cc, nil
+	}
+
+	start := time.Now()
+	_, err := ped.Read(ctx, dbl, PlanetScaleSource{Database: "connect-test"}, "customers", []string{"id"}, startCursor, nil, nil, nil)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Less(t, time.Since(start), time.Second)
+}
+
+func TestRead_ResumesHistoricalCopyEvenWhenPeekMatchesCopyCursorPosition(t *testing.T) {
+	dbl := &dbLogger{}
+	ped := connectClient{}
+	getKeyspaceTableColumnsFunc := func(ctx context.Context, keyspaceName string, tableName string) ([]MysqlColumn, error) {
+		return []MysqlColumn{{Name: "id", Type: "bigint", IsPrimaryKey: true}}, nil
+	}
+	mysqlClient := NewTestMysqlClient(getKeyspaceTableColumnsFunc)
+	ped.Mysql = &mysqlClient
+
+	copyCursor := &psdbconnect.TableCursor{
+		Shard:       "-",
+		Keyspace:    "connect-test",
+		Position:    "COPY_SNAPSHOT_GTID",
+		LastKnownPk: testLastKnownPK("42"),
+	}
+	stopCursor := &psdbconnect.TableCursor{
+		Shard:    "-",
+		Keyspace: "connect-test",
+		Position: "COPY_SNAPSHOT_GTID",
+	}
+	doneCursor := &psdbconnect.TableCursor{
+		Shard:    "-",
+		Keyspace: "connect-test",
+		Position: "AFTER_COPY_GTID",
+	}
+
+	getCurrentVGtidClient := &connectSyncClientMock{
+		syncResponses: []*psdbconnect.SyncResponse{{Cursor: stopCursor}},
+	}
+	syncClient := &connectSyncClientMock{
+		syncResponses: []*psdbconnect.SyncResponse{
+			{Cursor: stopCursor},
+			{Cursor: doneCursor},
+		},
+	}
+
+	cc := clientConnectionMock{
+		syncFn: func(ctx context.Context, in *psdbconnect.SyncRequest, opts ...grpc.CallOption) (psdbconnect.Connect_SyncClient, error) {
+			if in.Cursor.Position == "current" {
+				return getCurrentVGtidClient, nil
+			}
+			assert.Equal(t, "COPY_SNAPSHOT_GTID", in.Cursor.Position)
+			assert.NotNil(t, in.Cursor.LastKnownPk)
+			return syncClient, nil
+		},
+	}
+	ped.clientFn = func(ctx context.Context, ps PlanetScaleSource) (psdbconnect.ConnectClient, error) {
+		return &cc, nil
+	}
+
+	sc, err := ped.Read(context.Background(), dbl, PlanetScaleSource{Database: "connect-test"}, "customers", []string{"id"}, copyCursor, nil, nil, nil)
+	assert.NoError(t, err)
+	if assert.NotNil(t, sc) {
+		cursor, err := sc.SerializedCursorToTableCursor()
+		assert.NoError(t, err)
+		assert.Equal(t, "AFTER_COPY_GTID", cursor.Position)
+		assert.Nil(t, cursor.LastKnownPk)
+	}
+	assert.Equal(t, 2, cc.syncFnInvokedCount)
+}
+
 func TestRead_BinlogExpirationReturnsResetCursor(t *testing.T) {
 	dbl := &dbLogger{}
 	ped := connectClient{}
@@ -1051,13 +1167,12 @@ func TestSync_DoesNotPeriodicallyCheckpointVGTIDProgress(t *testing.T) {
 	}
 }
 
-func TestSync_ResumesHistoricalCopyWithLastKnownPK(t *testing.T) {
+func TestSync_ResumesHistoricalCopyWithLastKnownPKOnly(t *testing.T) {
 	dbl := &dbLogger{}
 	ped := connectClient{}
 	resumeCursor := &psdbconnect.TableCursor{
 		Shard:       "-",
 		Keyspace:    "connect-test",
-		Position:    "SHOULD_BE_CLEARED",
 		LastKnownPk: testLastKnownPK("42"),
 	}
 
@@ -1066,6 +1181,34 @@ func TestSync_ResumesHistoricalCopyWithLastKnownPK(t *testing.T) {
 		syncFn: func(ctx context.Context, in *psdbconnect.SyncRequest, opts ...grpc.CallOption) (psdbconnect.Connect_SyncClient, error) {
 			requestChecked = true
 			assert.Empty(t, in.Cursor.Position)
+			assert.NotNil(t, in.Cursor.LastKnownPk)
+			return &connectSyncClientMock{}, nil
+		},
+	}
+	ped.clientFn = func(ctx context.Context, ps PlanetScaleSource) (psdbconnect.ConnectClient, error) {
+		return &cc, nil
+	}
+
+	_, err := ped.sync(context.Background(), dbl, "customers", []string{"id"}, resumeCursor, "STOP_GTID", PlanetScaleSource{Database: "connect-test"}, psdbconnect.TabletType_primary, time.Second, nil, nil, nil)
+	assert.True(t, errors.Is(err, io.EOF))
+	assert.True(t, requestChecked)
+}
+
+func TestSync_ResumesHistoricalCopyWithPositionAndLastKnownPK(t *testing.T) {
+	dbl := &dbLogger{}
+	ped := connectClient{}
+	resumeCursor := &psdbconnect.TableCursor{
+		Shard:       "-",
+		Keyspace:    "connect-test",
+		Position:    "COPY_SNAPSHOT_GTID",
+		LastKnownPk: testLastKnownPK("42"),
+	}
+
+	requestChecked := false
+	cc := clientConnectionMock{
+		syncFn: func(ctx context.Context, in *psdbconnect.SyncRequest, opts ...grpc.CallOption) (psdbconnect.Connect_SyncClient, error) {
+			requestChecked = true
+			assert.Equal(t, "COPY_SNAPSHOT_GTID", in.Cursor.Position)
 			assert.NotNil(t, in.Cursor.LastKnownPk)
 			return &connectSyncClientMock{}, nil
 		},

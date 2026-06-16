@@ -112,6 +112,55 @@ func TestCallsTruncateOnInitialSync(t *testing.T) {
 	assert.True(t, tl.truncateCalled)
 }
 
+func TestInitialSyncReturnsErrorWhenTruncateFails(t *testing.T) {
+	psc := &lib.PlanetScaleSource{}
+	tl := &testLogger{truncateErr: assert.AnError}
+	schema := fivetransdk.SchemaSelection{
+		SchemaName: "SalesDB",
+		Included:   true,
+		Tables: []*fivetransdk.TableSelection{
+			{
+				Included:  true,
+				TableName: "customers",
+			},
+		},
+	}
+	schemaSelection := &fivetransdk.Selection_WithSchema{
+		WithSchema: &fivetransdk.TablesWithSchema{
+			Schemas: []*fivetransdk.SchemaSelection{
+				&schema,
+			},
+		},
+	}
+
+	readCalled := false
+	readFn := func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string,
+		tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
+	) (*lib.SerializedCursor, error) {
+		readCalled = true
+		return nil, nil
+	}
+
+	state, err := psc.GetInitialState("SalesDB", []string{"-"})
+	assert.NoError(t, err)
+
+	db := lib.NewTestConnectClient(readFn)
+	err = (&Sync{}).Handle(context.Background(), psc, &db, tl, &lib.SyncState{
+		Keyspaces: map[string]lib.KeyspaceState{
+			"SalesDB": {
+				Streams: map[string]lib.ShardStates{
+					"SalesDB:customers": state,
+				},
+			},
+		},
+	}, schemaSelection)
+	assert.Error(t, err)
+	assert.Equal(t, codes.Internal, status.Code(err))
+	assert.Contains(t, err.Error(), "failed to truncate table customers")
+	assert.True(t, tl.truncateCalled)
+	assert.False(t, readCalled)
+}
+
 func TestCallsReadWithStartingGtids(t *testing.T) {
 	psc := &lib.PlanetScaleSource{
 		StartingGtids: "{\"SalesDB\":{\"-80\":\"MySQL56/MYGTID:1-3\",\"80-\":\"MySQL56/MYOTHERGTID:1-3\"}}",

@@ -166,8 +166,7 @@ func (c *connectorServer) Update(request *fivetran_sdk_v2.UpdateRequest, server 
 
 	schemaBuilder := handlers.NewSchemaBuilder(psc.TreatTinyIntAsBoolean)
 	if err := mysqlClient.BuildSchema(ctx, *psc, schemaBuilder); err != nil {
-		status.Error(codes.InvalidArgument, "unable to build schema from PlanetScale database")
-		return nil
+		return status.Error(codes.InvalidArgument, "unable to build schema from PlanetScale database")
 	}
 
 	sourceSchema, err := schemaBuilder.(*handlers.FiveTranSchemaBuilder).BuildUpdateResponse()

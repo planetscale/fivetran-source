@@ -140,8 +140,10 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 			return currentSerializedCursor, errors.Wrap(lcErr, "Unable to get latest cursor position")
 		}
 
-		// the current vgtid is the same as the last synced vgtid, no new rows.
-		if latestCursorPosition == currentPosition.Position {
+		// The current vgtid is the same as the last synced vgtid, no new rows.
+		// A LastKnownPk cursor is still in the historical copy phase and must
+		// resume even when the binlog position has not advanced.
+		if currentPosition.LastKnownPk == nil && latestCursorPosition == currentPosition.Position {
 			logger.Info(preamble + "no new rows found, exiting")
 			return TableCursorToSerializedCursor(currentPosition)
 		}
@@ -209,7 +211,15 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 
 					// Apply exponential backoff
 					logger.Info(fmt.Sprintf("%sApplying backoff delay: %v", preamble, backoffDuration))
-					time.Sleep(backoffDuration)
+					backoffTimer := time.NewTimer(backoffDuration)
+					select {
+					case <-ctx.Done():
+						if !backoffTimer.Stop() {
+							<-backoffTimer.C
+						}
+						return currentSerializedCursor, ctx.Err()
+					case <-backoffTimer.C:
+					}
 					backoffDuration = time.Duration(math.Min(float64(backoffDuration)*2, float64(5*time.Minute))) // Cap at 5 minutes
 
 					newReadDuration := time.Duration(float64(readDuration) * timeoutMultiplier)
@@ -276,9 +286,6 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 		}
 	}
 
-	if tc.LastKnownPk != nil {
-		tc.Position = ""
-	}
 	syncStartCursor := cloneTableCursor(tc)
 
 	logger.Info(fmt.Sprintf("%sSyncing with cursor position : [%v], using last known PK : %v, stop cursor is : [%v]", preamble, tc.Position, tc.LastKnownPk != nil, stopPosition))

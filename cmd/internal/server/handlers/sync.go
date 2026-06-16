@@ -58,7 +58,9 @@ func (s *Sync) Handle(ctx context.Context, psc *lib.PlanetScaleSource, db *lib.C
 
 			// Call truncate before any Read operations only when no shard has durable progress.
 			if hasShards && allShardsHaveNoProgress {
-				logger.Truncate(ks, table)
+				if err := logger.Truncate(ks, table); err != nil {
+					return status.Error(codes.Internal, fmt.Sprintf("failed to truncate table %s, error: %s", table.TableName, err.Error()))
+				}
 			}
 
 			// Second pass: perform the actual sync for each shard
