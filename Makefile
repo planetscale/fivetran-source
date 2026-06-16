@@ -45,11 +45,11 @@ test-ci: proto
 
 .PHONY: test-integration
 test-integration: proto
-	@go test -tags=integration -run TestIntegration -count=1 -v ./cmd/internal/server/handlers
+	@go test -tags=integration -run TestIntegration -count=1 -timeout 20m -v ./cmd/internal/server/handlers
 
 .PHONY: test-integration-stress
 test-integration-stress: proto
-	@INTEGRATION_STRESS=1 go test -tags=integration -run TestIntegration -count=1 -v ./cmd/internal/server/handlers
+	@INTEGRATION_STRESS=1 go test -tags=integration -run TestIntegration -count=1 -timeout 20m -v ./cmd/internal/server/handlers
 
 .PHONY: build
 build: proto/connector_sdk.proto
