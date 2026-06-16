@@ -18,6 +18,8 @@ import (
 	psdbconnect "github.com/planetscale/airbyte-source/proto/psdbconnect/v1alpha1"
 	fivetransdk "github.com/planetscale/fivetran-source/fivetran_sdk.v2"
 	"github.com/planetscale/fivetran-source/lib"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -299,6 +301,63 @@ func TestIntegrationRepeatedSyncBursts(t *testing.T) {
 	}
 }
 
+func TestIntegrationMidTableDDLRequiresHistoricalResync(t *testing.T) {
+	psc := loadIntegrationSource(t)
+	ctx := context.Background()
+	tableName := integrationTableName(t)
+
+	db := openIntegrationSQL(t, psc)
+	t.Cleanup(func() {
+		if _, err := db.ExecContext(context.Background(), "drop table if exists "+quoteIdent(tableName)); err != nil {
+			t.Logf("drop integration table %s: %v", tableName, err)
+		}
+		_ = db.Close()
+	})
+
+	mustExec(t, ctx, db, fmt.Sprintf(`
+		create table %s (
+			id bigint primary key,
+			before_col varchar(64) not null,
+			after_col varchar(64) not null
+		)`, quoteIdent(tableName)))
+
+	columns := []string{"id", "before_col", "after_col"}
+	_, state := runIntegrationSync(t, psc, tableName, columns, nil)
+
+	mustExec(t, ctx, db, fmt.Sprintf(
+		"insert into %s (id, before_col, after_col) values (1, 'before-old', 'after-old')",
+		quoteIdent(tableName),
+	))
+	mustExec(t, ctx, db, fmt.Sprintf(
+		"alter table %s add column middle_col varchar(64) null after before_col",
+		quoteIdent(tableName),
+	))
+	mustExec(t, ctx, db, fmt.Sprintf(
+		"insert into %s (id, before_col, middle_col, after_col) values (2, 'before-new', 'middle-new', 'after-new')",
+		quoteIdent(tableName),
+	))
+
+	sender, failedState, err := runIntegrationSyncWithError(t, psc, tableName, columns, state)
+	if err == nil {
+		t.Fatalf("expected mid-table DDL to require a historical re-sync")
+	}
+	if got := status.Code(err); got != codes.FailedPrecondition {
+		t.Fatalf("expected FailedPrecondition, got %s: %v", got, err)
+	}
+	for _, want := range []string{"historical re-sync", "failed to build table replication plan"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("expected error to contain %q, got %v", want, err)
+		}
+	}
+	assertIntegrationRecordCount(t, sender.recordsForTable(tableName), 0)
+	if _, ok := sender.latestState(t); ok {
+		t.Fatalf("failed sync should not checkpoint state")
+	}
+	if !reflect.DeepEqual(state, failedState) {
+		t.Fatalf("failed sync changed state")
+	}
+}
+
 func TestIntegrationStressBurstLoad(t *testing.T) {
 	if !integrationStressEnabled() {
 		t.Skip("set INTEGRATION_STRESS=1 to run stress integration tests")
@@ -463,6 +522,16 @@ func openIntegrationSQL(t *testing.T, psc lib.PlanetScaleSource) *sql.DB {
 func runIntegrationSync(t *testing.T, psc lib.PlanetScaleSource, tableName string, columns []string, state *lib.SyncState) (*integrationSender, *lib.SyncState) {
 	t.Helper()
 
+	sender, state, err := runIntegrationSyncWithError(t, psc, tableName, columns, state)
+	if err != nil {
+		t.Fatalf("run sync: %v", err)
+	}
+	return sender, state
+}
+
+func runIntegrationSyncWithError(t *testing.T, psc lib.PlanetScaleSource, tableName string, columns []string, state *lib.SyncState) (*integrationSender, *lib.SyncState, error) {
+	t.Helper()
+
 	mysqlClient, err := lib.NewMySQL(&psc)
 	if err != nil {
 		t.Fatalf("create mysql client: %v", err)
@@ -504,12 +573,12 @@ func runIntegrationSync(t *testing.T, psc lib.PlanetScaleSource, tableName strin
 	logger := NewSchemaAwareSerializer(sender, "integration", psc.TreatTinyIntAsBoolean, sourceSchema.SchemaList, sourceSchema.EnumsAndSets)
 	syncer := &Sync{}
 	if err := syncer.Handle(&psc, &connectClient, logger, state, selection); err != nil {
-		t.Fatalf("run sync: %v", err)
+		return sender, state, err
 	}
 	if checkpoint, ok := sender.latestState(t); ok {
 		state = checkpoint
 	}
-	return sender, state
+	return sender, state, nil
 }
 
 func integrationSelection(schemaName, tableName string, columns []string) *fivetransdk.Selection_WithSchema {

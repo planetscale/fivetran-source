@@ -18,6 +18,7 @@ import (
 	clientoptions "github.com/planetscale/psdb/core/pool/options"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 
 	"vitess.io/vitess/go/sqltypes"
 
@@ -154,7 +155,7 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 			if s, ok := status.FromError(err); ok {
 				// if the error is anything other than server timeout, keep going
 				if s.Code() != codes.DeadlineExceeded {
-					logger.Warning(fmt.Sprintf("%vGot error [%v] with message [%q], Returning with cursor :[%v] after non-timeout error", preamble, s.Code(), err, currentPosition))
+					logger.Warning(fmt.Sprintf("%vGot error [%v] with message [%q], returning error with cursor :[%v] after non-timeout error", preamble, s.Code(), err, currentPosition))
 
 					// Check for binlog expiration error and reset cursor for historical sync
 					if IsBinlogsExpirationError(err) {
@@ -175,7 +176,11 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 						continue
 					}
 
-					return currentSerializedCursor, nil
+					if IsVStreamSchemaIncompatibilityError(err) {
+						return currentSerializedCursor, errors.Wrapf(err, "PlanetScale VStream cannot continue incremental replication for table %s after a schema change; run a Fivetran historical re-sync for this connection to recover", tableName)
+					}
+
+					return currentSerializedCursor, err
 				} else {
 					consecutiveTimeouts++
 					logger.Info(fmt.Sprintf("%sTimeout occurred (%d/%d consecutive timeouts)", preamble, consecutiveTimeouts, maxConsecutiveTimeouts))
@@ -271,6 +276,7 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 	if tc.LastKnownPk != nil {
 		tc.Position = ""
 	}
+	syncStartCursor := cloneTableCursor(tc)
 
 	logger.Info(fmt.Sprintf("%sSyncing with cursor position : [%v], using last known PK : %v, stop cursor is : [%v]", preamble, tc.Position, tc.LastKnownPk != nil, stopPosition))
 
@@ -308,7 +314,7 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 					}
 					sqlResult.Rows = append(sqlResult.Rows, row)
 					if err := onResult(sqlResult, OpType_Insert); err != nil {
-						return tc, status.Error(codes.Internal, "unable to serialize row")
+						return syncStartCursor, status.Error(codes.Internal, "unable to serialize row")
 					}
 				}
 			}
@@ -321,7 +327,7 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 					}
 					sqlResult.Rows = append(sqlResult.Rows, row)
 					if err := onResult(sqlResult, OpType_Delete); err != nil {
-						return nil, status.Error(codes.Internal, "unable to serialize row")
+						return syncStartCursor, status.Error(codes.Internal, "unable to serialize row")
 					}
 				}
 			}
@@ -334,7 +340,7 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 					After:  serializeQueryResult(update.After),
 				}
 				if err := onUpdate(updatedRow); err != nil {
-					return nil, status.Error(codes.Internal, "unable to serialize update")
+					return syncStartCursor, status.Error(codes.Internal, "unable to serialize update")
 				}
 			}
 		}
@@ -357,6 +363,13 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 			return tc, io.EOF
 		}
 	}
+}
+
+func cloneTableCursor(tc *psdbconnect.TableCursor) *psdbconnect.TableCursor {
+	if tc == nil {
+		return nil
+	}
+	return proto.Clone(tc).(*psdbconnect.TableCursor)
 }
 
 func (p connectClient) filterExistingColumns(ctx context.Context, ps PlanetScaleSource, tableName string, columns []string) ([]string, error) {
@@ -456,4 +469,21 @@ func IsBinlogsExpirationError(err error) bool {
 		return false
 	}
 	return strings.Contains(err.Error(), "Cannot replicate because the source purged required binary logs")
+}
+
+func IsVStreamSchemaIncompatibilityError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	message := err.Error()
+	if !strings.Contains(message, "Code: FAILED_PRECONDITION") {
+		return false
+	}
+	if !strings.Contains(message, "failed to build table replication plan") {
+		return false
+	}
+
+	return strings.Contains(message, "cannot use column names in vstream filter") ||
+		(strings.Contains(message, "column ") && strings.Contains(message, " not found in table "))
 }

@@ -12,6 +12,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"vitess.io/vitess/go/sqltypes"
 )
@@ -259,6 +261,216 @@ func TestRead_CanReturnNewCursorIfNewFound(t *testing.T) {
 	assert.Equal(t, 2, cc.syncFnInvokedCount)
 }
 
+func TestRead_ReturnsVStreamSchemaIncompatibilityErrors(t *testing.T) {
+	dbl := &dbLogger{}
+	ped := connectClient{}
+	tc := &psdbconnect.TableCursor{
+		Shard:    "-",
+		Position: "THIS_IS_A_SHARD_GTID",
+		Keyspace: "connect-test",
+	}
+	stopCursor := &psdbconnect.TableCursor{
+		Shard:    "-",
+		Position: "I_AM_THE_CURRENT_BINLOG_POSITION",
+		Keyspace: "connect-test",
+	}
+
+	getCurrentVGtidClient := &connectSyncClientMock{
+		syncResponses: []*psdbconnect.SyncResponse{
+			{Cursor: stopCursor},
+		},
+	}
+
+	cc := clientConnectionMock{
+		syncFn: func(ctx context.Context, in *psdbconnect.SyncRequest, opts ...grpc.CallOption) (psdbconnect.Connect_SyncClient, error) {
+			if in.Cursor.Position == "current" {
+				return getCurrentVGtidClient, nil
+			}
+			return nil, status.Error(codes.Unknown, vstreamColumnNotFoundErrorMessage)
+		},
+	}
+	ped.clientFn = func(ctx context.Context, ps PlanetScaleSource) (psdbconnect.ConnectClient, error) {
+		return &cc, nil
+	}
+	getKeyspaceTableColumnsFunc := func(ctx context.Context, keyspaceName string, tableName string) ([]MysqlColumn, error) {
+		return []MysqlColumn{
+			{Name: "id", Type: "bigint", IsPrimaryKey: true},
+			{Name: "before_col", Type: "varchar(64)", IsPrimaryKey: false},
+			{Name: "after_col", Type: "varchar(64)", IsPrimaryKey: false},
+		}, nil
+	}
+	mysqlClient := NewTestMysqlClient(getKeyspaceTableColumnsFunc)
+	ped.Mysql = &mysqlClient
+
+	sc, err := ped.Read(context.Background(), dbl, PlanetScaleSource{Database: "connect-test"}, "customers", []string{"id", "before_col", "after_col"}, tc, nil, nil, nil)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "historical re-sync")
+	assert.True(t, IsVStreamSchemaIncompatibilityError(err))
+	esc, err := TableCursorToSerializedCursor(tc)
+	assert.NoError(t, err)
+	assert.Equal(t, esc, sc)
+	assert.Equal(t, 2, cc.syncFnInvokedCount)
+}
+
+func TestRead_ReturnsGenericNonTimeoutErrors(t *testing.T) {
+	dbl := &dbLogger{}
+	ped := connectClient{}
+	tc := &psdbconnect.TableCursor{
+		Shard:    "-",
+		Position: "THIS_IS_A_SHARD_GTID",
+		Keyspace: "connect-test",
+	}
+	stopCursor := &psdbconnect.TableCursor{
+		Shard:    "-",
+		Position: "I_AM_THE_CURRENT_BINLOG_POSITION",
+		Keyspace: "connect-test",
+	}
+
+	getCurrentVGtidClient := &connectSyncClientMock{
+		syncResponses: []*psdbconnect.SyncResponse{
+			{Cursor: stopCursor},
+		},
+	}
+
+	cc := clientConnectionMock{
+		syncFn: func(ctx context.Context, in *psdbconnect.SyncRequest, opts ...grpc.CallOption) (psdbconnect.Connect_SyncClient, error) {
+			if in.Cursor.Position == "current" {
+				return getCurrentVGtidClient, nil
+			}
+			return nil, status.Error(codes.Unavailable, "tablet unavailable")
+		},
+	}
+	ped.clientFn = func(ctx context.Context, ps PlanetScaleSource) (psdbconnect.ConnectClient, error) {
+		return &cc, nil
+	}
+	getKeyspaceTableColumnsFunc := func(ctx context.Context, keyspaceName string, tableName string) ([]MysqlColumn, error) {
+		return []MysqlColumn{{Name: "id", Type: "bigint", IsPrimaryKey: true}}, nil
+	}
+	mysqlClient := NewTestMysqlClient(getKeyspaceTableColumnsFunc)
+	ped.Mysql = &mysqlClient
+
+	sc, err := ped.Read(context.Background(), dbl, PlanetScaleSource{Database: "connect-test"}, "customers", []string{"id"}, tc, nil, nil, nil)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "tablet unavailable")
+	assert.NotContains(t, err.Error(), "historical re-sync")
+	assert.False(t, IsVStreamSchemaIncompatibilityError(err))
+	esc, err := TableCursorToSerializedCursor(tc)
+	assert.NoError(t, err)
+	assert.Equal(t, esc, sc)
+	assert.Equal(t, 2, cc.syncFnInvokedCount)
+}
+
+func TestRead_CallbackErrorsReturnStartCursor(t *testing.T) {
+	testFields := sqltypes.MakeTestFields("pid|description", "int64|varbinary")
+
+	tests := []struct {
+		name         string
+		response     *psdbconnect.SyncResponse
+		onRow        OnResult
+		onUpdate     OnUpdate
+		errorMessage string
+	}{
+		{
+			name: "insert callback",
+			response: &psdbconnect.SyncResponse{
+				Result: []*query.QueryResult{
+					sqltypes.ResultToProto3(sqltypes.MakeTestResult(testFields, "12|new_monitor")),
+				},
+			},
+			onRow: func(_ *sqltypes.Result, op Operation) error {
+				if op == OpType_Insert {
+					return errors.New("serialize failed")
+				}
+				return nil
+			},
+			errorMessage: "unable to serialize row",
+		},
+		{
+			name: "delete callback",
+			response: &psdbconnect.SyncResponse{
+				Deletes: []*psdbconnect.DeletedRow{
+					{
+						Result: sqltypes.ResultToProto3(sqltypes.MakeTestResult(testFields, "12|deleted_monitor")),
+					},
+				},
+			},
+			onRow: func(_ *sqltypes.Result, op Operation) error {
+				if op == OpType_Delete {
+					return errors.New("serialize failed")
+				}
+				return nil
+			},
+			errorMessage: "unable to serialize row",
+		},
+		{
+			name: "update callback",
+			response: &psdbconnect.SyncResponse{
+				Updates: []*psdbconnect.UpdatedRow{
+					{
+						Before: sqltypes.ResultToProto3(sqltypes.MakeTestResult(testFields, "12|old_monitor")),
+						After:  sqltypes.ResultToProto3(sqltypes.MakeTestResult(testFields, "12|new_monitor")),
+					},
+				},
+			},
+			onUpdate: func(*UpdatedRow) error {
+				return errors.New("serialize failed")
+			},
+			errorMessage: "unable to serialize update",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dbl := &dbLogger{}
+			ped := connectClient{}
+			tc := &psdbconnect.TableCursor{
+				Shard:    "-",
+				Position: "THIS_IS_A_SHARD_GTID",
+				Keyspace: "connect-test",
+			}
+			newTC := &psdbconnect.TableCursor{
+				Shard:    "-",
+				Position: "I_AM_FARTHER_IN_THE_BINLOG",
+				Keyspace: "connect-test",
+			}
+
+			getCurrentVGtidClient := &connectSyncClientMock{
+				syncResponses: []*psdbconnect.SyncResponse{{Cursor: newTC}},
+			}
+			syncClient := &connectSyncClientMock{
+				syncResponses: []*psdbconnect.SyncResponse{
+					{Cursor: newTC},
+					tt.response,
+				},
+			}
+
+			cc := clientConnectionMock{
+				syncFn: func(ctx context.Context, in *psdbconnect.SyncRequest, opts ...grpc.CallOption) (psdbconnect.Connect_SyncClient, error) {
+					if in.Cursor.Position == "current" {
+						return getCurrentVGtidClient, nil
+					}
+					return syncClient, nil
+				},
+			}
+			ped.clientFn = func(ctx context.Context, ps PlanetScaleSource) (psdbconnect.ConnectClient, error) {
+				return &cc, nil
+			}
+			getKeyspaceTableColumnsFunc := func(ctx context.Context, keyspaceName string, tableName string) ([]MysqlColumn, error) {
+				return []MysqlColumn{{Name: "id", Type: "bigint", IsPrimaryKey: true}}, nil
+			}
+			mysqlClient := NewTestMysqlClient(getKeyspaceTableColumnsFunc)
+			ped.Mysql = &mysqlClient
+
+			sc, err := ped.Read(context.Background(), dbl, PlanetScaleSource{Database: "connect-test"}, "customers", nil, tc, tt.onRow, nil, tt.onUpdate)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), tt.errorMessage)
+			esc, err := TableCursorToSerializedCursor(tc)
+			assert.NoError(t, err)
+			assert.Equal(t, esc, sc)
+		})
+	}
+}
+
 func TestRead_CanStopAtWellKnownCursor(t *testing.T) {
 	dbl := &dbLogger{}
 	ped := connectClient{}
@@ -479,3 +691,46 @@ func TestRead_FiltersNonExistentColumns(t *testing.T) {
 		})
 	}
 }
+
+func TestIsVStreamSchemaIncompatibilityError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "column not found while building table replication plan",
+			err:  status.Error(codes.Unknown, vstreamColumnNotFoundErrorMessage),
+			want: true,
+		},
+		{
+			name: "synthetic table map column names",
+			err: status.Error(codes.Unknown, "stream error: Code: FAILED_PRECONDITION\n"+
+				"cannot use column names in vstream filter as the current table schema for table customers is not compatible with the current event for this table in the stream\n\n"+
+				"failed to build table replication plan for table customers"),
+			want: true,
+		},
+		{
+			name: "binlog expiration is not schema incompatibility",
+			err:  errors.New("Cannot replicate because the source purged required binary logs"),
+			want: false,
+		},
+		{
+			name: "generic failed precondition is not enough",
+			err:  status.Error(codes.Unknown, "Code: FAILED_PRECONDITION\nanother replication error"),
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, IsVStreamSchemaIncompatibilityError(tt.err))
+		})
+	}
+}
+
+const vstreamColumnNotFoundErrorMessage = "error starting stream from shard GTID keyspace:\"fivetran\" shard:\"-\": persistent error in vstream: " +
+	"stream (at source tablet) error @ (including the GTID we failed to process): Code: FAILED_PRECONDITION\n" +
+	"column after_col not found in table customers\n\n" +
+	"failed to build table replication plan for table customers\n" +
+	"failed to parse transaction payload's internal event"

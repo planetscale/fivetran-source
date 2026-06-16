@@ -80,6 +80,9 @@ func (s *Sync) Handle(psc *lib.PlanetScaleSource, db *lib.ConnectClient, logger 
 				columns := includedColumns(table)
 				sc, err := (*db).Read(ctx, logger, *psc, table.TableName, columns, tc, onRow, onCursor, onUpdate)
 				if err != nil {
+					if lib.IsVStreamSchemaIncompatibilityError(err) {
+						return status.Error(codes.FailedPrecondition, err.Error())
+					}
 					return status.Error(codes.Internal, fmt.Sprintf("failed to download rows for table : %s , error : %s", table.TableName, err.Error()))
 				}
 				if sc != nil {
