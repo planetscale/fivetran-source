@@ -132,7 +132,7 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 		logger.Info(preamble + "peeking to see if there's any new rows")
 		latestCursorPosition, lcErr := p.getLatestCursorPosition(ctx, currentPosition.Shard, currentPosition.Keyspace, tableName, ps, tabletType)
 		if lcErr != nil {
-			return currentSerializedCursor, errors.Wrap(err, "Unable to get latest cursor position")
+			return currentSerializedCursor, errors.Wrap(lcErr, "Unable to get latest cursor position")
 		}
 
 		// the current vgtid is the same as the last synced vgtid, no new rows.
@@ -449,7 +449,7 @@ func (p connectClient) getLatestCursorPosition(ctx context.Context, shard, keysp
 
 	c, err := client.Sync(ctx, sReq)
 	if err != nil {
-		return "", nil
+		return "", err
 	}
 
 	for {
