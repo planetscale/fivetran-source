@@ -111,7 +111,7 @@ func (c *connectorServer) Schema(ctx context.Context, request *fivetran_sdk_v2.S
 	}
 
 	// check if credentials are still valid.
-	checkConn, err := c.checkConnection.Handle(context.Background(), db, handlers.CheckConnectionTestName, psc)
+	checkConn, err := c.checkConnection.Handle(ctx, db, handlers.CheckConnectionTestName, psc)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, "unable to open connection to PlanetScale database")
 	}
@@ -124,6 +124,7 @@ func (c *connectorServer) Schema(ctx context.Context, request *fivetran_sdk_v2.S
 }
 
 func (c *connectorServer) Update(request *fivetran_sdk_v2.UpdateRequest, server fivetran_sdk_v2.SourceConnector_UpdateServer) error {
+	ctx := server.Context()
 	requestId := newRequestID()
 	rLogger := newRequestLogger(requestId)
 
@@ -164,7 +165,7 @@ func (c *connectorServer) Update(request *fivetran_sdk_v2.UpdateRequest, server 
 	}
 
 	schemaBuilder := handlers.NewSchemaBuilder(psc.TreatTinyIntAsBoolean)
-	if err := mysqlClient.BuildSchema(context.Background(), *psc, schemaBuilder); err != nil {
+	if err := mysqlClient.BuildSchema(ctx, *psc, schemaBuilder); err != nil {
 		status.Error(codes.InvalidArgument, "unable to build schema from PlanetScale database")
 		return nil
 	}
@@ -176,7 +177,7 @@ func (c *connectorServer) Update(request *fivetran_sdk_v2.UpdateRequest, server 
 
 	logger := handlers.NewSchemaAwareSerializer(server, requestId, psc.TreatTinyIntAsBoolean, sourceSchema.SchemaList, sourceSchema.EnumsAndSets)
 
-	shards, err := db.ListShards(context.Background(), *psc)
+	shards, err := db.ListShards(ctx, *psc)
 	if err != nil {
 		return status.Errorf(codes.InvalidArgument, "unable to list shards for this database : %q", err)
 	}
@@ -187,7 +188,7 @@ func (c *connectorServer) Update(request *fivetran_sdk_v2.UpdateRequest, server 
 	}
 
 	// check if credentials are still valid.
-	checkConn, err := c.checkConnection.Handle(context.Background(), db, handlers.CheckConnectionTestName, psc)
+	checkConn, err := c.checkConnection.Handle(ctx, db, handlers.CheckConnectionTestName, psc)
 	if err != nil {
 		msg := fmt.Sprintf("unable to connect to PlanetScale database, failed with : %q", err)
 		logger.Severe(msg)
@@ -200,7 +201,7 @@ func (c *connectorServer) Update(request *fivetran_sdk_v2.UpdateRequest, server 
 		return status.Error(codes.NotFound, msg)
 	}
 
-	return c.sync.Handle(psc, &db, logger, state, schemaSelection)
+	return c.sync.Handle(ctx, psc, &db, logger, state, schemaSelection)
 }
 
 func newRequestLogger(requestID string) *log.Logger {

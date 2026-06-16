@@ -724,7 +724,7 @@ func runIntegrationSyncWithError(t *testing.T, psc lib.PlanetScaleSource, tableN
 	sender := &integrationSender{}
 	logger := NewSchemaAwareSerializer(sender, "integration", psc.TreatTinyIntAsBoolean, sourceSchema.SchemaList, sourceSchema.EnumsAndSets)
 	syncer := &Sync{}
-	if err := syncer.Handle(&psc, &connectClient, logger, state, selection); err != nil {
+	if err := syncer.Handle(context.Background(), &psc, &connectClient, logger, state, selection); err != nil {
 		return sender, state, err
 	}
 	if checkpoint, ok := sender.latestState(t); ok {

@@ -20,6 +20,7 @@ func (l *testLogSender) Send(response *fivetransdk.UpdateResponse) error {
 
 type testLogger struct {
 	truncateCalled bool
+	states         []lib.SyncState
 }
 
 func (testLogger) Info(s string) error {
@@ -62,6 +63,7 @@ func (tl *testLogger) Record(result *sqltypes.Result, selection *fivetransdk.Sch
 }
 
 func (tl *testLogger) State(state lib.SyncState) error {
+	tl.states = append(tl.states, state)
 	return nil
 }
 

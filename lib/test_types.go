@@ -42,10 +42,14 @@ type clientConnectionMock struct {
 type connectSyncClientMock struct {
 	lastResponseSent int
 	syncResponses    []*psdbconnect.SyncResponse
+	recvFn           func() (*psdbconnect.SyncResponse, error)
 	grpc.ClientStream
 }
 
 func (x *connectSyncClientMock) Recv() (*psdbconnect.SyncResponse, error) {
+	if x.recvFn != nil {
+		return x.recvFn()
+	}
 	if x.lastResponseSent >= len(x.syncResponses) {
 		return nil, io.EOF
 	}

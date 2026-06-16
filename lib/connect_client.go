@@ -37,6 +37,12 @@ type DatabaseLogger interface {
 	Warning(string) error
 }
 
+var (
+	cursorCheckpointRows       = 1000
+	cursorCheckpointInterval   = 30 * time.Second
+	maxConsecutiveSyncTimeouts = 5
+)
+
 // ConnectClient is a general purpose interface
 // that defines all the data access methods needed for the PlanetScale Fivetran source to function.
 type ConnectClient interface {
@@ -115,7 +121,6 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 
 	// Timeout tracking variables
 	consecutiveTimeouts := 0
-	const maxConsecutiveTimeouts = 5
 	const maxTimeout = 1 * time.Hour
 	const timeoutMultiplier = 2.8
 	backoffDuration := 10 * time.Second
@@ -144,7 +149,7 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 		logger.Info(fmt.Sprintf(preamble+"syncing rows with cursor [%v]", currentPosition))
 
 		currentPosition, err = p.sync(ctx, logger, tableName, existingColumns, currentPosition, latestCursorPosition, ps, tabletType, readDuration, onResult, onCursor, onUpdate)
-		if currentPosition.Position != "" {
+		if tableCursorHasProgress(currentPosition) {
 			currentSerializedCursor, sErr = TableCursorToSerializedCursor(currentPosition)
 			if sErr != nil {
 				// if we failed to serialize here, we should bail.
@@ -164,13 +169,11 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 						currentPosition.Position = ""
 						currentPosition.LastKnownPk = nil
 
-						// Mark the error as binlog expiration in the state
-						if currentSerializedCursor != nil {
-							currentSerializedCursor.SetBinlogExpirationError(fmt.Sprintf("Binlogs have expired. Cursor reset to trigger historical sync. Original error: %v", err.Error()))
-						} else {
-							currentSerializedCursor, _ = TableCursorToSerializedCursor(currentPosition)
-							currentSerializedCursor.SetBinlogExpirationError(fmt.Sprintf("Binlogs have expired. Cursor reset to trigger historical sync. Original error: %v", err.Error()))
+						currentSerializedCursor, sErr = TableCursorToSerializedCursor(currentPosition)
+						if sErr != nil {
+							return currentSerializedCursor, errors.Wrap(sErr, "unable to serialize reset cursor after binlog expiration")
 						}
+						currentSerializedCursor.SetBinlogExpirationError(fmt.Sprintf("Binlogs have expired. Cursor reset to trigger historical sync. Original error: %v", err.Error()))
 
 						// Continue with historical sync instead of returning error
 						continue
@@ -183,10 +186,10 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 					return currentSerializedCursor, err
 				} else {
 					consecutiveTimeouts++
-					logger.Info(fmt.Sprintf("%sTimeout occurred (%d/%d consecutive timeouts)", preamble, consecutiveTimeouts, maxConsecutiveTimeouts))
+					logger.Info(fmt.Sprintf("%sTimeout occurred (%d/%d consecutive timeouts)", preamble, consecutiveTimeouts, maxConsecutiveSyncTimeouts))
 
-					if consecutiveTimeouts >= maxConsecutiveTimeouts {
-						logger.Info(fmt.Sprintf("%sReached maximum consecutive timeouts (%d), stopping sync", preamble, maxConsecutiveTimeouts))
+					if consecutiveTimeouts >= maxConsecutiveSyncTimeouts {
+						logger.Info(fmt.Sprintf("%sReached maximum consecutive timeouts (%d), stopping sync", preamble, maxConsecutiveSyncTimeouts))
 
 						warningMessage := fmt.Sprintf("Timeout occurred while reading table %s after %d consecutive attempts. Stopping sync.", tableName, consecutiveTimeouts)
 
@@ -218,7 +221,7 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 					}()
 
 					logger.Info(fmt.Sprintf("%sIncreased read timeout to: %v", preamble, readDuration))
-					logger.Info(fmt.Sprintf("%sContinuing with cursor after server timeout (attempt %d/%d)", preamble, consecutiveTimeouts, maxConsecutiveTimeouts))
+					logger.Info(fmt.Sprintf("%sContinuing with cursor after server timeout (attempt %d/%d)", preamble, consecutiveTimeouts, maxConsecutiveSyncTimeouts))
 				}
 			} else if errors.Is(err, io.EOF) {
 				logger.Info(fmt.Sprintf("%vFinished reading all rows for table [%v]", preamble, tableName))
@@ -298,6 +301,8 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 
 	// stop when we've reached the well known stop position for this sync session.
 	watchForVgGtidChange := false
+	recordsSinceCheckpoint := 0
+	lastCheckpoint := time.Now()
 	for {
 
 		res, err := c.Recv()
@@ -316,6 +321,7 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 					if err := onResult(sqlResult, OpType_Insert); err != nil {
 						return syncStartCursor, status.Error(codes.Internal, "unable to serialize row")
 					}
+					recordsSinceCheckpoint++
 				}
 			}
 
@@ -329,6 +335,7 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 					if err := onResult(sqlResult, OpType_Delete); err != nil {
 						return syncStartCursor, status.Error(codes.Internal, "unable to serialize row")
 					}
+					recordsSinceCheckpoint++
 				}
 			}
 		}
@@ -342,11 +349,19 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 				if err := onUpdate(updatedRow); err != nil {
 					return syncStartCursor, status.Error(codes.Internal, "unable to serialize update")
 				}
+				recordsSinceCheckpoint++
 			}
 		}
 
 		if res.Cursor != nil {
 			tc = res.Cursor
+			if shouldCheckpointCursor(tc, recordsSinceCheckpoint, lastCheckpoint) && onCursor != nil {
+				if err := onCursor(tc); err != nil {
+					return tc, status.Error(codes.Internal, "unable to serialize cursor")
+				}
+				recordsSinceCheckpoint = 0
+				lastCheckpoint = time.Now()
+			}
 		}
 
 		// A single VGTID can appear in multiple ordered responses. Once we reach
@@ -355,12 +370,31 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 		watchForVgGtidChange = watchForVgGtidChange || tc.Position == stopPosition
 
 		if watchForVgGtidChange && tc.Position != stopPosition {
-			if err := onCursor(tc); err != nil {
-				return tc, status.Error(codes.Internal, "unable to serialize cursor")
+			if onCursor != nil {
+				if err := onCursor(tc); err != nil {
+					return tc, status.Error(codes.Internal, "unable to serialize cursor")
+				}
 			}
 			return tc, io.EOF
 		}
 	}
+}
+
+func tableCursorHasProgress(tc *psdbconnect.TableCursor) bool {
+	return tc != nil && (tc.Position != "" || tc.LastKnownPk != nil)
+}
+
+func shouldCheckpointCursor(tc *psdbconnect.TableCursor, recordsSinceCheckpoint int, lastCheckpoint time.Time) bool {
+	if !tableCursorHasProgress(tc) || recordsSinceCheckpoint == 0 {
+		return false
+	}
+	if cursorCheckpointRows > 0 && recordsSinceCheckpoint >= cursorCheckpointRows {
+		return true
+	}
+	if cursorCheckpointInterval > 0 && time.Since(lastCheckpoint) >= cursorCheckpointInterval {
+		return true
+	}
+	return false
 }
 
 func cloneTableCursor(tc *psdbconnect.TableCursor) *psdbconnect.TableCursor {
