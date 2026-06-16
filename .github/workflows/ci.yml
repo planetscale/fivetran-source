@@ -88,5 +88,5 @@ jobs:
             ci sh -c '
               git config --global --add safe.directory "$PWD"
 
-              make test-integration
+              make test-integration-stress
             '

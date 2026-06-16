@@ -35,8 +35,8 @@ export DATABASE_TREAT_TINY_INT_AS_BOOLEAN=true
 export DATABASE_USE_REPLICA=false
 ```
 
-The GitHub Actions `Integration Tests` job reads the same values from these
-repository secrets:
+The GitHub Actions `Integration Tests` job runs `make test-integration-stress`
+and reads credentials from these repository secrets:
 
 - `PS_INTEGRATION_DATABASE_HOST`
 - `PS_INTEGRATION_DATABASE_NAME`
@@ -62,8 +62,6 @@ To include the heavier burst-load scenario:
 ```sh
 make test-integration-stress
 ```
-
-The stress target is intentionally not part of CI.
 
 Stress settings can be tuned with environment variables:
 
