@@ -349,11 +349,9 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 			tc = res.Cursor
 		}
 
-		// Because of the ordering of events in a vstream
-		// we receive the vgtid event first and then the rows.
-		// the vgtid event might repeat, but they're ordered.
-		// so we once we reach the desired stop vgtid, we stop the sync session
-		// if we get a newer vgtid.
+		// A single VGTID can appear in multiple ordered responses. Once we reach
+		// the desired stop VGTID, keep reading while the cursor stays there so all
+		// rows for that position are processed, then stop when a newer VGTID arrives.
 		watchForVgGtidChange = watchForVgGtidChange || tc.Position == stopPosition
 
 		if watchForVgGtidChange && tc.Position != stopPosition {
