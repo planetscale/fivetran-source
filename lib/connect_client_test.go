@@ -7,7 +7,11 @@ import (
 	"testing"
 	"time"
 
+	binlogdatapb "vitess.io/vitess/go/vt/proto/binlogdata"
 	"vitess.io/vitess/go/vt/proto/query"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
+	vtgatepb "vitess.io/vitess/go/vt/proto/vtgate"
+	vtgateservicepb "vitess.io/vitess/go/vt/proto/vtgateservice"
 
 	"github.com/pkg/errors"
 	psdbconnect "github.com/planetscale/airbyte-source/proto/psdbconnect/v1alpha1"
@@ -1101,6 +1105,108 @@ func TestRead_BinlogExpirationReturnsResetCursor(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 3, cc.syncFnInvokedCount)
+}
+
+func TestSync_DirectVStreamHandlesRawEventsAndCopyCompleted(t *testing.T) {
+	originalCheckpointRows := cursorCheckpointRows
+	originalCheckpointInterval := cursorCheckpointInterval
+	cursorCheckpointRows = 1
+	cursorCheckpointInterval = time.Hour
+	t.Cleanup(func() {
+		cursorCheckpointRows = originalCheckpointRows
+		cursorCheckpointInterval = originalCheckpointInterval
+	})
+
+	dbl := &dbLogger{}
+	ped := connectClient{}
+	testFields := sqltypes.MakeTestFields("id|name", "int64|varbinary")
+	rows := sqltypes.ResultToProto3(sqltypes.MakeTestResult(testFields, "1|first", "2|second")).Rows
+	lastPK := testLastKnownPK("2")
+	lastPK.Fields = nil
+	startCursor := &psdbconnect.TableCursor{
+		Shard:    "-",
+		Keyspace: "connect-test",
+	}
+	copyCursor := &psdbconnect.TableCursor{
+		Shard:       "-",
+		Keyspace:    "connect-test",
+		Position:    "COPY_GTID",
+		LastKnownPk: lastPK,
+	}
+	doneCursor := &psdbconnect.TableCursor{
+		Shard:    "-",
+		Keyspace: "connect-test",
+		Position: "AFTER_COPY_GTID",
+	}
+
+	rawStream := &vstreamClientMock{
+		responses: []*vtgatepb.VStreamResponse{
+			{
+				Events: []*binlogdatapb.VEvent{
+					{
+						Type: binlogdatapb.VEventType_FIELD,
+						FieldEvent: &binlogdatapb.FieldEvent{
+							TableName: "connect-test.customers",
+							Fields:    testFields,
+						},
+					},
+					{
+						Type: binlogdatapb.VEventType_ROW,
+						RowEvent: &binlogdatapb.RowEvent{
+							TableName: "connect-test.customers",
+							RowChanges: []*binlogdatapb.RowChange{
+								{After: rows[0]},
+								{After: rows[1]},
+							},
+						},
+					},
+					vstreamVGtidEventFromCursor("connect-test.customers", copyCursor),
+				},
+			},
+			{
+				Events: []*binlogdatapb.VEvent{
+					{Type: binlogdatapb.VEventType_COPY_COMPLETED},
+					vstreamVGtidEventFromCursor("connect-test.customers", doneCursor),
+				},
+			},
+		},
+	}
+	vc := &vstreamConnectionMock{
+		vstreamFn: func(ctx context.Context, in *vtgatepb.VStreamRequest, opts ...grpc.CallOption) (vtgateservicepb.Vitess_VStreamClient, error) {
+			assert.Equal(t, topodatapb.TabletType_PRIMARY, in.TabletType)
+			assert.Equal(t, "connect-test", in.Vgtid.ShardGtids[0].Keyspace)
+			assert.Equal(t, "-", in.Vgtid.ShardGtids[0].Shard)
+			assert.Empty(t, in.Vgtid.ShardGtids[0].Gtid)
+			assert.Equal(t, "customers", in.Filter.Rules[0].Match)
+			assert.Equal(t, "SELECT `id`,`name` FROM `customers`", in.Filter.Rules[0].Filter)
+			assert.Equal(t, "planetscale_operator_default", in.Flags.Cells)
+			assert.True(t, in.Flags.MinimizeSkew)
+			return rawStream, nil
+		},
+	}
+	ped.vstreamClientFn = func(ctx context.Context, ps PlanetScaleSource) (vstreamClient, error) {
+		return vc, nil
+	}
+
+	records := 0
+	checkpoints := []*psdbconnect.TableCursor{}
+	returnedCursor, err := ped.sync(context.Background(), dbl, "customers", []string{"id", "name"}, startCursor, "STOP_GTID", PlanetScaleSource{Database: "connect-test"}, psdbconnect.TabletType_primary, time.Second, func(*sqltypes.Result, Operation) error {
+		records++
+		return nil
+	}, func(cursor *psdbconnect.TableCursor) error {
+		checkpoints = append(checkpoints, cloneTableCursor(cursor))
+		return nil
+	}, nil)
+
+	assert.True(t, errors.Is(err, io.EOF))
+	assert.True(t, proto.Equal(doneCursor, returnedCursor))
+	assert.Equal(t, 2, records)
+	assert.Equal(t, 1, vc.vstreamFnInvokedCount)
+	if assert.Len(t, checkpoints, 2) {
+		assert.True(t, proto.Equal(doneCursor, checkpoints[1]))
+		assert.NotNil(t, checkpoints[0].LastKnownPk)
+		assert.Equal(t, testFields[:1], checkpoints[0].LastKnownPk.Fields)
+	}
 }
 
 func TestSync_CheckpointsHistoricalCopyProgress(t *testing.T) {

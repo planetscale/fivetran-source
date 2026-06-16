@@ -8,6 +8,8 @@ import (
 
 	psdbconnect "github.com/planetscale/airbyte-source/proto/psdbconnect/v1alpha1"
 	"google.golang.org/grpc"
+	vtgatepb "vitess.io/vitess/go/vt/proto/vtgate"
+	vtgateservicepb "vitess.io/vitess/go/vt/proto/vtgateservice"
 )
 
 type dbLogMessage struct {
@@ -61,6 +63,36 @@ func (c *clientConnectionMock) Sync(ctx context.Context, in *psdbconnect.SyncReq
 	c.syncFnInvoked = true
 	c.syncFnInvokedCount += 1
 	return c.syncFn(ctx, in, opts...)
+}
+
+type vstreamConnectionMock struct {
+	vstreamFn             func(ctx context.Context, in *vtgatepb.VStreamRequest, opts ...grpc.CallOption) (vtgateservicepb.Vitess_VStreamClient, error)
+	vstreamFnInvoked      bool
+	vstreamFnInvokedCount int
+}
+
+func (c *vstreamConnectionMock) VStream(ctx context.Context, in *vtgatepb.VStreamRequest, opts ...grpc.CallOption) (vtgateservicepb.Vitess_VStreamClient, error) {
+	c.vstreamFnInvoked = true
+	c.vstreamFnInvokedCount += 1
+	return c.vstreamFn(ctx, in, opts...)
+}
+
+type vstreamClientMock struct {
+	lastResponseSent int
+	responses        []*vtgatepb.VStreamResponse
+	recvFn           func() (*vtgatepb.VStreamResponse, error)
+	grpc.ClientStream
+}
+
+func (x *vstreamClientMock) Recv() (*vtgatepb.VStreamResponse, error) {
+	if x.recvFn != nil {
+		return x.recvFn()
+	}
+	if x.lastResponseSent >= len(x.responses) {
+		return nil, io.EOF
+	}
+	x.lastResponseSent += 1
+	return x.responses[x.lastResponseSent-1], nil
 }
 
 type (
