@@ -116,6 +116,42 @@ func TestCanBuildUpdateSchema(t *testing.T) {
 	assert.Equal(t, enumsAndSets["Employees"]["departments"]["dept_locations"].columnType, "set")
 }
 
+func TestParseEnumOrSetValuesHandlesSQLStringLiterals(t *testing.T) {
+	tests := []struct {
+		name       string
+		mysqlType  string
+		columnType string
+		values     []string
+	}{
+		{
+			name:       "enum with comma",
+			mysqlType:  "enum('small','with,comma','large')",
+			columnType: "enum",
+			values:     []string{"small", "with,comma", "large"},
+		},
+		{
+			name:       "enum with escaped quote",
+			mysqlType:  "enum('plain','owner''s choice','other')",
+			columnType: "enum",
+			values:     []string{"plain", "owner's choice", "other"},
+		},
+		{
+			name:       "set with comma and escaped quote",
+			mysqlType:  "set('read','write,admin','owner''s choice')",
+			columnType: "set",
+			values:     []string{"read", "write,admin", "owner's choice"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseEnumOrSetValues(tt.mysqlType)
+			assert.Equal(t, tt.columnType, got.columnType)
+			assert.Equal(t, tt.values, got.values)
+		})
+	}
+}
+
 func TestSchema_CanPickRightFivetranType(t *testing.T) {
 	tests := []struct {
 		MysqlType             string
