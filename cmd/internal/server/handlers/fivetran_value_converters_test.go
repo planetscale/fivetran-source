@@ -1,13 +1,60 @@
 package handlers
 
 import (
+	"math"
 	"testing"
 
 	fivetransdk "github.com/planetscale/fivetran-source/fivetran_sdk.v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"vitess.io/vitess/go/sqltypes"
+	querypb "vitess.io/vitess/go/vt/proto/query"
 )
+
+func TestSetConverter_BitmaskValues(t *testing.T) {
+	converter, err := GetSetConverter([]string{"read", "write", "delete", "admin"})
+	require.NoError(t, err)
+
+	tests := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{name: "empty set", value: "0", want: ""},
+		{name: "first value", value: "1", want: "read"},
+		{name: "first two values", value: "3", want: "read,write"},
+		{name: "fourth value", value: "8", want: "admin"},
+		{name: "non numeric string value", value: "read,write", want: "read,write"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := converter(sqltypes.NewVarChar(tt.value))
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, result.GetJson())
+		})
+	}
+}
+
+func TestSetConverter_ParsesUint64Masks(t *testing.T) {
+	setValues := make([]string, 64)
+	setValues[63] = "slot64"
+	converter, err := GetSetConverter(setValues)
+	require.NoError(t, err)
+
+	result, err := converter(sqltypes.NewVarChar("9223372036854775808"))
+	require.NoError(t, err)
+	assert.Equal(t, "slot64", result.GetJson())
+}
+
+func TestSetConverter_UnmappedBitReturnsError(t *testing.T) {
+	converter, err := GetSetConverter([]string{"read", "write"})
+	require.NoError(t, err)
+
+	_, err = converter(sqltypes.NewVarChar("4"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "bit 3 has no mapped value")
+}
 
 func TestJSONConverter_EmptyString(t *testing.T) {
 	converter, err := GetConverter(fivetransdk.DataType_JSON)
@@ -36,4 +83,48 @@ func TestJSONConverter_ValidJSON(t *testing.T) {
 	json, ok := result.Inner.(*fivetransdk.ValueType_Json)
 	require.True(t, ok)
 	assert.Equal(t, `{"key": "value"}`, json.Json)
+}
+
+func TestLongConverter_BitValues(t *testing.T) {
+	converter, err := GetConverter(fivetransdk.DataType_LONG)
+	require.NoError(t, err)
+
+	tests := []struct {
+		name string
+		raw  []byte
+		want int64
+	}{
+		{name: "zero", raw: []byte{0x00}, want: 0},
+		{name: "one", raw: []byte{0x01}, want: 1},
+		{name: "two", raw: []byte{0x02}, want: 2},
+		{name: "max seven bit", raw: []byte{0x7f}, want: 127},
+		{name: "eight bit high bit", raw: []byte{0x80}, want: 128},
+		{name: "eight bit max", raw: []byte{0xff}, want: 255},
+		{name: "two byte value", raw: []byte{0x01, 0x00}, want: 256},
+		{name: "max int64", raw: []byte{0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}, want: math.MaxInt64},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := converter(sqltypes.MakeTrusted(querypb.Type_BIT, tt.raw))
+			require.NoError(t, err)
+
+			got, ok := result.Inner.(*fivetransdk.ValueType_Long)
+			require.True(t, ok)
+			assert.Equal(t, tt.want, got.Long)
+		})
+	}
+}
+
+func TestLongConverter_BitOverflow(t *testing.T) {
+	converter, err := GetConverter(fivetransdk.DataType_LONG)
+	require.NoError(t, err)
+
+	_, err = converter(sqltypes.MakeTrusted(querypb.Type_BIT, []byte{0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "overflows int64")
+
+	_, err = converter(sqltypes.MakeTrusted(querypb.Type_BIT, []byte{0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "uses 9 bytes")
 }

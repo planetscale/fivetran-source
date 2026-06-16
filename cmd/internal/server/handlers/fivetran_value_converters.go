@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"bytes"
-	"encoding/binary"
 	"fmt"
 	"math"
 	"strconv"
@@ -75,16 +74,9 @@ var converters = map[fivetransdk.DataType]ConverterFunc{
 			return nil, errors.Wrap(err, "failed to serialize Type_BIT")
 		}
 
-		// Varint decodes an int64 from buf and returns that value and the
-		// number of bytes read (> 0). If an error occurred, the value is 0
-		// and the number of bytes n is <= 0 with the following meaning:
-		//
-		//	n == 0: buf too small
-		//	n  < 0: value larger than 64 bits (overflow)
-		//	        and -n is the number of bytes read
-		i, n := binary.Varint(b)
-		if n <= 0 {
-			return nil, fmt.Errorf("failed to serialize DataType_LONG, read %v bytes", n)
+		i, err := bitBytesToInt64(b)
+		if err != nil {
+			return nil, err
 		}
 
 		return &fivetransdk.ValueType{
@@ -230,6 +222,22 @@ var converters = map[fivetransdk.DataType]ConverterFunc{
 	},
 }
 
+func bitBytesToInt64(b []byte) (int64, error) {
+	if len(b) > 8 {
+		return 0, fmt.Errorf("failed to serialize Type_BIT: value uses %d bytes", len(b))
+	}
+
+	var u uint64
+	for _, by := range b {
+		u = (u << 8) | uint64(by)
+	}
+	if u > math.MaxInt64 {
+		return 0, fmt.Errorf("failed to serialize Type_BIT: value %d overflows int64", u)
+	}
+
+	return int64(u), nil
+}
+
 func GetConverter(dataType fivetransdk.DataType) (ConverterFunc, error) {
 	converter, ok := converters[dataType]
 	if !ok {
@@ -274,30 +282,26 @@ func GetEnumConverter(enumValues []string) (ConverterFunc, error) {
 func GetSetConverter(setValues []string) (ConverterFunc, error) {
 	return func(value sqltypes.Value) (*fivetransdk.ValueType, error) {
 		parsedValue := value.ToString()
-		parsedInt, err := strconv.ParseInt(parsedValue, 10, 64)
+		parsedInt, err := strconv.ParseUint(parsedValue, 10, 64)
 		if err != nil {
-			// if value is not an integer, we just serialize as a strong
+			// if value is not an integer, we just serialize as a string
 			return &fivetransdk.ValueType{
 				Inner: &fivetransdk.ValueType_Json{Json: CleanStringValue(parsedValue)},
 			}, nil
 		}
 		mappedValues := []string{}
-		// SET mapping is stored as a binary value, i.e. 1001
-		bytes := strconv.FormatInt(parsedInt, 2)
-		numValues := len(bytes)
-		// if the bit is ON, that means the value at that index is included in the SET
-		for i, char := range bytes {
-			if char == '1' {
-				// bytes are in reverse order, the first bit represents the last value in the SET
-				mappedValue := setValues[numValues-(i+1)]
-				mappedValues = append([]string{mappedValue}, mappedValues...)
+		for idx, mask := 0, parsedInt; mask > 0; idx, mask = idx+1, mask>>1 {
+			if mask&1 == 1 {
+				if idx >= len(setValues) {
+					return nil, fmt.Errorf("failed to serialize Type_SET: bit %d has no mapped value", idx+1)
+				}
+				mappedValues = append(mappedValues, setValues[idx])
 			}
 		}
 
-		// If we can't find the values, just serialize as a string
 		if len(mappedValues) == 0 {
 			return &fivetransdk.ValueType{
-				Inner: &fivetransdk.ValueType_Json{Json: CleanStringValue(parsedValue)},
+				Inner: &fivetransdk.ValueType_Json{Json: ""},
 			}, nil
 		}
 

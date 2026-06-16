@@ -11,7 +11,6 @@ else
 endif
 
 BIN := bin
-export GOPRIVATE := github.com/planetscale/*
 export GOBIN := $(PWD)/$(BIN)
 
 GO ?= go
@@ -29,18 +28,28 @@ ifeq ($(OS),Darwin)
 endif
 FIVETRANSDK_PROTO_OUT := fivetran_sdk.v2
 FIVETRAN_PROTO_VERSION := 466a61bddfc0e541bfec3cb0cc6a3cf3704d64be
+GOFUMPT_VERSION := v0.10.0
+STATICCHECK_VERSION := v0.7.0
 
 .PHONY: all
 all: build test lint-fmt lint
 
 .PHONY: bootstrap
 bootstrap:
-	@go install mvdan.cc/gofumpt@latest
+	@go install mvdan.cc/gofumpt@$(GOFUMPT_VERSION)
 
 
 .PHONY: test
 test-ci: proto
 	@go test -race -v ./...
+
+.PHONY: test-integration
+test-integration: proto
+	@go test -tags=integration -run TestIntegration -count=1 -timeout 20m -v ./cmd/internal/server/handlers
+
+.PHONY: test-integration-stress
+test-integration-stress: proto
+	@INTEGRATION_STRESS=1 go test -tags=integration -run TestIntegration -count=1 -timeout 20m -v ./cmd/internal/server/handlers
 
 .PHONY: build
 build: proto/connector_sdk.proto
@@ -68,8 +77,8 @@ license-check: $(FIVETRANSDK_PROTO_OUT)/connector_sdk.pb.go
 
 .PHONY: lint
 lint: proto
-	@go install honnef.co/go/tools/cmd/staticcheck@latest
-	@$(GOBIN)/staticcheck ./...
+	@go install honnef.co/go/tools/cmd/staticcheck@$(STATICCHECK_VERSION)
+	@$(GOBIN)/staticcheck $$(go list ./... | grep -v '/$(FIVETRANSDK_PROTO_OUT)$$')
 
 .PHONY: lint-fmt
 lint-fmt: fmt
@@ -78,13 +87,13 @@ lint-fmt: fmt
 .PHONY: build-image
 build-image:
 	@echo "==> Building docker image ${REPO}/${NAME}:$(VERSION)"
-	@docker build --platform ${DOCKER_BUILD_PLATFORM} --build-arg VERSION=$(VERSION:v%=%)  --build-arg GH_TOKEN=${GH_TOKEN} --build-arg COMMIT=$(COMMIT) --build-arg DATE=$(DATE) -t ${REPO}/${NAME}:$(VERSION) .
+	@docker build --platform ${DOCKER_BUILD_PLATFORM} --build-arg VERSION=$(VERSION:v%=%) --build-arg COMMIT=$(COMMIT) --build-arg DATE=$(DATE) -t ${REPO}/${NAME}:$(VERSION) .
 	@docker tag ${REPO}/${NAME}:$(VERSION) ${REPO}/${NAME}:latest
 
 .PHONY: build-image-linux
 build-image-linux:
 	@echo "==> Building docker image ${REPO}/${NAME}:$(VERSION)"
-	@docker build --platform ${DOCKER_LINUX_BUILD_PLATFORM} --build-arg VERSION=$(VERSION:v%=%)  --build-arg GH_TOKEN=${GH_TOKEN} --build-arg COMMIT=$(COMMIT) --build-arg DATE=$(DATE) -t ${REPO}/${NAME}:$(VERSION) .
+	@docker build --platform ${DOCKER_LINUX_BUILD_PLATFORM} --build-arg VERSION=$(VERSION:v%=%) --build-arg COMMIT=$(COMMIT) --build-arg DATE=$(DATE) -t ${REPO}/${NAME}:$(VERSION) .
 	@docker tag ${REPO}/${NAME}:$(VERSION) ${REPO}/${NAME}:latest
 
 .PHONY: push

@@ -32,7 +32,7 @@ func main() {
 }
 
 func getTableSchema(tableName string, configuration map[string]string) (*fivetran_sdk_v2.TableSelection, error) {
-	conn, err := grpc.Dial(*addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(*addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		log.Fatalf("did not connect: %v", err)
 	}
@@ -66,7 +66,7 @@ func getTableSchema(tableName string, configuration map[string]string) (*fivetra
 }
 
 func tailTable() {
-	conn, err := grpc.Dial(*addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(*addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		log.Fatalf("did not connect: %v", err)
 	}
