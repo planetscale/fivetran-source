@@ -758,9 +758,69 @@ func TestRead_FiltersNonExistentColumns(t *testing.T) {
 	}
 }
 
-func TestRead_ReturnsLastKnownPKCursorAfterMaxTimeout(t *testing.T) {
+func TestRead_ReturnsLastKnownPKCursorAfterMaxNoProgressTimeout(t *testing.T) {
 	originalMaxTimeouts := maxConsecutiveSyncTimeouts
 	maxConsecutiveSyncTimeouts = 1
+	t.Cleanup(func() {
+		maxConsecutiveSyncTimeouts = originalMaxTimeouts
+	})
+
+	dbl := &dbLogger{}
+	ped := connectClient{}
+	getKeyspaceTableColumnsFunc := func(ctx context.Context, keyspaceName string, tableName string) ([]MysqlColumn, error) {
+		return []MysqlColumn{{Name: "id", Type: "bigint", IsPrimaryKey: true}}, nil
+	}
+	mysqlClient := NewTestMysqlClient(getKeyspaceTableColumnsFunc)
+	ped.Mysql = &mysqlClient
+
+	stopCursor := &psdbconnect.TableCursor{
+		Shard:    "-",
+		Keyspace: "connect-test",
+		Position: "STOP_GTID",
+	}
+	copyCursor := &psdbconnect.TableCursor{
+		Shard:       "-",
+		Keyspace:    "connect-test",
+		LastKnownPk: testLastKnownPK("42"),
+	}
+
+	getCurrentVGtidClient := &connectSyncClientMock{
+		syncResponses: []*psdbconnect.SyncResponse{{Cursor: stopCursor}},
+	}
+	syncClient := &connectSyncClientMock{
+		recvFn: func() (*psdbconnect.SyncResponse, error) {
+			return nil, status.Error(codes.DeadlineExceeded, "server deadline")
+		},
+	}
+
+	cc := clientConnectionMock{
+		syncFn: func(ctx context.Context, in *psdbconnect.SyncRequest, opts ...grpc.CallOption) (psdbconnect.Connect_SyncClient, error) {
+			if in.Cursor.Position == "current" {
+				return getCurrentVGtidClient, nil
+			}
+			assert.Empty(t, in.Cursor.Position)
+			assert.NotNil(t, in.Cursor.LastKnownPk)
+			return syncClient, nil
+		},
+	}
+	ped.clientFn = func(ctx context.Context, ps PlanetScaleSource) (psdbconnect.ConnectClient, error) {
+		return &cc, nil
+	}
+
+	sc, err := ped.Read(context.Background(), dbl, PlanetScaleSource{Database: "connect-test"}, "customers", []string{"id"}, copyCursor, nil, nil, nil)
+	assert.NoError(t, err)
+	if assert.NotNil(t, sc) {
+		cursor, err := sc.SerializedCursorToTableCursor()
+		assert.NoError(t, err)
+		assert.Empty(t, cursor.Position)
+		assert.NotNil(t, cursor.LastKnownPk)
+	}
+	assert.Equal(t, 2, cc.syncFnInvokedCount)
+}
+
+func TestRead_DoesNotStopAfterProgressingTimeoutWindows(t *testing.T) {
+	originalMaxTimeouts := maxConsecutiveSyncTimeouts
+	maxConsecutiveSyncTimeouts = 3
 	t.Cleanup(func() {
 		maxConsecutiveSyncTimeouts = originalMaxTimeouts
 	})
@@ -782,54 +842,77 @@ func TestRead_ReturnsLastKnownPKCursorAfterMaxTimeout(t *testing.T) {
 		Keyspace: "connect-test",
 		Position: "STOP_GTID",
 	}
-	copyCursor := &psdbconnect.TableCursor{
-		Shard:       "-",
-		Keyspace:    "connect-test",
-		LastKnownPk: testLastKnownPK("42"),
+	afterStopCursor := &psdbconnect.TableCursor{
+		Shard:    "-",
+		Keyspace: "connect-test",
+		Position: "AFTER_STOP_GTID",
 	}
 	testFields := sqltypes.MakeTestFields("id|name", "int64|varbinary")
-	copyResponseSent := false
-
-	getCurrentVGtidClient := &connectSyncClientMock{
-		syncResponses: []*psdbconnect.SyncResponse{{Cursor: stopCursor}},
-	}
-	syncClient := &connectSyncClientMock{
-		recvFn: func() (*psdbconnect.SyncResponse, error) {
-			if !copyResponseSent {
-				copyResponseSent = true
-				return &psdbconnect.SyncResponse{
-					Result: []*query.QueryResult{
-						sqltypes.ResultToProto3(sqltypes.MakeTestResult(testFields, "42|copied")),
-					},
-					Cursor: copyCursor,
-				}, nil
-			}
-			return nil, status.Error(codes.DeadlineExceeded, "server deadline")
-		},
-	}
+	progressingWindows := maxConsecutiveSyncTimeouts + 2
+	syncAttempts := 0
 
 	cc := clientConnectionMock{
 		syncFn: func(ctx context.Context, in *psdbconnect.SyncRequest, opts ...grpc.CallOption) (psdbconnect.Connect_SyncClient, error) {
 			if in.Cursor.Position == "current" {
-				return getCurrentVGtidClient, nil
+				return &connectSyncClientMock{
+					syncResponses: []*psdbconnect.SyncResponse{{Cursor: stopCursor}},
+				}, nil
 			}
-			assert.Empty(t, in.Cursor.Position)
-			return syncClient, nil
+
+			syncAttempts++
+			if syncAttempts <= progressingWindows {
+				lastPK := fmt.Sprintf("%d", syncAttempts)
+				sentResponse := false
+				return &connectSyncClientMock{
+					recvFn: func() (*psdbconnect.SyncResponse, error) {
+						if !sentResponse {
+							sentResponse = true
+							return &psdbconnect.SyncResponse{
+								Result: []*query.QueryResult{
+									sqltypes.ResultToProto3(sqltypes.MakeTestResult(testFields, fmt.Sprintf("%s|copied", lastPK))),
+								},
+								Cursor: &psdbconnect.TableCursor{
+									Shard:       "-",
+									Keyspace:    "connect-test",
+									LastKnownPk: testLastKnownPK(lastPK),
+								},
+							}, nil
+						}
+						return nil, status.Error(codes.DeadlineExceeded, "server deadline")
+					},
+				}, nil
+			}
+
+			return &connectSyncClientMock{
+				syncResponses: []*psdbconnect.SyncResponse{
+					{Cursor: stopCursor},
+					{Cursor: afterStopCursor},
+				},
+			}, nil
 		},
 	}
 	ped.clientFn = func(ctx context.Context, ps PlanetScaleSource) (psdbconnect.ConnectClient, error) {
 		return &cc, nil
 	}
 
-	sc, err := ped.Read(context.Background(), dbl, PlanetScaleSource{Database: "connect-test"}, "customers", []string{"id"}, initialCursor, nil, nil, nil)
+	rows := 0
+	sc, err := ped.Read(context.Background(), dbl, PlanetScaleSource{Database: "connect-test"}, "customers", []string{"id"}, initialCursor, func(*sqltypes.Result, Operation) error {
+		rows++
+		return nil
+	}, nil, nil)
 	assert.NoError(t, err)
 	if assert.NotNil(t, sc) {
 		cursor, err := sc.SerializedCursorToTableCursor()
 		assert.NoError(t, err)
-		assert.Empty(t, cursor.Position)
-		assert.NotNil(t, cursor.LastKnownPk)
+		assert.Equal(t, afterStopCursor.Position, cursor.Position)
+		assert.Nil(t, cursor.LastKnownPk)
 	}
-	assert.Equal(t, 2, cc.syncFnInvokedCount)
+	assert.Equal(t, progressingWindows, rows)
+	assert.Equal(t, progressingWindows+1, syncAttempts)
+	for _, msg := range dbl.messages {
+		assert.NotContains(t, msg.message, "Reached maximum consecutive no-progress timeouts")
+		assert.NotContains(t, msg.message, "Stopping sync.")
+	}
 }
 
 func TestRead_CancelDuringTimeoutBackoffReturnsImmediately(t *testing.T) {

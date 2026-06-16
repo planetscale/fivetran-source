@@ -150,7 +150,9 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 		logger.Info(fmt.Sprintf(preamble+"new rows found, syncing rows for %v", readDuration))
 		logger.Info(fmt.Sprintf(preamble+"syncing rows with cursor [%v]", currentPosition))
 
+		previousPosition := cloneTableCursor(currentPosition)
 		currentPosition, err = p.sync(ctx, logger, tableName, existingColumns, currentPosition, latestCursorPosition, ps, tabletType, readDuration, onResult, onCursor, onUpdate)
+		madeProgress := tableCursorMadeProgress(previousPosition, currentPosition)
 		if tableCursorHasProgress(currentPosition) {
 			currentSerializedCursor, sErr = TableCursorToSerializedCursor(currentPosition)
 			if sErr != nil {
@@ -186,68 +188,71 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 					}
 
 					return currentSerializedCursor, err
-				} else {
-					consecutiveTimeouts++
-					logger.Info(fmt.Sprintf("%sTimeout occurred (%d/%d consecutive timeouts)", preamble, consecutiveTimeouts, maxConsecutiveSyncTimeouts))
-
-					if consecutiveTimeouts >= maxConsecutiveSyncTimeouts {
-						logger.Info(fmt.Sprintf("%sReached maximum consecutive timeouts (%d), stopping sync", preamble, maxConsecutiveSyncTimeouts))
-
-						warningMessage := fmt.Sprintf("Timeout occurred while reading table %s after %d consecutive attempts. Stopping sync.", tableName, consecutiveTimeouts)
-
-						if serializer, ok := logger.(interface {
-							SendWarningAlert(string) error
-						}); ok {
-							if err := serializer.SendWarningAlert(warningMessage); err != nil {
-								logger.Warning(fmt.Sprintf("Failed to send warning message: %v", err))
-							}
-						} else {
-							// Fallback to regular warning log if serializer doesn't support SendWarningAlert
-							logger.Warning(warningMessage)
-						}
-
-						return currentSerializedCursor, nil
-					}
-
-					// Apply exponential backoff
-					logger.Info(fmt.Sprintf("%sApplying backoff delay: %v", preamble, backoffDuration))
-					backoffTimer := time.NewTimer(backoffDuration)
-					select {
-					case <-ctx.Done():
-						if !backoffTimer.Stop() {
-							<-backoffTimer.C
-						}
-						return currentSerializedCursor, ctx.Err()
-					case <-backoffTimer.C:
-					}
-					backoffDuration = time.Duration(math.Min(float64(backoffDuration)*2, float64(5*time.Minute))) // Cap at 5 minutes
-
-					newReadDuration := time.Duration(float64(readDuration) * timeoutMultiplier)
-					readDuration = func() time.Duration {
-						if newReadDuration > maxTimeout {
-							return maxTimeout
-						}
-						return newReadDuration
-					}()
-
-					logger.Info(fmt.Sprintf("%sIncreased read timeout to: %v", preamble, readDuration))
-					logger.Info(fmt.Sprintf("%sContinuing with cursor after server timeout (attempt %d/%d)", preamble, consecutiveTimeouts, maxConsecutiveSyncTimeouts))
 				}
+
+				newReadDuration := time.Duration(float64(readDuration) * timeoutMultiplier)
+				readDuration = func() time.Duration {
+					if newReadDuration > maxTimeout {
+						return maxTimeout
+					}
+					return newReadDuration
+				}()
+
+				if madeProgress {
+					if consecutiveTimeouts > 0 {
+						logger.Info(fmt.Sprintf("%sTimeout occurred after cursor progress; resetting no-progress timeout counter (was %d)", preamble, consecutiveTimeouts))
+					} else {
+						logger.Info(fmt.Sprintf("%sTimeout occurred after cursor progress; continuing without incrementing no-progress timeout counter", preamble))
+					}
+					consecutiveTimeouts = 0
+					backoffDuration = 10 * time.Second
+					logger.Info(fmt.Sprintf("%sIncreased read timeout to: %v", preamble, readDuration))
+					continue
+				}
+
+				consecutiveTimeouts++
+				logger.Info(fmt.Sprintf("%sTimeout occurred without cursor progress (%d/%d consecutive no-progress timeouts)", preamble, consecutiveTimeouts, maxConsecutiveSyncTimeouts))
+
+				if consecutiveTimeouts >= maxConsecutiveSyncTimeouts {
+					logger.Info(fmt.Sprintf("%sReached maximum consecutive no-progress timeouts (%d), stopping sync", preamble, maxConsecutiveSyncTimeouts))
+
+					warningMessage := fmt.Sprintf("Timeout occurred while reading table %s after %d consecutive attempts without cursor progress. Stopping sync.", tableName, consecutiveTimeouts)
+
+					if serializer, ok := logger.(interface {
+						SendWarningAlert(string) error
+					}); ok {
+						if err := serializer.SendWarningAlert(warningMessage); err != nil {
+							logger.Warning(fmt.Sprintf("Failed to send warning message: %v", err))
+						}
+					} else {
+						// Fallback to regular warning log if serializer doesn't support SendWarningAlert
+						logger.Warning(warningMessage)
+					}
+
+					return currentSerializedCursor, nil
+				}
+
+				// Apply exponential backoff only for timeouts that did not move the cursor.
+				logger.Info(fmt.Sprintf("%sApplying backoff delay: %v", preamble, backoffDuration))
+				backoffTimer := time.NewTimer(backoffDuration)
+				select {
+				case <-ctx.Done():
+					if !backoffTimer.Stop() {
+						<-backoffTimer.C
+					}
+					return currentSerializedCursor, ctx.Err()
+				case <-backoffTimer.C:
+				}
+				backoffDuration = time.Duration(math.Min(float64(backoffDuration)*2, float64(5*time.Minute))) // Cap at 5 minutes
+
+				logger.Info(fmt.Sprintf("%sIncreased read timeout to: %v", preamble, readDuration))
+				logger.Info(fmt.Sprintf("%sContinuing with cursor after server timeout without progress (attempt %d/%d)", preamble, consecutiveTimeouts, maxConsecutiveSyncTimeouts))
 			} else if errors.Is(err, io.EOF) {
 				logger.Info(fmt.Sprintf("%vFinished reading all rows for table [%v]", preamble, tableName))
 				return currentSerializedCursor, nil
 			} else {
 				logger.Warning(fmt.Sprintf(preamble+"non-grpc error [%v]]", err))
 				return currentSerializedCursor, err
-			}
-		} else {
-			// Reset timeout counter on successful sync
-			if consecutiveTimeouts > 0 {
-				logger.Info(fmt.Sprintf("%sSync successful, resetting timeout counter (was %d)", preamble, consecutiveTimeouts))
-				consecutiveTimeouts = 0
-				backoffDuration = 10 * time.Second // Reset backoff
-				readDuration = 1 * time.Minute     // Reset read duration to original value
-				logger.Info(fmt.Sprintf("%sReset read timeout to: %v", preamble, readDuration))
 			}
 		}
 	}
@@ -389,6 +394,16 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 
 func tableCursorHasProgress(tc *psdbconnect.TableCursor) bool {
 	return tc != nil && (tc.Position != "" || tc.LastKnownPk != nil)
+}
+
+func tableCursorMadeProgress(before, after *psdbconnect.TableCursor) bool {
+	if after == nil {
+		return false
+	}
+	if before == nil {
+		return tableCursorHasProgress(after)
+	}
+	return before.Position != after.Position || !proto.Equal(before.LastKnownPk, after.LastKnownPk)
 }
 
 func shouldCheckpointCursor(tc *psdbconnect.TableCursor, recordsSinceCheckpoint int, lastCheckpoint time.Time) bool {
