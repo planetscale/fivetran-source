@@ -71,6 +71,118 @@ func TestIntegrationBasicInsertUpdateDelete(t *testing.T) {
 	})
 }
 
+func TestIntegrationShardDiscoveryIgnoresSiblingKeyspacePrefix(t *testing.T) {
+	psc := loadIntegrationSource(t)
+	shardedPSC := psc
+	shardedPSC.Database = integrationShardedDatabaseName(psc)
+
+	mysqlClient, err := lib.NewMySQL(&psc)
+	if err != nil {
+		t.Fatalf("create mysql client: %v", err)
+	}
+	defer mysqlClient.Close()
+
+	shards, err := mysqlClient.GetVitessShards(context.Background(), psc)
+	if err != nil {
+		t.Fatalf("get base shards: %v", err)
+	}
+	shardedShards, err := mysqlClient.GetVitessShards(context.Background(), shardedPSC)
+	if err != nil {
+		if !integrationShardedRequired(t) {
+			t.Skipf("sharded integration database %s is not available; set DATABASE_SHARDED_NAME: %v", shardedPSC.Database, err)
+		}
+		t.Fatalf("get sharded sibling shards: %v", err)
+	}
+	if len(shardedShards) == 0 {
+		if integrationShardedRequired(t) {
+			t.Fatalf("sharded integration database %s has no shards", shardedPSC.Database)
+		}
+		t.Skipf("sharded integration database %s is not configured; set DATABASE_SHARDED_NAME", shardedPSC.Database)
+	}
+
+	assertIntegrationStrings(t, shards, []string{"-"})
+	assertIntegrationShardSet(t, shardedShards, []string{"-80", "80-"})
+	for _, shard := range append(shards, shardedShards...) {
+		if strings.Contains(shard, "/") {
+			t.Fatalf("shard name still has keyspace prefix for %s/%s: %q", psc.Database, shardedPSC.Database, shard)
+		}
+	}
+}
+
+func TestIntegrationShardedInsertUpdateDelete(t *testing.T) {
+	psc := loadIntegrationSource(t)
+	psc, shards := loadIntegrationShardedSource(t, psc)
+	ctx := context.Background()
+	tableName := integrationTableName(t)
+
+	assertIntegrationShardSet(t, shards, []string{"-80", "80-"})
+
+	db := openIntegrationSQL(t, psc)
+	t.Cleanup(func() {
+		if _, err := db.ExecContext(context.Background(), fmt.Sprintf(
+			"alter vschema on %s drop vindex hash",
+			quoteQualifiedIdent(psc.Database, tableName),
+		)); err != nil {
+			t.Logf("drop integration vschema vindex for %s.%s: %v", psc.Database, tableName, err)
+		}
+		if _, err := db.ExecContext(context.Background(), "drop table if exists "+quoteIdent(tableName)); err != nil {
+			t.Logf("drop integration table %s: %v", tableName, err)
+		}
+		_ = db.Close()
+	})
+
+	mustExec(t, ctx, db, fmt.Sprintf(`
+		create table %s (
+			id bigint primary key,
+			name varchar(64) not null,
+			qty int not null,
+			flag tinyint(1) not null
+		)`, quoteIdent(tableName)))
+	mustExec(t, ctx, db, fmt.Sprintf(
+		"alter vschema on %s add vindex hash(id) using hash",
+		quoteQualifiedIdent(psc.Database, tableName),
+	))
+
+	// IDs 1 and 4 route to different shards with the Vitess hash vindex.
+	mustExec(t, ctx, db, fmt.Sprintf(
+		"insert into %s (id, name, qty, flag) values (1, 'one', 10, 1), (4, 'four', 40, 0), (5, 'five', 50, 1)",
+		quoteIdent(tableName),
+	))
+	assertIntegrationRowsOnEveryShard(t, psc, tableName, shards)
+
+	model := map[int64]map[string]any{}
+	first, state := runIntegrationSync(t, psc, tableName, []string{"id", "name", "qty", "flag"}, nil)
+	assertIntegrationStateShards(t, state, psc.Database, tableName, shards)
+	applyIntegrationRecords(t, model, first.recordsForTable(tableName))
+	assertIntegrationRows(t, model, map[int64]map[string]any{
+		1: {"id": int64(1), "name": "one", "qty": int64(10), "flag": true},
+		4: {"id": int64(4), "name": "four", "qty": int64(40), "flag": false},
+		5: {"id": int64(5), "name": "five", "qty": int64(50), "flag": true},
+	})
+
+	mustExec(t, ctx, db, fmt.Sprintf("update %s set qty = 11 where id = 1", quoteIdent(tableName)))
+	mustExec(t, ctx, db, fmt.Sprintf("update %s set qty = 44, flag = 1 where id = 4", quoteIdent(tableName)))
+	mustExec(t, ctx, db, fmt.Sprintf("delete from %s where id = 5", quoteIdent(tableName)))
+	mustExec(t, ctx, db, fmt.Sprintf(
+		"insert into %s (id, name, qty, flag) values (2, 'two', 20, 0)",
+		quoteIdent(tableName),
+	))
+	assertIntegrationRowsOnEveryShard(t, psc, tableName, shards)
+
+	second, state := runIntegrationSync(t, psc, tableName, []string{"id", "name", "qty", "flag"}, state)
+	assertIntegrationStateShards(t, state, psc.Database, tableName, shards)
+	applyIntegrationRecords(t, model, second.recordsForTable(tableName))
+	assertIntegrationRows(t, model, map[int64]map[string]any{
+		1: {"id": int64(1), "name": "one", "qty": int64(11), "flag": true},
+		2: {"id": int64(2), "name": "two", "qty": int64(20), "flag": false},
+		4: {"id": int64(4), "name": "four", "qty": int64(44), "flag": true},
+	})
+
+	idle, state := runIntegrationSync(t, psc, tableName, []string{"id", "name", "qty", "flag"}, state)
+	assertIntegrationStateShards(t, state, psc.Database, tableName, shards)
+	assertIntegrationRecordCount(t, idle.recordsForTable(tableName), 0)
+}
+
 func TestIntegrationBitValues(t *testing.T) {
 	psc := loadIntegrationSource(t)
 	ctx := context.Background()
@@ -505,6 +617,46 @@ func loadIntegrationSource(t *testing.T) lib.PlanetScaleSource {
 	return psc
 }
 
+func loadIntegrationShardedSource(t *testing.T, base lib.PlanetScaleSource) (lib.PlanetScaleSource, []string) {
+	t.Helper()
+
+	required := integrationShardedRequired(t)
+	sharded := base
+	sharded.Database = integrationShardedDatabaseName(base)
+
+	mysqlClient, err := lib.NewMySQL(&sharded)
+	if err != nil {
+		t.Fatalf("create mysql client for sharded database %s: %v", sharded.Database, err)
+	}
+	defer mysqlClient.Close()
+
+	shards, err := mysqlClient.GetVitessShards(context.Background(), sharded)
+	if err != nil {
+		if !required {
+			t.Skipf("sharded integration database %s is not available; set DATABASE_SHARDED_NAME: %v", sharded.Database, err)
+		}
+		t.Fatalf("get shards for sharded database %s: %v", sharded.Database, err)
+	}
+	if len(shards) == 0 {
+		if required {
+			t.Fatalf("sharded integration database %s has no shards", sharded.Database)
+		}
+		t.Skipf("sharded integration database %s is not configured; set DATABASE_SHARDED_NAME", sharded.Database)
+	}
+	if len(shards) < 2 {
+		t.Fatalf("sharded integration database %s must have at least two shards, got %v", sharded.Database, shards)
+	}
+
+	return sharded, shards
+}
+
+func integrationShardedDatabaseName(base lib.PlanetScaleSource) string {
+	if name := os.Getenv("DATABASE_SHARDED_NAME"); name != "" {
+		return name
+	}
+	return base.Database + "_sharded"
+}
+
 func openIntegrationSQL(t *testing.T, psc lib.PlanetScaleSource) *sql.DB {
 	t.Helper()
 
@@ -788,6 +940,73 @@ func assertIntegrationRowsContain(t *testing.T, got, want map[int64]map[string]a
 	}
 }
 
+func assertIntegrationShardSet(t *testing.T, got, want []string) {
+	t.Helper()
+
+	remaining := map[string]int{}
+	for _, shard := range got {
+		remaining[shard]++
+	}
+	for _, shard := range want {
+		remaining[shard]--
+	}
+	for shard, count := range remaining {
+		if count != 0 {
+			t.Fatalf("unexpected shards: want %v, got %v; shard %s count delta %d", want, got, shard, count)
+		}
+	}
+}
+
+func assertIntegrationStateShards(t *testing.T, state *lib.SyncState, keyspaceName, tableName string, shards []string) {
+	t.Helper()
+
+	if state == nil {
+		t.Fatalf("sync state is nil")
+	}
+	keyspace, ok := state.Keyspaces[keyspaceName]
+	if !ok {
+		t.Fatalf("state missing keyspace %s: %+v", keyspaceName, state.Keyspaces)
+	}
+	streamName := keyspaceName + ":" + tableName
+	stream, ok := keyspace.Streams[streamName]
+	if !ok {
+		t.Fatalf("state missing stream %s: %+v", streamName, keyspace.Streams)
+	}
+	for _, shard := range shards {
+		cursor, ok := stream.Shards[shard]
+		if !ok {
+			t.Fatalf("state missing shard %s in stream %s: %+v", shard, streamName, stream.Shards)
+		}
+		if cursor == nil {
+			t.Fatalf("state shard %s in stream %s has nil cursor", shard, streamName)
+		}
+	}
+}
+
+func assertIntegrationRowsOnEveryShard(t *testing.T, psc lib.PlanetScaleSource, tableName string, shards []string) {
+	t.Helper()
+
+	counts := map[string]int{}
+	for _, shard := range shards {
+		shardPSC := psc
+		shardPSC.Database = psc.Database + ":" + shard
+		db := openIntegrationSQL(t, shardPSC)
+		var count int
+		err := db.QueryRowContext(
+			context.Background(),
+			fmt.Sprintf("select count(*) from %s", quoteIdent(tableName)),
+		).Scan(&count)
+		_ = db.Close()
+		if err != nil {
+			t.Fatalf("count rows on shard %s: %v", shard, err)
+		}
+		counts[shard] = count
+		if count == 0 {
+			t.Fatalf("expected rows on every shard, got counts %v", counts)
+		}
+	}
+}
+
 func insertIntegrationLoadRows(t *testing.T, ctx context.Context, db *sql.DB, tableName string, startID, count int64, version int, rows map[int64]map[string]any) {
 	t.Helper()
 
@@ -891,6 +1110,20 @@ func integrationStressEnabled() bool {
 	return err == nil && value
 }
 
+func integrationShardedRequired(t *testing.T) bool {
+	t.Helper()
+
+	raw := os.Getenv("DATABASE_SHARDED_REQUIRED")
+	if raw == "" {
+		return false
+	}
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		t.Fatalf("parse DATABASE_SHARDED_REQUIRED: %v", err)
+	}
+	return value
+}
+
 func integrationEnvInt(t *testing.T, name string, defaultValue int) int {
 	t.Helper()
 
@@ -925,4 +1158,8 @@ func integrationTableName(t *testing.T) string {
 
 func quoteIdent(identifier string) string {
 	return "`" + strings.ReplaceAll(identifier, "`", "``") + "`"
+}
+
+func quoteQualifiedIdent(keyspaceName, tableName string) string {
+	return quoteIdent(keyspaceName) + "." + quoteIdent(tableName)
 }

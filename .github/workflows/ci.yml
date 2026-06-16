@@ -61,6 +61,8 @@ jobs:
       DOCKER_BUILDKIT: "1"
       DATABASE_HOST: ${{ secrets.PS_INTEGRATION_DATABASE_HOST }}
       DATABASE_NAME: ${{ secrets.PS_INTEGRATION_DATABASE_NAME }}
+      DATABASE_SHARDED_NAME: ${{ format('{0}_sharded', secrets.PS_INTEGRATION_DATABASE_NAME) }}
+      DATABASE_SHARDED_REQUIRED: "1"
       DATABASE_USERNAME: ${{ secrets.PS_INTEGRATION_DATABASE_USERNAME }}
       DATABASE_PASSWORD: ${{ secrets.PS_INTEGRATION_DATABASE_PASSWORD }}
 
@@ -83,6 +85,8 @@ jobs:
           docker compose run --rm --build \
             -e DATABASE_HOST \
             -e DATABASE_NAME \
+            -e DATABASE_SHARDED_NAME \
+            -e DATABASE_SHARDED_REQUIRED \
             -e DATABASE_USERNAME \
             -e DATABASE_PASSWORD \
             ci sh -c '
