@@ -1,8 +1,8 @@
 # Integration Tests
 
 The integration tests run connector paths against a real PlanetScale/Vitess
-database. They are gated behind Go's `integration` build tag and are not part of
-normal unit tests or CI by default.
+database. They are gated behind Go's `integration` build tag, run in CI as a
+dedicated job, and can also be run locally.
 
 ## Credentials
 
@@ -35,6 +35,14 @@ export DATABASE_TREAT_TINY_INT_AS_BOOLEAN=true
 export DATABASE_USE_REPLICA=false
 ```
 
+The GitHub Actions `Integration Tests` job reads the same values from these
+repository secrets:
+
+- `PS_INTEGRATION_DATABASE_HOST`
+- `PS_INTEGRATION_DATABASE_NAME`
+- `PS_INTEGRATION_DATABASE_USERNAME`
+- `PS_INTEGRATION_DATABASE_PASSWORD`
+
 ## Running
 
 Using a config file:
@@ -54,6 +62,8 @@ To include the heavier burst-load scenario:
 ```sh
 make test-integration-stress
 ```
+
+The stress target is intentionally not part of CI.
 
 Stress settings can be tuned with environment variables:
 

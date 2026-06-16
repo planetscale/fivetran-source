@@ -49,3 +49,44 @@ jobs:
 
             ${{ matrix.command }}
           '
+
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    concurrency:
+      group: integration-tests-${{ github.repository }}
+      cancel-in-progress: false
+    env:
+      DOCKER_BUILDKIT: "1"
+      DATABASE_HOST: ${{ secrets.PS_INTEGRATION_DATABASE_HOST }}
+      DATABASE_NAME: ${{ secrets.PS_INTEGRATION_DATABASE_NAME }}
+      DATABASE_USERNAME: ${{ secrets.PS_INTEGRATION_DATABASE_USERNAME }}
+      DATABASE_PASSWORD: ${{ secrets.PS_INTEGRATION_DATABASE_PASSWORD }}
+
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      - name: Verify integration secrets
+        run: |
+          missing=0
+          for name in DATABASE_HOST DATABASE_NAME DATABASE_USERNAME DATABASE_PASSWORD; do
+            if [ -z "${!name}" ]; then
+              echo "::error::$name is not configured"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Run integration tests
+        run: |
+          docker compose run --rm --build \
+            -e DATABASE_HOST \
+            -e DATABASE_NAME \
+            -e DATABASE_USERNAME \
+            -e DATABASE_PASSWORD \
+            ci sh -c '
+              git config --global --add safe.directory "$PWD"
+
+              make test-integration
+            '
