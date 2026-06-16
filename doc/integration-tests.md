@@ -33,6 +33,7 @@ Optional environment overrides:
 ```sh
 export DATABASE_TREAT_TINY_INT_AS_BOOLEAN=true
 export DATABASE_USE_REPLICA=false
+export DATABASE_SHARDED_NAME=fivetran_sharded
 ```
 
 The GitHub Actions `Integration Tests` job runs `make test-integration-stress`
@@ -42,6 +43,21 @@ and reads credentials from these repository secrets:
 - `PS_INTEGRATION_DATABASE_NAME`
 - `PS_INTEGRATION_DATABASE_USERNAME`
 - `PS_INTEGRATION_DATABASE_PASSWORD`
+
+CI expects a sibling sharded keyspace named `${DATABASE_NAME}_sharded`. It must
+have two shards so the suite can prove that VStream reads and checkpoints both
+shards. For example:
+
+```sh
+pscale keyspace create <database> <branch> <database>_sharded \
+  --cluster-size ps-10 \
+  --shards 2 \
+  --wait \
+  --org <org>
+```
+
+The sharded tests create their own tables in that keyspace and add a temporary
+`hash(id)` VSchema vindex for each table before writing rows.
 
 ## Running
 
@@ -91,6 +107,8 @@ The default suite exercises:
 - scalar serialization for decimal, JSON, binary, date, datetime, timestamp, and null values
 - idle syncs that should emit no records once the cursor is current
 - repeated mutation bursts across several checkpointed syncs
+- sibling keyspace shard discovery where one keyspace name is a prefix of another
+- sharded-keyspace syncs with temporary VSchema entries, rows on both shards, and checkpoint state for every shard
 
 The stress suite repeats the burst pattern with configurable row counts and
 cycles. Add future scenarios as additional `TestIntegration...` tests in the
