@@ -1122,7 +1122,6 @@ func TestSync_DirectVStreamHandlesRawEventsAndCopyCompleted(t *testing.T) {
 	testFields := sqltypes.MakeTestFields("id|name", "int64|varbinary")
 	rows := sqltypes.ResultToProto3(sqltypes.MakeTestResult(testFields, "1|first", "2|second")).Rows
 	lastPK := testLastKnownPK("2")
-	lastPK.Fields = nil
 	startCursor := &psdbconnect.TableCursor{
 		Shard:    "-",
 		Keyspace: "connect-test",
@@ -1203,10 +1202,52 @@ func TestSync_DirectVStreamHandlesRawEventsAndCopyCompleted(t *testing.T) {
 	assert.Equal(t, 2, records)
 	assert.Equal(t, 1, vc.vstreamFnInvokedCount)
 	if assert.Len(t, checkpoints, 2) {
+		assert.True(t, proto.Equal(copyCursor, checkpoints[0]))
 		assert.True(t, proto.Equal(doneCursor, checkpoints[1]))
-		assert.NotNil(t, checkpoints[0].LastKnownPk)
-		assert.Equal(t, testFields[:1], checkpoints[0].LastKnownPk.Fields)
 	}
+}
+
+func TestSync_DirectVStreamRejectsFieldlessLastKnownPK(t *testing.T) {
+	dbl := &dbLogger{}
+	ped := connectClient{}
+	lastPK := testLastKnownPK("2")
+	lastPK.Fields = nil
+	startCursor := &psdbconnect.TableCursor{
+		Shard:    "-",
+		Keyspace: "connect-test",
+	}
+	copyCursor := &psdbconnect.TableCursor{
+		Shard:       "-",
+		Keyspace:    "connect-test",
+		Position:    "COPY_GTID",
+		LastKnownPk: lastPK,
+	}
+
+	rawStream := &vstreamClientMock{
+		responses: []*vtgatepb.VStreamResponse{
+			{
+				Events: []*binlogdatapb.VEvent{
+					vstreamVGtidEventFromCursor("customers", copyCursor),
+				},
+			},
+		},
+	}
+	vc := &vstreamConnectionMock{
+		vstreamFn: func(ctx context.Context, in *vtgatepb.VStreamRequest, opts ...grpc.CallOption) (vtgateservicepb.Vitess_VStreamClient, error) {
+			return rawStream, nil
+		},
+	}
+	ped.vstreamClientFn = func(ctx context.Context, ps PlanetScaleSource) (vstreamClient, error) {
+		return vc, nil
+	}
+
+	returnedCursor, err := ped.sync(context.Background(), dbl, "customers", []string{"id", "name"}, startCursor, "STOP_GTID", PlanetScaleSource{Database: "connect-test"}, psdbconnect.TabletType_primary, time.Second, nil, nil, nil)
+
+	assert.Error(t, err)
+	assert.Equal(t, codes.Internal, status.Code(err))
+	assert.ErrorContains(t, err, "missing LastKnownPk field metadata")
+	assert.True(t, proto.Equal(startCursor, returnedCursor))
+	assert.Equal(t, 1, vc.vstreamFnInvokedCount)
 }
 
 func TestSync_CheckpointsHistoricalCopyProgress(t *testing.T) {

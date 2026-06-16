@@ -695,9 +695,11 @@ func handleVStreamEvent(tableName string, cursor *psdbconnect.TableCursor, event
 		}
 		return cursor, count, false, nil
 	case binlogdatapb.VEventType_VGTID:
-		return tableCursorFromVGtid(cursor, event.Vgtid, tableName, fieldsByTable), 0, false, nil
+		next, err := tableCursorFromVGtid(cursor, event.Vgtid, tableName)
+		return next, 0, false, err
 	case binlogdatapb.VEventType_LASTPK:
-		return tableCursorFromLastPK(cursor, event.LastPKEvent, tableName, fieldsByTable), 0, false, nil
+		next, err := tableCursorFromLastPK(cursor, event.LastPKEvent, tableName)
+		return next, 0, false, err
 	case binlogdatapb.VEventType_COPY_COMPLETED:
 		return cursor, 0, true, nil
 	}
@@ -771,9 +773,9 @@ func normalizeVStreamTableName(tableName string) string {
 	return tableName
 }
 
-func tableCursorFromVGtid(cursor *psdbconnect.TableCursor, vgtid *binlogdatapb.VGtid, tableName string, fieldsByTable map[string][]*query.Field) *psdbconnect.TableCursor {
+func tableCursorFromVGtid(cursor *psdbconnect.TableCursor, vgtid *binlogdatapb.VGtid, tableName string) (*psdbconnect.TableCursor, error) {
 	if vgtid == nil {
-		return cursor
+		return cursor, nil
 	}
 	for _, shardGtid := range vgtid.ShardGtids {
 		if shardGtid.Keyspace != cursor.Keyspace || shardGtid.Shard != cursor.Shard {
@@ -783,26 +785,29 @@ func tableCursorFromVGtid(cursor *psdbconnect.TableCursor, vgtid *binlogdatapb.V
 		if shardGtid.Gtid != "" {
 			next.Position = shardGtid.Gtid
 		}
-		next.LastKnownPk = completeLastKnownPKFields(
-			lastKnownPKForTable(shardGtid.TablePKs, tableName),
-			vstreamFieldsForTable(fieldsByTable, tableName),
-		)
-		return next
+		next.LastKnownPk = lastKnownPKForTable(shardGtid.TablePKs, tableName)
+		if err := validateLastKnownPKFields(next.LastKnownPk, tableName); err != nil {
+			return cursor, err
+		}
+		return next, nil
 	}
-	return cursor
+	return cursor, nil
 }
 
-func tableCursorFromLastPK(cursor *psdbconnect.TableCursor, event *binlogdatapb.LastPKEvent, tableName string, fieldsByTable map[string][]*query.Field) *psdbconnect.TableCursor {
+func tableCursorFromLastPK(cursor *psdbconnect.TableCursor, event *binlogdatapb.LastPKEvent, tableName string) (*psdbconnect.TableCursor, error) {
 	if event == nil || event.TableLastPK == nil || normalizeVStreamTableName(event.TableLastPK.TableName) != tableName {
-		return cursor
+		return cursor, nil
 	}
 	next := cloneTableCursor(cursor)
 	if event.Completed {
 		next.LastKnownPk = nil
-		return next
+		return next, nil
 	}
-	next.LastKnownPk = completeLastKnownPKFields(event.TableLastPK.Lastpk, vstreamFieldsForTable(fieldsByTable, event.TableLastPK.TableName))
-	return next
+	next.LastKnownPk = event.TableLastPK.Lastpk
+	if err := validateLastKnownPKFields(next.LastKnownPk, tableName); err != nil {
+		return cursor, err
+	}
+	return next, nil
 }
 
 func lastKnownPKForTable(tablePKs []*binlogdatapb.TableLastPK, tableName string) *query.QueryResult {
@@ -814,17 +819,11 @@ func lastKnownPKForTable(tablePKs []*binlogdatapb.TableLastPK, tableName string)
 	return nil
 }
 
-func completeLastKnownPKFields(lastPK *query.QueryResult, fields []*query.Field) *query.QueryResult {
-	if lastPK == nil || len(lastPK.Fields) > 0 || len(fields) == 0 || len(lastPK.Rows) == 0 {
-		return lastPK
+func validateLastKnownPKFields(lastPK *query.QueryResult, tableName string) error {
+	if lastPK == nil || len(lastPK.Fields) > 0 {
+		return nil
 	}
-	fieldCount := len(lastPK.Rows[0].Lengths)
-	if fieldCount > len(fields) {
-		return lastPK
-	}
-	next := proto.Clone(lastPK).(*query.QueryResult)
-	next.Fields = fields[:fieldCount]
-	return next
+	return status.Error(codes.Internal, fmt.Sprintf("VStream copy cursor for table %s is missing LastKnownPk field metadata", tableName))
 }
 
 func tableCursorHasProgress(tc *psdbconnect.TableCursor) bool {
