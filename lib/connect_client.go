@@ -39,7 +39,7 @@ type DatabaseLogger interface {
 
 var (
 	cursorCheckpointRows       = 1000
-	cursorCheckpointInterval   = 30 * time.Second
+	cursorCheckpointInterval   = 10 * time.Minute
 	maxConsecutiveSyncTimeouts = 5
 )
 
@@ -385,7 +385,7 @@ func tableCursorHasProgress(tc *psdbconnect.TableCursor) bool {
 }
 
 func shouldCheckpointCursor(tc *psdbconnect.TableCursor, recordsSinceCheckpoint int, lastCheckpoint time.Time) bool {
-	if !tableCursorHasProgress(tc) || recordsSinceCheckpoint == 0 {
+	if tc == nil || tc.LastKnownPk == nil || recordsSinceCheckpoint == 0 {
 		return false
 	}
 	if cursorCheckpointRows > 0 && recordsSinceCheckpoint >= cursorCheckpointRows {

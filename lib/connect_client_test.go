@@ -980,6 +980,77 @@ func TestSync_CheckpointsHistoricalCopyProgress(t *testing.T) {
 	}
 }
 
+func TestSync_DoesNotPeriodicallyCheckpointVGTIDProgress(t *testing.T) {
+	originalCheckpointRows := cursorCheckpointRows
+	originalCheckpointInterval := cursorCheckpointInterval
+	cursorCheckpointRows = 1
+	cursorCheckpointInterval = time.Hour
+	t.Cleanup(func() {
+		cursorCheckpointRows = originalCheckpointRows
+		cursorCheckpointInterval = originalCheckpointInterval
+	})
+
+	dbl := &dbLogger{}
+	ped := connectClient{}
+	testFields := sqltypes.MakeTestFields("id|name", "int64|varbinary")
+	startCursor := &psdbconnect.TableCursor{
+		Shard:    "-",
+		Keyspace: "connect-test",
+		Position: "START_GTID",
+	}
+	vgtidCursor := &psdbconnect.TableCursor{
+		Shard:    "-",
+		Keyspace: "connect-test",
+		Position: "MID_GTID",
+	}
+	stopCursor := &psdbconnect.TableCursor{
+		Shard:    "-",
+		Keyspace: "connect-test",
+		Position: "STOP_GTID",
+	}
+	afterStopCursor := &psdbconnect.TableCursor{
+		Shard:    "-",
+		Keyspace: "connect-test",
+		Position: "AFTER_STOP_GTID",
+	}
+
+	syncClient := &connectSyncClientMock{
+		syncResponses: []*psdbconnect.SyncResponse{
+			{
+				Result: []*query.QueryResult{
+					sqltypes.ResultToProto3(sqltypes.MakeTestResult(testFields, "1|first")),
+				},
+				Cursor: vgtidCursor,
+			},
+			{Cursor: stopCursor},
+			{Cursor: afterStopCursor},
+		},
+	}
+	cc := clientConnectionMock{
+		syncFn: func(ctx context.Context, in *psdbconnect.SyncRequest, opts ...grpc.CallOption) (psdbconnect.Connect_SyncClient, error) {
+			return syncClient, nil
+		},
+	}
+	ped.clientFn = func(ctx context.Context, ps PlanetScaleSource) (psdbconnect.ConnectClient, error) {
+		return &cc, nil
+	}
+
+	checkpoints := []*psdbconnect.TableCursor{}
+	onCursor := func(cursor *psdbconnect.TableCursor) error {
+		checkpoints = append(checkpoints, cloneTableCursor(cursor))
+		return nil
+	}
+
+	returnedCursor, err := ped.sync(context.Background(), dbl, "customers", []string{"id", "name"}, startCursor, stopCursor.Position, PlanetScaleSource{Database: "connect-test"}, psdbconnect.TabletType_primary, time.Second, func(*sqltypes.Result, Operation) error {
+		return nil
+	}, onCursor, nil)
+	assert.True(t, errors.Is(err, io.EOF))
+	assert.True(t, proto.Equal(afterStopCursor, returnedCursor))
+	if assert.Len(t, checkpoints, 1) {
+		assert.True(t, proto.Equal(afterStopCursor, checkpoints[0]))
+	}
+}
+
 func TestSync_ResumesHistoricalCopyWithLastKnownPK(t *testing.T) {
 	dbl := &dbLogger{}
 	ped := connectClient{}
