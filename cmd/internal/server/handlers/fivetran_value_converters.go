@@ -282,30 +282,26 @@ func GetEnumConverter(enumValues []string) (ConverterFunc, error) {
 func GetSetConverter(setValues []string) (ConverterFunc, error) {
 	return func(value sqltypes.Value) (*fivetransdk.ValueType, error) {
 		parsedValue := value.ToString()
-		parsedInt, err := strconv.ParseInt(parsedValue, 10, 64)
+		parsedInt, err := strconv.ParseUint(parsedValue, 10, 64)
 		if err != nil {
-			// if value is not an integer, we just serialize as a strong
+			// if value is not an integer, we just serialize as a string
 			return &fivetransdk.ValueType{
 				Inner: &fivetransdk.ValueType_Json{Json: CleanStringValue(parsedValue)},
 			}, nil
 		}
 		mappedValues := []string{}
-		// SET mapping is stored as a binary value, i.e. 1001
-		bytes := strconv.FormatInt(parsedInt, 2)
-		numValues := len(bytes)
-		// if the bit is ON, that means the value at that index is included in the SET
-		for i, char := range bytes {
-			if char == '1' {
-				// bytes are in reverse order, the first bit represents the last value in the SET
-				mappedValue := setValues[numValues-(i+1)]
-				mappedValues = append([]string{mappedValue}, mappedValues...)
+		for idx, mask := 0, parsedInt; mask > 0; idx, mask = idx+1, mask>>1 {
+			if mask&1 == 1 {
+				if idx >= len(setValues) {
+					return nil, fmt.Errorf("failed to serialize Type_SET: bit %d has no mapped value", idx+1)
+				}
+				mappedValues = append(mappedValues, setValues[idx])
 			}
 		}
 
-		// If we can't find the values, just serialize as a string
 		if len(mappedValues) == 0 {
 			return &fivetransdk.ValueType{
-				Inner: &fivetransdk.ValueType_Json{Json: CleanStringValue(parsedValue)},
+				Inner: &fivetransdk.ValueType_Json{Json: ""},
 			}, nil
 		}
 
