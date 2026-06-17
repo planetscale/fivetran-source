@@ -287,6 +287,7 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 	defer close()
 
 	syncStartCursor := cloneTableCursor(tc)
+	historicalCopyMode := syncStartCursor.Position == "" || syncStartCursor.LastKnownPk != nil
 
 	logger.Info(fmt.Sprintf("%sSyncing with cursor position : [%v], using last known PK : %v, stop cursor is : [%v]", preamble, tc.Position, tc.LastKnownPk != nil, stopPosition))
 
@@ -307,6 +308,7 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 		}
 
 		copyCompleted := false
+		reachedStopPosition := false
 		for _, event := range res.Events {
 			var (
 				eventRecords       int
@@ -318,12 +320,12 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 			}
 			recordsSinceCheckpoint += eventRecords
 			copyCompleted = copyCompleted || eventCopyCompleted
+			reachedStopPosition = reachedStopPosition || (!historicalCopyMode && stopPosition != "" && tc.LastKnownPk == nil && tc.Position == stopPosition)
 		}
 
-		// A single VGTID can appear in multiple ordered responses. Once we reach
-		// the desired stop VGTID, keep reading while the cursor stays there so all
-		// rows for that position are processed, then stop when a newer VGTID arrives.
-		watchForVgGtidChange = watchForVgGtidChange || tc.Position == stopPosition
+		// Vitess emits the VGTID at transaction commit after all row events for
+		// that transaction, so reaching the stop VGTID is an inclusive boundary.
+		watchForVgGtidChange = watchForVgGtidChange || reachedStopPosition
 
 		if shouldCheckpointCursor(tc, recordsSinceCheckpoint, lastCheckpoint) && onCursor != nil {
 			if err := onCursor(tc); err != nil {
@@ -333,7 +335,7 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 			lastCheckpoint = time.Now()
 		}
 
-		if copyCompleted || (watchForVgGtidChange && tc.LastKnownPk == nil && tc.Position != stopPosition) {
+		if copyCompleted || reachedStopPosition || (watchForVgGtidChange && tc.LastKnownPk == nil && tc.Position != stopPosition) {
 			if onCursor != nil {
 				if err := onCursor(tc); err != nil {
 					return tc, status.Error(codes.Internal, "unable to serialize cursor")

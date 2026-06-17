@@ -509,8 +509,8 @@ func TestRead_CallbackErrorsReturnStartCursor(t *testing.T) {
 			}
 			syncClient := &connectSyncClientMock{
 				syncResponses: []*psdbconnect.SyncResponse{
-					{Cursor: newTC},
 					tt.response,
+					{Cursor: newTC},
 				},
 			}
 
@@ -553,15 +553,19 @@ func TestRead_CanStopAtWellKnownCursor(t *testing.T) {
 	// when the client tries to get the "current" vgtid,
 	// we return the ante-penultimate element of the array.
 	currentVGtidPosition := (numResponses * 3) - 4
-	// this is the next vgtid that should stop the sync session.
-	nextVGtidPosition := currentVGtidPosition + 1
 	responses := make([]*psdbconnect.SyncResponse, 0, numResponses)
+	startCursor := &psdbconnect.TableCursor{
+		Shard:    "-",
+		Keyspace: "connect-test",
+		Position: "e4e20f06-e28f-11ec-8d20-8e7ac09cb64c:1-0",
+	}
 	for i := 0; i < numResponses; i++ {
 		// this simulates multiple events being returned, for the same vgtid, from vstream
 		for x := 0; x < 3; x++ {
 			var (
 				inserts []*query.QueryResult
 				deletes []*psdbconnect.DeletedRow
+				cursor  *psdbconnect.TableCursor
 			)
 			if x == 2 {
 				inserts = []*query.QueryResult{
@@ -585,15 +589,16 @@ func TestRead_CanStopAtWellKnownCursor(t *testing.T) {
 						)),
 					},
 				}
-			}
-
-			vgtid := fmt.Sprintf("e4e20f06-e28f-11ec-8d20-8e7ac09cb64c:1-%v", i)
-			responses = append(responses, &psdbconnect.SyncResponse{
-				Cursor: &psdbconnect.TableCursor{
+				vgtid := fmt.Sprintf("e4e20f06-e28f-11ec-8d20-8e7ac09cb64c:1-%v", i)
+				cursor = &psdbconnect.TableCursor{
 					Shard:    "-",
 					Keyspace: "connect-test",
 					Position: vgtid,
-				},
+				}
+			}
+
+			responses = append(responses, &psdbconnect.SyncResponse{
+				Cursor:  cursor,
 				Result:  inserts,
 				Deletes: deletes,
 			})
@@ -648,18 +653,17 @@ func TestRead_CanStopAtWellKnownCursor(t *testing.T) {
 	mysqlClient := NewTestMysqlClient(getKeyspaceTableColumnsFunc)
 	ped.Mysql = &mysqlClient
 
-	sc, err := ped.Read(context.Background(), dbl, ps, "customers", nil, responses[0].Cursor, onRow, onCursor, nil)
+	sc, err := ped.Read(context.Background(), dbl, ps, "customers", nil, startCursor, onRow, onCursor, nil)
 
 	assert.NoError(t, err)
-	// sync should start at the first vgtid
-	esc, err := TableCursorToSerializedCursor(responses[nextVGtidPosition].Cursor)
+	esc, err := TableCursorToSerializedCursor(responses[currentVGtidPosition].Cursor)
 	assert.NoError(t, err)
 	assert.Equal(t, esc, sc)
 	assert.Equal(t, 2, cc.syncFnInvokedCount)
 
 	assert.Equal(t, "[connect-test:customers shard:- tabletType:primary] Finished reading all rows for table [customers]", dbl.messages[len(dbl.messages)-1].message)
-	assert.Equal(t, 2*(nextVGtidPosition/3), insertedRowCounter)
-	assert.Equal(t, 2*(nextVGtidPosition/3), deletedRowCounter)
+	assert.Equal(t, 2*((currentVGtidPosition/3)+1), insertedRowCounter)
+	assert.Equal(t, 2*((currentVGtidPosition/3)+1), deletedRowCounter)
 }
 
 func TestRead_FiltersNonExistentColumns(t *testing.T) {
@@ -846,11 +850,6 @@ func TestRead_DoesNotStopAfterProgressingTimeoutWindows(t *testing.T) {
 		Keyspace: "connect-test",
 		Position: "STOP_GTID",
 	}
-	afterStopCursor := &psdbconnect.TableCursor{
-		Shard:    "-",
-		Keyspace: "connect-test",
-		Position: "AFTER_STOP_GTID",
-	}
 	testFields := sqltypes.MakeTestFields("id|name", "int64|varbinary")
 	progressingWindows := maxConsecutiveSyncTimeouts + 2
 	syncAttempts := 0
@@ -890,7 +889,6 @@ func TestRead_DoesNotStopAfterProgressingTimeoutWindows(t *testing.T) {
 			return &connectSyncClientMock{
 				syncResponses: []*psdbconnect.SyncResponse{
 					{Cursor: stopCursor},
-					{Cursor: afterStopCursor},
 				},
 			}, nil
 		},
@@ -908,7 +906,7 @@ func TestRead_DoesNotStopAfterProgressingTimeoutWindows(t *testing.T) {
 	if assert.NotNil(t, sc) {
 		cursor, err := sc.SerializedCursorToTableCursor()
 		assert.NoError(t, err)
-		assert.Equal(t, afterStopCursor.Position, cursor.Position)
+		assert.Equal(t, stopCursor.Position, cursor.Position)
 		assert.Nil(t, cursor.LastKnownPk)
 	}
 	assert.Equal(t, progressingWindows, rows)
@@ -994,6 +992,12 @@ func TestRead_ResumesHistoricalCopyEvenWhenPeekMatchesCopyCursorPosition(t *test
 		Keyspace: "connect-test",
 		Position: "COPY_SNAPSHOT_GTID",
 	}
+	catchupCursor := &psdbconnect.TableCursor{
+		Shard:       "-",
+		Keyspace:    "connect-test",
+		Position:    "COPY_SNAPSHOT_GTID",
+		LastKnownPk: testLastKnownPK("42"),
+	}
 	doneCursor := &psdbconnect.TableCursor{
 		Shard:    "-",
 		Keyspace: "connect-test",
@@ -1005,7 +1009,7 @@ func TestRead_ResumesHistoricalCopyEvenWhenPeekMatchesCopyCursorPosition(t *test
 	}
 	syncClient := &connectSyncClientMock{
 		syncResponses: []*psdbconnect.SyncResponse{
-			{Cursor: stopCursor},
+			{Cursor: catchupCursor},
 			{Cursor: doneCursor},
 		},
 	}
@@ -1207,6 +1211,80 @@ func TestSync_DirectVStreamHandlesRawEventsAndCopyCompleted(t *testing.T) {
 	}
 }
 
+func TestSync_DirectVStreamStopsAtTargetVGTIDWithoutWaitingForLaterEvent(t *testing.T) {
+	dbl := &dbLogger{}
+	ped := connectClient{}
+	testFields := sqltypes.MakeTestFields("id|name", "int64|varbinary")
+	rows := sqltypes.ResultToProto3(sqltypes.MakeTestResult(testFields, "1|first")).Rows
+	startCursor := &psdbconnect.TableCursor{
+		Shard:    "-",
+		Keyspace: "connect-test",
+		Position: "START_GTID",
+	}
+	stopCursor := &psdbconnect.TableCursor{
+		Shard:    "-",
+		Keyspace: "connect-test",
+		Position: "STOP_GTID",
+	}
+
+	recvCount := 0
+	rawStream := &vstreamClientMock{
+		recvFn: func() (*vtgatepb.VStreamResponse, error) {
+			recvCount++
+			if recvCount > 1 {
+				return nil, status.Error(codes.DeadlineExceeded, "would wait for a later VGTID")
+			}
+			return &vtgatepb.VStreamResponse{
+				Events: []*binlogdatapb.VEvent{
+					{
+						Type: binlogdatapb.VEventType_FIELD,
+						FieldEvent: &binlogdatapb.FieldEvent{
+							TableName: "connect-test.customers",
+							Fields:    testFields,
+						},
+					},
+					{
+						Type: binlogdatapb.VEventType_ROW,
+						RowEvent: &binlogdatapb.RowEvent{
+							TableName: "connect-test.customers",
+							RowChanges: []*binlogdatapb.RowChange{
+								{After: rows[0]},
+							},
+						},
+					},
+					vstreamVGtidEventFromCursor("connect-test.customers", stopCursor),
+				},
+			}, nil
+		},
+	}
+	vc := &vstreamConnectionMock{
+		vstreamFn: func(ctx context.Context, in *vtgatepb.VStreamRequest, opts ...grpc.CallOption) (vtgateservicepb.Vitess_VStreamClient, error) {
+			return rawStream, nil
+		},
+	}
+	ped.vstreamClientFn = func(ctx context.Context, ps PlanetScaleSource) (vstreamClient, error) {
+		return vc, nil
+	}
+
+	records := 0
+	checkpoints := []*psdbconnect.TableCursor{}
+	returnedCursor, err := ped.sync(context.Background(), dbl, "customers", []string{"id", "name"}, startCursor, stopCursor.Position, PlanetScaleSource{Database: "connect-test"}, psdbconnect.TabletType_primary, time.Second, func(*sqltypes.Result, Operation) error {
+		records++
+		return nil
+	}, func(cursor *psdbconnect.TableCursor) error {
+		checkpoints = append(checkpoints, cloneTableCursor(cursor))
+		return nil
+	}, nil)
+
+	assert.True(t, errors.Is(err, io.EOF))
+	assert.True(t, proto.Equal(stopCursor, returnedCursor))
+	assert.Equal(t, 1, records)
+	assert.Equal(t, 1, recvCount)
+	if assert.Len(t, checkpoints, 1) {
+		assert.True(t, proto.Equal(stopCursor, checkpoints[0]))
+	}
+}
+
 func TestSync_DirectVStreamRejectsFieldlessLastKnownPK(t *testing.T) {
 	dbl := &dbLogger{}
 	ped := connectClient{}
@@ -1277,11 +1355,6 @@ func TestSync_CheckpointsHistoricalCopyProgress(t *testing.T) {
 		Keyspace: "connect-test",
 		Position: "STOP_GTID",
 	}
-	afterStopCursor := &psdbconnect.TableCursor{
-		Shard:    "-",
-		Keyspace: "connect-test",
-		Position: "AFTER_STOP_GTID",
-	}
 
 	syncClient := &connectSyncClientMock{
 		syncResponses: []*psdbconnect.SyncResponse{
@@ -1292,7 +1365,6 @@ func TestSync_CheckpointsHistoricalCopyProgress(t *testing.T) {
 				Cursor: copyCursor,
 			},
 			{Cursor: stopCursor},
-			{Cursor: afterStopCursor},
 		},
 	}
 	cc := clientConnectionMock{
@@ -1318,11 +1390,10 @@ func TestSync_CheckpointsHistoricalCopyProgress(t *testing.T) {
 
 	returnedCursor, err := ped.sync(context.Background(), dbl, "customers", []string{"id", "name"}, startCursor, stopCursor.Position, PlanetScaleSource{Database: "connect-test"}, psdbconnect.TabletType_primary, time.Second, onResult, onCursor, nil)
 	assert.True(t, errors.Is(err, io.EOF))
-	assert.True(t, proto.Equal(afterStopCursor, returnedCursor))
+	assert.True(t, proto.Equal(stopCursor, returnedCursor))
 	assert.Equal(t, 2, rows)
-	if assert.Len(t, checkpoints, 2) {
+	if assert.Len(t, checkpoints, 1) {
 		assert.True(t, proto.Equal(copyCursor, checkpoints[0]))
-		assert.True(t, proto.Equal(afterStopCursor, checkpoints[1]))
 	}
 }
 
@@ -1354,11 +1425,6 @@ func TestSync_DoesNotPeriodicallyCheckpointVGTIDProgress(t *testing.T) {
 		Keyspace: "connect-test",
 		Position: "STOP_GTID",
 	}
-	afterStopCursor := &psdbconnect.TableCursor{
-		Shard:    "-",
-		Keyspace: "connect-test",
-		Position: "AFTER_STOP_GTID",
-	}
 
 	syncClient := &connectSyncClientMock{
 		syncResponses: []*psdbconnect.SyncResponse{
@@ -1369,7 +1435,6 @@ func TestSync_DoesNotPeriodicallyCheckpointVGTIDProgress(t *testing.T) {
 				Cursor: vgtidCursor,
 			},
 			{Cursor: stopCursor},
-			{Cursor: afterStopCursor},
 		},
 	}
 	cc := clientConnectionMock{
@@ -1391,9 +1456,9 @@ func TestSync_DoesNotPeriodicallyCheckpointVGTIDProgress(t *testing.T) {
 		return nil
 	}, onCursor, nil)
 	assert.True(t, errors.Is(err, io.EOF))
-	assert.True(t, proto.Equal(afterStopCursor, returnedCursor))
+	assert.True(t, proto.Equal(stopCursor, returnedCursor))
 	if assert.Len(t, checkpoints, 1) {
-		assert.True(t, proto.Equal(afterStopCursor, checkpoints[0]))
+		assert.True(t, proto.Equal(stopCursor, checkpoints[0]))
 	}
 }
 
