@@ -275,7 +275,9 @@ func (l *schemaAwareSerializer) serializeResult(before *sqltypes.Result, after *
 		}
 		operationRecord.Record.Data = row
 		operationRecord.Record.Type = fivetranOpMap[opType]
-		l.sender.Send(l.recordResponse)
+		if err := l.sender.Send(l.recordResponse); err != nil {
+			return err
+		}
 	}
 
 	return nil

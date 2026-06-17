@@ -160,6 +160,51 @@ func TestUpdateValidatesState(t *testing.T) {
 	assert.ErrorContains(t, err, "request did not contain a valid stateJson")
 }
 
+func TestUpdateReturnsSchemaBuildError(t *testing.T) {
+	ctx := context.Background()
+	mysqlClientConstructor := func() lib.MysqlClient {
+		return &lib.TestMysqlClient{
+			BuildSchemaFn: func(ctx context.Context, psc lib.PlanetScaleSource, schemaBuilder lib.SchemaBuilder) error {
+				return assert.AnError
+			},
+		}
+	}
+	client, closer := server(ctx, nil, mysqlClientConstructor)
+	defer closer()
+
+	out, err := client.Update(ctx, &fivetransdk.UpdateRequest{
+		Configuration: map[string]string{
+			"host":     "earth.psdb",
+			"username": "phanatic",
+			"password": "password",
+			"database": "employees",
+		},
+		Selection: &fivetransdk.Selection{
+			Selection: &fivetransdk.Selection_WithSchema{
+				WithSchema: &fivetransdk.TablesWithSchema{
+					Schemas: []*fivetransdk.SchemaSelection{
+						{
+							SchemaName: "SalesDB",
+							Included:   true,
+							Tables: []*fivetransdk.TableSelection{
+								{
+									Included:  true,
+									TableName: "customers",
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	})
+	assert.NoError(t, err)
+	assert.NotNil(t, out)
+
+	_, err = out.Recv()
+	assert.ErrorContains(t, err, "unable to build schema from PlanetScale database")
+}
+
 func TestCanSerializeGeometryTypes(t *testing.T) {
 	tests := []struct {
 		Type string

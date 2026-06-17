@@ -76,6 +76,29 @@ func TestCanSerializeInsert(t *testing.T) {
 	assert.Equal(t, "string:\"enum_value\"", data["enum_value"].String())
 }
 
+func TestRecordReturnsSenderError(t *testing.T) {
+	row, s, err := generateTestRecord("PhaniRaj")
+	require.NoError(t, err)
+	tl := &testLogSender{sendError: assert.AnError}
+	l := NewSchemaAwareSerializer(tl, "", true, &fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{s}}, map[string]map[string]map[string]ValueMap{})
+
+	schema := &fivetransdk.SchemaSelection{
+		Included:   true,
+		SchemaName: s.Name,
+	}
+	table := &fivetransdk.TableSelection{
+		TableName: "Customers",
+		Included:  true,
+		Columns:   map[string]bool{},
+	}
+	for _, f := range row.Fields {
+		table.Columns[f.Name] = true
+	}
+
+	err = l.Record(row, schema, table, lib.OpType_Insert)
+	assert.ErrorIs(t, err, assert.AnError)
+}
+
 func TestConvertRowToMapRequiresMatchingColumnCount(t *testing.T) {
 	tests := []struct {
 		name    string

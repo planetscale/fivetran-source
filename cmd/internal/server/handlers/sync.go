@@ -15,7 +15,7 @@ import (
 
 type Sync struct{}
 
-func (s *Sync) Handle(psc *lib.PlanetScaleSource, db *lib.ConnectClient, logger Serializer, state *lib.SyncState, schema *fivetransdk.Selection_WithSchema) error {
+func (s *Sync) Handle(ctx context.Context, psc *lib.PlanetScaleSource, db *lib.ConnectClient, logger Serializer, state *lib.SyncState, schema *fivetransdk.Selection_WithSchema) error {
 	if state == nil {
 		return status.Error(codes.Internal, "syncState cannot be nil")
 	}
@@ -23,7 +23,6 @@ func (s *Sync) Handle(psc *lib.PlanetScaleSource, db *lib.ConnectClient, logger 
 	if db == nil {
 		return status.Error(codes.Internal, "database accessor has not been initialized")
 	}
-	ctx := context.Background()
 	for _, ks := range includedKeyspaces(schema) {
 		for _, table := range includedTables(ks) {
 			stateKey := ks.SchemaName + ":" + table.TableName
@@ -39,8 +38,8 @@ func (s *Sync) Handle(psc *lib.PlanetScaleSource, db *lib.ConnectClient, logger 
 				return logger.Update(upd, ks, table)
 			}
 
-			// First pass: check if all shards have empty positions
-			allShardsHaveEmptyPosition := true
+			// First pass: check if all shards are at the initial cursor.
+			allShardsHaveNoProgress := true
 			hasShards := false
 
 			for _, shardState := range streamState.Shards {
@@ -50,16 +49,18 @@ func (s *Sync) Handle(psc *lib.PlanetScaleSource, db *lib.ConnectClient, logger 
 					return status.Error(codes.Internal, fmt.Sprintf("invalid cursor for stream %v, failed with [%v]", stateKey, err))
 				}
 
-				// Check if this shard has data (non-empty position)
-				if tc.Position != "" {
-					allShardsHaveEmptyPosition = false
+				// LastKnownPk is durable historical-copy progress even when Position is empty.
+				if tc.Position != "" || tc.LastKnownPk != nil {
+					allShardsHaveNoProgress = false
 					break // No need to check remaining shards
 				}
 			}
 
-			// Call truncate before any Read operations if all shards are empty
-			if hasShards && allShardsHaveEmptyPosition {
-				logger.Truncate(ks, table)
+			// Call truncate before any Read operations only when no shard has durable progress.
+			if hasShards && allShardsHaveNoProgress {
+				if err := logger.Truncate(ks, table); err != nil {
+					return status.Error(codes.Internal, fmt.Sprintf("failed to truncate table %s, error: %s", table.TableName, err.Error()))
+				}
 			}
 
 			// Second pass: perform the actual sync for each shard

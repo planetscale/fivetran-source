@@ -20,6 +20,8 @@ func (l *testLogSender) Send(response *fivetransdk.UpdateResponse) error {
 
 type testLogger struct {
 	truncateCalled bool
+	truncateErr    error
+	states         []lib.SyncState
 }
 
 func (testLogger) Info(s string) error {
@@ -53,7 +55,7 @@ func (tl *testLogger) Update(*lib.UpdatedRow, *fivetransdk.SchemaSelection, *fiv
 
 func (tl *testLogger) Truncate(*fivetransdk.SchemaSelection, *fivetransdk.TableSelection) error {
 	tl.truncateCalled = true
-	return nil
+	return tl.truncateErr
 }
 
 func (tl *testLogger) Record(result *sqltypes.Result, selection *fivetransdk.SchemaSelection, selection2 *fivetransdk.TableSelection, operation lib.Operation) error {
@@ -62,6 +64,7 @@ func (tl *testLogger) Record(result *sqltypes.Result, selection *fivetransdk.Sch
 }
 
 func (tl *testLogger) State(state lib.SyncState) error {
+	tl.states = append(tl.states, state)
 	return nil
 }
 
