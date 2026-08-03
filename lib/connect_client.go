@@ -940,19 +940,38 @@ func IsBinlogsExpirationError(err error) bool {
 	return strings.Contains(err.Error(), "Cannot replicate because the source purged required binary logs")
 }
 
+// IsVStreamSchemaIncompatibilityError reports whether err indicates that the
+// source tablet could not build a replication plan for a table because the
+// schema recorded in the binlog event no longer lines up with the columns this
+// stream asked for. Recovery is the same in every case: drop the cursor and run
+// a historical sync.
+//
+// vstreamer wraps all variants with "failed to build table replication plan for
+// table <name>". The inner cause depends on the shape of the DDL:
+//
+//   - "column <c> not found in table <t>" — a column was appended and the stream
+//     now requests it, but the event being replayed predates the ALTER.
+//   - "cannot use column names in vstream filter ..." — columns were inserted
+//     mid-table (ADD COLUMN ... AFTER) or reordered, so the truncated schema no
+//     longer type-matches the event and only positional names are available.
+//   - "cannot determine table columns for <t>" — a column was dropped, so the
+//     current schema is narrower than the event.
+//
+// The first two are raised through vterrors as FAILED_PRECONDITION. The
+// drop-column variant is a plain fmt.Errorf inside vstreamer and reaches us with
+// no gRPC code attached, so the code is deliberately not part of the match:
+// requiring it silently excluded every DROP COLUMN deploy.
 func IsVStreamSchemaIncompatibilityError(err error) bool {
 	if err == nil {
 		return false
 	}
 
 	message := err.Error()
-	if !strings.Contains(message, "Code: FAILED_PRECONDITION") {
-		return false
-	}
 	if !strings.Contains(message, "failed to build table replication plan") {
 		return false
 	}
 
 	return strings.Contains(message, "cannot use column names in vstream filter") ||
+		strings.Contains(message, "cannot determine table columns") ||
 		(strings.Contains(message, "column ") && strings.Contains(message, " not found in table "))
 }

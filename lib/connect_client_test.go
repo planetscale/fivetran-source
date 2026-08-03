@@ -1480,6 +1480,20 @@ func TestIsVStreamSchemaIncompatibilityError(t *testing.T) {
 			err:  status.Error(codes.Unknown, "Code: FAILED_PRECONDITION\nanother replication error"),
 			want: false,
 		},
+		{
+			// DROP COLUMN leaves the live schema narrower than the replayed
+			// event. vstreamer raises this with a plain fmt.Errorf, so unlike
+			// the other variants it carries no FAILED_PRECONDITION code.
+			name: "dropped column without a failed precondition code",
+			err:  status.Error(codes.Unknown, vstreamDroppedColumnErrorMessage),
+			want: true,
+		},
+		{
+			name: "plan failure with an unrelated cause is not schema incompatibility",
+			err: status.Error(codes.Unknown, "stream (at source tablet) error: unsupported type: 245, position: 3\n\n"+
+				"failed to build table replication plan for table customers"),
+			want: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -1511,3 +1525,12 @@ const vstreamColumnNotFoundErrorMessage = "error starting stream from shard GTID
 	"column after_col not found in table customers\n\n" +
 	"failed to build table replication plan for table customers\n" +
 	"failed to parse transaction payload's internal event"
+
+// Emitted after a DROP COLUMN, when the live schema is narrower than the event
+// being replayed. Note the absence of a "Code: FAILED_PRECONDITION" annotation:
+// vstreamer raises this one with a plain fmt.Errorf rather than through
+// vterrors, so no gRPC code is attached.
+const vstreamDroppedColumnErrorMessage = "error starting stream from shard GTID keyspace:\"fivetran\" shard:\"-\": persistent error in vstream: " +
+	"stream (at source tablet) error @ (including the GTID we failed to process): \n" +
+	"cannot determine table columns for customers: event has [8 18 18 252 5 3], schema has [id before_col after_col]\n\n" +
+	"failed to build table replication plan for table customers"
