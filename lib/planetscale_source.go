@@ -21,6 +21,11 @@ type PlanetScaleSource struct {
 	TreatTinyIntAsBoolean bool   `json:"treat_tiny_int_as_boolean"`
 	UseReplica            bool   `json:"use_replica"`
 	StartingGtids         string `json:"starting_gtids"`
+	// AutoResyncOnSchemaChange opts in to resetting the cursor and running a
+	// historical sync when a schema change leaves the saved position
+	// undecodable. Defaults to false, which keeps the existing behaviour of
+	// surfacing the error and waiting for an operator-triggered re-sync.
+	AutoResyncOnSchemaChange bool `json:"auto_resync_on_schema_change"`
 }
 
 // DSN returns a DataSource that mysql libraries can use to connect to a PlanetScale database.

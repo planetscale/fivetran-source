@@ -193,8 +193,32 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 						continue
 					}
 
+					// A schema change has left the saved position undecodable for
+					// this table. Recovery is the same as for expired binlogs --
+					// drop the position and let the next iteration run a
+					// historical sync -- but unlike expired binlogs the operator
+					// has a real choice here, because the data is still readable
+					// from the saved position once the projection is rebuilt.
+					// An automatic re-sync costs monthly active rows, so it is
+					// opt-in; by default the error is surfaced and the sync waits
+					// for an operator-triggered historical re-sync.
 					if IsVStreamSchemaIncompatibilityError(err) {
-						return currentSerializedCursor, errors.Wrapf(err, "PlanetScale VStream cannot continue incremental replication for table %s after a schema change; run a Fivetran historical re-sync for this connection to recover", tableName)
+						if !ps.AutoResyncOnSchemaChange {
+							return currentSerializedCursor, errors.Wrapf(err, "PlanetScale VStream cannot continue incremental replication for table %s after a schema change; run a Fivetran historical re-sync for this connection to recover, or enable auto_resync_on_schema_change to have the connector do it automatically", tableName)
+						}
+
+						logger.Warning(fmt.Sprintf("%sSchema changed incompatibly with the saved cursor position. Resetting cursor position to trigger historical sync", preamble))
+						currentPosition.Position = ""
+						currentPosition.LastKnownPk = nil
+
+						currentSerializedCursor, sErr = TableCursorToSerializedCursor(currentPosition)
+						if sErr != nil {
+							return currentSerializedCursor, errors.Wrap(sErr, "unable to serialize reset cursor after schema incompatibility")
+						}
+						currentSerializedCursor.SetSchemaIncompatibilityError(fmt.Sprintf("PlanetScale VStream cannot continue incremental replication for table %s after a schema change. Cursor reset to trigger historical sync. Original error: %v", tableName, err.Error()))
+
+						// Continue with historical sync instead of returning error
+						continue
 					}
 
 					return currentSerializedCursor, err

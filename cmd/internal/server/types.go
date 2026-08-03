@@ -101,6 +101,14 @@ func SourceFromRequest(request ConfiguredRequest) (*lib.PlanetScaleSource, error
 		psc.UseReplica = b
 	}
 
+	if val, ok := configuration["auto_resync_on_schema_change"]; ok {
+		b, err := strconv.ParseBool(val)
+		if err != nil {
+			return nil, errors.New("auto_resync_on_schema_change is not a boolean")
+		}
+		psc.AutoResyncOnSchemaChange = b
+	}
+
 	if val, ok := configuration["starting_gtids"]; ok {
 		psc.StartingGtids = val
 	}

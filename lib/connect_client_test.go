@@ -331,7 +331,71 @@ func TestRead_CanReturnNewCursorIfNewFound(t *testing.T) {
 	assert.Equal(t, 2, cc.syncFnInvokedCount)
 }
 
-func TestRead_ReturnsVStreamSchemaIncompatibilityErrors(t *testing.T) {
+func TestRead_SchemaIncompatibilityResetsCursor(t *testing.T) {
+	dbl := &dbLogger{}
+	ped := connectClient{}
+	tc := &psdbconnect.TableCursor{
+		Shard:    "-",
+		Position: "THIS_IS_A_SHARD_GTID",
+		Keyspace: "connect-test",
+	}
+	stopCursor := &psdbconnect.TableCursor{
+		Shard:    "-",
+		Position: "I_AM_THE_CURRENT_BINLOG_POSITION",
+		Keyspace: "connect-test",
+	}
+
+	// The second peek fails so the loop terminates once the cursor has been
+	// reset, letting the test inspect the reset cursor that gets handed back.
+	currentCursorRequests := 0
+	cc := clientConnectionMock{
+		syncFn: func(ctx context.Context, in *psdbconnect.SyncRequest, opts ...grpc.CallOption) (psdbconnect.Connect_SyncClient, error) {
+			if in.Cursor.Position == "current" {
+				currentCursorRequests++
+				if currentCursorRequests == 1 {
+					return &connectSyncClientMock{
+						syncResponses: []*psdbconnect.SyncResponse{{Cursor: stopCursor}},
+					}, nil
+				}
+				return nil, errors.New("peek failed after reset")
+			}
+			return nil, status.Error(codes.Unknown, vstreamColumnNotFoundErrorMessage)
+		},
+	}
+	ped.clientFn = func(ctx context.Context, ps PlanetScaleSource) (psdbconnect.ConnectClient, error) {
+		return &cc, nil
+	}
+	getKeyspaceTableColumnsFunc := func(ctx context.Context, keyspaceName string, tableName string) ([]MysqlColumn, error) {
+		return []MysqlColumn{
+			{Name: "id", Type: "bigint", IsPrimaryKey: true},
+			{Name: "before_col", Type: "varchar(64)", IsPrimaryKey: false},
+			{Name: "after_col", Type: "varchar(64)", IsPrimaryKey: false},
+		}, nil
+	}
+	mysqlClient := NewTestMysqlClient(getKeyspaceTableColumnsFunc)
+	ped.Mysql = &mysqlClient
+
+	source := PlanetScaleSource{Database: "connect-test", AutoResyncOnSchemaChange: true}
+	sc, err := ped.Read(context.Background(), dbl, source, "customers", []string{"id", "before_col", "after_col"}, tc, nil, nil, nil)
+	assert.ErrorContains(t, err, "peek failed after reset")
+	if assert.NotNil(t, sc) {
+		cursor, cErr := sc.SerializedCursorToTableCursor()
+		assert.NoError(t, cErr)
+		assert.Empty(t, cursor.Position)
+		assert.Nil(t, cursor.LastKnownPk)
+		if assert.NotNil(t, sc.ErrorCode) {
+			assert.Equal(t, "SCHEMA_INCOMPATIBILITY_ERROR", *sc.ErrorCode)
+		}
+		if assert.NotNil(t, sc.ErrorMessage) {
+			assert.Contains(t, *sc.ErrorMessage, "historical sync")
+		}
+	}
+	assert.Equal(t, 3, cc.syncFnInvokedCount)
+}
+
+// Without the opt-in the connector keeps the pre-existing contract: surface the
+// error with recovery guidance and leave the saved cursor untouched.
+func TestRead_SchemaIncompatibilityWithoutOptInReturnsError(t *testing.T) {
 	dbl := &dbLogger{}
 	ped := connectClient{}
 	tc := &psdbconnect.TableCursor{
@@ -375,6 +439,7 @@ func TestRead_ReturnsVStreamSchemaIncompatibilityErrors(t *testing.T) {
 	sc, err := ped.Read(context.Background(), dbl, PlanetScaleSource{Database: "connect-test"}, "customers", []string{"id", "before_col", "after_col"}, tc, nil, nil, nil)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "historical re-sync")
+	assert.Contains(t, err.Error(), "auto_resync_on_schema_change")
 	assert.True(t, IsVStreamSchemaIncompatibilityError(err))
 	esc, err := TableCursorToSerializedCursor(tc)
 	assert.NoError(t, err)

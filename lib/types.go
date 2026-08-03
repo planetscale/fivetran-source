@@ -74,6 +74,14 @@ func (sc *SerializedCursor) SetBinlogExpirationError(errorMessage string) {
 	sc.ErrorMessage = &errorMessage
 }
 
+// SetSchemaIncompatibilityError sets a schema incompatibility error on the cursor.
+// Carries its own code so that a re-sync forced by a schema change can be told
+// apart from one forced by binlog expiration, even though both reset the cursor.
+func (sc *SerializedCursor) SetSchemaIncompatibilityError(errorMessage string) {
+	sc.ErrorCode = stringPtr("SCHEMA_INCOMPATIBILITY_ERROR")
+	sc.ErrorMessage = &errorMessage
+}
+
 func stringPtr(s string) *string {
 	return &s
 }
