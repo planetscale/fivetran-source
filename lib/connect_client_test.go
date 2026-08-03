@@ -1489,9 +1489,27 @@ func TestIsVStreamSchemaIncompatibilityError(t *testing.T) {
 			want: true,
 		},
 		{
+			// Dropping an ENUM or SET column loses the value list needed to
+			// decode the integers in the replayed event.
+			name: "dropped enum column loses its string mappings",
+			err:  status.Error(codes.Unknown, vstreamEnumMappingErrorMessage),
+			want: true,
+		},
+		{
+			// Shares the wrapper but a historical sync would hit the same
+			// unsupported column type, so re-syncing cannot recover it.
 			name: "plan failure with an unrelated cause is not schema incompatibility",
 			err: status.Error(codes.Unknown, "stream (at source tablet) error: unsupported type: 245, position: 3\n\n"+
 				"failed to build table replication plan for table customers"),
+			want: false,
+		},
+		{
+			// Also shares the wrapper, but a historian miss falls back to the
+			// live schema rather than erroring, so this is not a stale-cursor
+			// condition. It can be transient during an online DDL rename swap,
+			// where resetting the cursor would force a needless historical sync.
+			name: "unresolvable table is not schema incompatibility",
+			err:  status.Error(codes.Unknown, vstreamUnknownTableErrorMessage),
 			want: false,
 		},
 	}
@@ -1533,4 +1551,21 @@ const vstreamColumnNotFoundErrorMessage = "error starting stream from shard GTID
 const vstreamDroppedColumnErrorMessage = "error starting stream from shard GTID keyspace:\"fivetran\" shard:\"-\": persistent error in vstream: " +
 	"stream (at source tablet) error @ (including the GTID we failed to process): \n" +
 	"cannot determine table columns for customers: event has [8 18 18 252 5 3], schema has [id before_col after_col]\n\n" +
+	"failed to build table replication plan for table customers"
+
+// Emitted when the tablet cannot resolve the table at all. Deliberately NOT
+// treated as a schema incompatibility: a historian miss falls back to the live
+// schema rather than erroring, so this does not indicate a stale cursor, and it
+// can be transient during an online DDL rename swap.
+const vstreamUnknownTableErrorMessage = "error starting stream from shard GTID keyspace:\"fivetran\" shard:\"-\": persistent error in vstream: " +
+	"stream (at source tablet) error @ (including the GTID we failed to process): \n" +
+	"unknown table customers in schema\n\n" +
+	"failed to build table replication plan for table customers"
+
+// Emitted after dropping an ENUM or SET column: the value list needed to decode
+// the integers in the replayed event is no longer recoverable.
+const vstreamEnumMappingErrorMessage = "error starting stream from shard GTID keyspace:\"fivetran\" shard:\"-\": persistent error in vstream: " +
+	"stream (at source tablet) error @ (including the GTID we failed to process): \n" +
+	"enum or set column status does not have valid string values: \n\n" +
+	"failed to build ENUM and SET column integer to string mappings\n\n" +
 	"failed to build table replication plan for table customers"

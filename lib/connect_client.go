@@ -946,7 +946,7 @@ func IsBinlogsExpirationError(err error) bool {
 // stream asked for. Recovery is the same in every case: drop the cursor and run
 // a historical sync.
 //
-// vstreamer wraps all variants with "failed to build table replication plan for
+// vstreamer wraps every variant with "failed to build table replication plan for
 // table <name>". The inner cause depends on the shape of the DDL:
 //
 //   - "column <c> not found in table <t>" — a column was appended and the stream
@@ -956,11 +956,26 @@ func IsBinlogsExpirationError(err error) bool {
 //     longer type-matches the event and only positional names are available.
 //   - "cannot determine table columns for <t>" — a column was dropped, so the
 //     current schema is narrower than the event.
+//   - "failed to build ENUM and SET column integer to string mappings" — an ENUM
+//     or SET column was dropped, so its value list can no longer be recovered to
+//     decode the integers in the event.
 //
-// The first two are raised through vterrors as FAILED_PRECONDITION. The
-// drop-column variant is a plain fmt.Errorf inside vstreamer and reaches us with
-// no gRPC code attached, so the code is deliberately not part of the match:
-// requiring it silently excluded every DROP COLUMN deploy.
+// Only the first two are raised through vterrors as FAILED_PRECONDITION; the
+// others are plain errors and reach us with no gRPC code attached, so the code is
+// deliberately not part of the match. Requiring it silently excluded every DROP
+// COLUMN deploy.
+//
+// The wrapper alone is not sufficient. Two other errors share it and are not
+// recoverable by re-syncing:
+//
+//   - "unsupported type: <n>, position: <i>" — a historical sync would hit the
+//     same unsupported column type.
+//   - "unknown table <t> in schema" — the tablet could not resolve the table at
+//     all. This is not a stale-cursor condition: a historian miss falls back to
+//     the live schema rather than erroring, so this indicates an undecodable GTID
+//     or a table genuinely absent from the tablet's schema, which can be
+//     transient during an online DDL rename swap. Resetting the cursor for a
+//     transient condition would force an unnecessary historical sync.
 func IsVStreamSchemaIncompatibilityError(err error) bool {
 	if err == nil {
 		return false
@@ -973,5 +988,6 @@ func IsVStreamSchemaIncompatibilityError(err error) bool {
 
 	return strings.Contains(message, "cannot use column names in vstream filter") ||
 		strings.Contains(message, "cannot determine table columns") ||
+		strings.Contains(message, "failed to build ENUM and SET column integer to string mappings") ||
 		(strings.Contains(message, "column ") && strings.Contains(message, " not found in table "))
 }
