@@ -1100,3 +1100,56 @@ func TestSchemaChecksCredentials(t *testing.T) {
 	})
 	assert.ErrorContains(t, err, "unable to connect to PlanetScale database")
 }
+
+// configuredRequestStub satisfies ConfiguredRequest for parser tests.
+type configuredRequestStub struct{ cfg map[string]string }
+
+func (c configuredRequestStub) GetConfiguration() map[string]string { return c.cfg }
+
+// withConnDetails adds the connection fields SourceFromRequest requires, so the
+// test asserts on the flag rather than tripping over unrelated validation.
+func withConnDetails(extra map[string]string) configuredRequestStub {
+	cfg := map[string]string{
+		"username": "u", "password": "p", "database": "d", "host": "h",
+	}
+	for k, v := range extra {
+		cfg[k] = v
+	}
+	return configuredRequestStub{cfg: cfg}
+}
+
+// The setup form declares a field name and SourceFromRequest reads a map key.
+// If those ever drift apart the toggle silently stops working: the operator sets
+// it, nothing happens, and no error is raised. Assert the round trip rather than
+// the two literals independently.
+func TestAutoResyncFlagRoundTripsFromConfigurationForm(t *testing.T) {
+	ctx := context.Background()
+	form, err := (handlers.ConfigurationForm{}).Handle(ctx, &fivetransdk.ConfigurationFormRequest{})
+	assert.NoError(t, err)
+
+	var fieldName string
+	for _, f := range form.Fields {
+		if f.Name == "auto_resync_on_schema_change" {
+			fieldName = f.Name
+			assert.NotNil(t, f.GetDropdownField(), "expected a dropdown, matching the other boolean fields")
+			assert.Equal(t, []string{"true", "false"}, f.GetDropdownField().DropdownField)
+		}
+	}
+	assert.NotEmpty(t, fieldName, "auto_resync_on_schema_change missing from the configuration form")
+
+	on, err := SourceFromRequest(withConnDetails(map[string]string{fieldName: "true"}))
+	assert.NoError(t, err)
+	assert.True(t, on.AutoResyncOnSchemaChange, "form field name does not match the key SourceFromRequest reads")
+
+	off, err := SourceFromRequest(withConnDetails(map[string]string{fieldName: "false"}))
+	assert.NoError(t, err)
+	assert.False(t, off.AutoResyncOnSchemaChange)
+
+	// Absent key must default to false, preserving the pre-existing behaviour.
+	def, err := SourceFromRequest(withConnDetails(nil))
+	assert.NoError(t, err)
+	assert.False(t, def.AutoResyncOnSchemaChange)
+
+	_, err = SourceFromRequest(withConnDetails(map[string]string{fieldName: "yes-please"}))
+	assert.Error(t, err, "non-boolean value should be rejected rather than silently ignored")
+}
