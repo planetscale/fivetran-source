@@ -22,7 +22,7 @@ func TestCanSerializeInsert(t *testing.T) {
 	row, s, err := generateTestRecord("PhaniRaj")
 	require.NoError(t, err)
 	tl := &testLogSender{}
-	l := NewSchemaAwareSerializer(tl, "", true, &fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{s}}, map[string]map[string]map[string]ValueMap{})
+	l := NewSchemaAwareSerializer(tl, "", true, &fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{s}}, map[string]map[string]map[string]ValueMap{}, false)
 
 	schema := &fivetransdk.SchemaSelection{
 		Included:   true,
@@ -80,7 +80,7 @@ func TestRecordReturnsSenderError(t *testing.T) {
 	row, s, err := generateTestRecord("PhaniRaj")
 	require.NoError(t, err)
 	tl := &testLogSender{sendError: assert.AnError}
-	l := NewSchemaAwareSerializer(tl, "", true, &fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{s}}, map[string]map[string]map[string]ValueMap{})
+	l := NewSchemaAwareSerializer(tl, "", true, &fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{s}}, map[string]map[string]map[string]ValueMap{}, false)
 
 	schema := &fivetransdk.SchemaSelection{
 		Included:   true,
@@ -182,7 +182,7 @@ func TestCanSerializeMappedEnumsAndSets(t *testing.T) {
 				"customer_type": {columnType: "enum", values: []string{"employee", "customer"}},
 			},
 		},
-	})
+	}, false)
 
 	schema := &fivetransdk.SchemaSelection{
 		Included:   true,
@@ -271,7 +271,7 @@ func TestCanSerializeIndexedEnumsAndSets(t *testing.T) {
 				"customer_type": {columnType: "enum", values: []string{"employee", "customer"}},
 			},
 		},
-	})
+	}, false)
 
 	schema := &fivetransdk.SchemaSelection{
 		Included:   true,
@@ -336,7 +336,7 @@ func TestCanSerializeNulLValues(t *testing.T) {
 	}
 
 	tl := &testLogSender{}
-	l := NewSchemaAwareSerializer(tl, "", false, &fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{s}}, map[string]map[string]map[string]ValueMap{})
+	l := NewSchemaAwareSerializer(tl, "", false, &fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{s}}, map[string]map[string]map[string]ValueMap{}, false)
 	schema := &fivetransdk.SchemaSelection{
 		Included:   true,
 		SchemaName: s.Name,
@@ -376,7 +376,7 @@ func TestCanSerializeDelete(t *testing.T) {
 	row, s, err := generateTestRecord("PhaniRaj")
 	require.NoError(t, err)
 	tl := &testLogSender{}
-	l := NewSchemaAwareSerializer(tl, "", false, &fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{s}}, map[string]map[string]map[string]ValueMap{})
+	l := NewSchemaAwareSerializer(tl, "", false, &fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{s}}, map[string]map[string]map[string]ValueMap{}, false)
 
 	schema := &fivetransdk.SchemaSelection{
 		Included:   true,
@@ -416,7 +416,7 @@ func TestCanSerializeUpdate(t *testing.T) {
 
 	require.NoError(t, err)
 	tl := &testLogSender{}
-	l := NewSchemaAwareSerializer(tl, "", false, &fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{s}}, map[string]map[string]map[string]ValueMap{})
+	l := NewSchemaAwareSerializer(tl, "", false, &fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{s}}, map[string]map[string]map[string]ValueMap{}, false)
 
 	schema := &fivetransdk.SchemaSelection{
 		Included:   true,
@@ -462,7 +462,7 @@ func TestCanSerializeTruncate(t *testing.T) {
 	_, s, err := generateTestRecord("PhaniRaj")
 	assert.NoError(t, err)
 	tl := &testLogSender{}
-	l := NewSchemaAwareSerializer(tl, "", false, &fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{s}}, map[string]map[string]map[string]ValueMap{})
+	l := NewSchemaAwareSerializer(tl, "", false, &fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{s}}, map[string]map[string]map[string]ValueMap{}, false)
 
 	schema := &fivetransdk.SchemaSelection{
 		Included:   true,
@@ -797,7 +797,7 @@ func TestCanSkipColumns(t *testing.T) {
 			},
 		},
 	}},
-		map[string]map[string]map[string]ValueMap{})
+		map[string]map[string]map[string]ValueMap{}, false)
 
 	schema := &fivetransdk.SchemaSelection{
 		Included:   true,
@@ -841,7 +841,7 @@ func BenchmarkRecordSerialization_Serializer(b *testing.B) {
 			s,
 		},
 	},
-		map[string]map[string]map[string]ValueMap{})
+		map[string]map[string]map[string]ValueMap{}, false)
 
 	schema := &fivetransdk.SchemaSelection{
 		SchemaName: "SalesDB",
@@ -855,5 +855,90 @@ func BenchmarkRecordSerialization_Serializer(b *testing.B) {
 		if err != nil {
 			b.Fatalf("failed with %v", err.Error())
 		}
+	}
+}
+
+// The widened VStream projection delivers values for columns Fivetran never
+// selected; the serializer decides whether they survive into the Record.
+func TestSerializer_AdoptsColumnsAbsentFromSelection(t *testing.T) {
+	cases := []struct {
+		name                string
+		propagateNewColumns bool
+		includeNewColumns   bool
+		// deselect explicitly records the column as excluded rather than
+		// leaving it unnamed.
+		deselectExplicitly bool
+		expectSerialized   bool
+	}{
+		{
+			name:                "adopted when both opt-ins are set",
+			propagateNewColumns: true,
+			includeNewColumns:   true,
+			expectSerialized:    true,
+		},
+		{
+			name:                "dropped by default",
+			propagateNewColumns: false,
+			includeNewColumns:   true,
+			expectSerialized:    false,
+		},
+		{
+			name:                "dropped when the table disallows new columns",
+			propagateNewColumns: true,
+			includeNewColumns:   false,
+			expectSerialized:    false,
+		},
+		{
+			name:                "an explicitly deselected column is never adopted",
+			propagateNewColumns: true,
+			includeNewColumns:   true,
+			deselectExplicitly:  true,
+			expectSerialized:    false,
+		},
+	}
+
+	const newColumn = "notes"
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			row, s, err := generateTestRecord("PhaniRaj")
+			require.NoError(t, err)
+			tl := &testLogSender{}
+			l := NewSchemaAwareSerializer(tl, "", true, &fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{s}}, map[string]map[string]map[string]ValueMap{}, tt.propagateNewColumns)
+
+			schema := &fivetransdk.SchemaSelection{Included: true, SchemaName: s.Name}
+			table := &fivetransdk.TableSelection{
+				TableName:         "Customers",
+				Included:          true,
+				Columns:           map[string]bool{},
+				IncludeNewColumns: tt.includeNewColumns,
+			}
+			for _, f := range row.Fields {
+				if f.Name == newColumn {
+					if tt.deselectExplicitly {
+						table.Columns[f.Name] = false
+					}
+					continue
+				}
+				table.Columns[f.Name] = true
+			}
+
+			require.NoError(t, l.Record(row, schema, table, lib.OpType_Insert))
+			require.NotNil(t, tl.lastResponse)
+
+			operationRecord, ok := tl.lastResponse.Operation.(*fivetransdk.UpdateResponse_Record)
+			require.Truef(t, ok, "recordResponse Operation is not of type %s", "UpdateResponse_Record")
+			data := operationRecord.Record.Data
+
+			// A selected column always comes through, so a missing new column is
+			// a real exclusion rather than a broken record.
+			assert.Equal(t, int32(123), data["customer_id"].GetInt())
+
+			if tt.expectSerialized {
+				assert.Equal(t, "string:\"Something great comes this way\"", data[newColumn].String())
+			} else {
+				assert.NotContains(t, data, newColumn)
+			}
+		})
 	}
 }

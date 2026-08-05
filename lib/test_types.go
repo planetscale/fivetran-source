@@ -150,7 +150,7 @@ func NewTestMysqlClient(gktc GetKeyspaceTableColumnsFunc) MysqlClient {
 }
 
 type (
-	ReadFunc       func(ctx context.Context, logger DatabaseLogger, ps PlanetScaleSource, tableName string, columns []string, tc *psdbconnect.TableCursor, onResult OnResult, onCursor OnCursor, onUpdate OnUpdate) (*SerializedCursor, error)
+	ReadFunc       func(ctx context.Context, logger DatabaseLogger, ps PlanetScaleSource, tableName string, columns []string, includeNewColumns bool, tc *psdbconnect.TableCursor, onResult OnResult, onCursor OnCursor, onUpdate OnUpdate) (*SerializedCursor, error)
 	CanConnectFunc func(ctx context.Context, ps PlanetScaleSource) error
 	ListShardsFunc func(ctx context.Context, ps PlanetScaleSource) ([]string, error)
 
@@ -176,9 +176,9 @@ func (tcc *TestConnectClient) CanConnect(ctx context.Context, ps PlanetScaleSour
 	return errors.New("CanConnect is Unimplemented")
 }
 
-func (tcc *TestConnectClient) Read(ctx context.Context, logger DatabaseLogger, ps PlanetScaleSource, tableName string, columns []string, lastKnownPosition *psdbconnect.TableCursor, onResult OnResult, onCursor OnCursor, onUpdate OnUpdate) (*SerializedCursor, error) {
+func (tcc *TestConnectClient) Read(ctx context.Context, logger DatabaseLogger, ps PlanetScaleSource, tableName string, columns []string, includeNewColumns bool, lastKnownPosition *psdbconnect.TableCursor, onResult OnResult, onCursor OnCursor, onUpdate OnUpdate) (*SerializedCursor, error) {
 	if tcc.ReadFn != nil {
-		return tcc.ReadFn(ctx, logger, ps, tableName, columns, lastKnownPosition, onResult, onCursor, onUpdate)
+		return tcc.ReadFn(ctx, logger, ps, tableName, columns, includeNewColumns, lastKnownPosition, onResult, onCursor, onUpdate)
 	}
 
 	return nil, errors.New("Read is Unimplemented")

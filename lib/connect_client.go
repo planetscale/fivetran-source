@@ -48,11 +48,20 @@ var (
 	maxConsecutiveSyncTimeouts = 5
 )
 
+// errAdoptNewColumns is an internal signal from sync to Read: the stream
+// stopped cleanly at a schema change so the projection can be widened before
+// resuming. It never reaches Fivetran.
+var errAdoptNewColumns = errors.New("schema change observed; rebuild the column projection")
+
 // ConnectClient is a general purpose interface
 // that defines all the data access methods needed for the PlanetScale Fivetran source to function.
 type ConnectClient interface {
 	CanConnect(ctx context.Context, ps PlanetScaleSource) error
-	Read(ctx context.Context, logger DatabaseLogger, ps PlanetScaleSource, tableName string, columns []string, lastKnownPosition *psdbconnect.TableCursor, onResult OnResult, onCursor OnCursor, onUpdate OnUpdate) (*SerializedCursor, error)
+	// Read streams a table from lastKnownPosition. columns is Fivetran's
+	// selection for the table; includeNewColumns is Fivetran's per-table
+	// include_new_columns choice, honoured only when the source opts in via
+	// PropagateNewColumns.
+	Read(ctx context.Context, logger DatabaseLogger, ps PlanetScaleSource, tableName string, columns []string, includeNewColumns bool, lastKnownPosition *psdbconnect.TableCursor, onResult OnResult, onCursor OnCursor, onUpdate OnUpdate) (*SerializedCursor, error)
 	ListShards(ctx context.Context, ps PlanetScaleSource) ([]string, error)
 }
 
@@ -113,7 +122,7 @@ func (p connectClient) checkEdgePassword(ctx context.Context, psc PlanetScaleSou
 // 3. Ask vstream to stream from the last known vgtid
 // 4. When we reach the stopping point, read all rows available at this vgtid
 // 5. End the stream when (a) a vgtid newer than latest vgtid is encountered or (b) the timeout kicks in.
-func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps PlanetScaleSource, tableName string, columns []string, lastKnownPosition *psdbconnect.TableCursor, onResult OnResult, onCursor OnCursor, onUpdate OnUpdate) (*SerializedCursor, error) {
+func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps PlanetScaleSource, tableName string, columns []string, includeNewColumns bool, lastKnownPosition *psdbconnect.TableCursor, onResult OnResult, onCursor OnCursor, onUpdate OnUpdate) (*SerializedCursor, error) {
 	var (
 		err                     error
 		sErr                    error
@@ -140,6 +149,23 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 		logger.Info(fmt.Sprintf("%sCouldn't fetch existing columns, falling back to requested columns: %s", preamble, err.Error()))
 	}
 
+	// Adopting a column that Fivetran has not selected is only safe once the
+	// replay position is at or past the DDL that added it -- naming it earlier
+	// is exactly what makes vstreamer fail to build a plan against a pre-DDL
+	// TABLE_MAP. So the stream starts on the selection as-is and only widens
+	// after it observes the DDL event for this table.
+	adoptNewColumns := ps.PropagateNewColumns && includeNewColumns
+	if adoptNewColumns {
+		logger.Info(fmt.Sprintf("%sNew columns will be adopted into the projection when a schema change is observed for this table", preamble))
+	}
+	// Resuming at a DDL must not re-deliver that same DDL, or the stream would
+	// stop and rebuild forever without making progress. That should be
+	// impossible -- the cursor is past the DDL by the time we act on it -- but
+	// a spin here would burn a sync window silently, so make it structurally
+	// unreachable rather than relying on the position semantics.
+	lastRebuildPosition := ""
+	rebuiltAtLeastOnce := false
+
 	logger.Info(fmt.Sprintf("%sFiltering with columns %s", preamble, strings.Join(existingColumns, ",")))
 	logger.Info(fmt.Sprintf("%sUsing read timeout: %v", preamble, readDuration))
 
@@ -161,7 +187,7 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 		logger.Info(fmt.Sprintf(preamble+"syncing rows with cursor [%v]", currentPosition))
 
 		previousPosition := cloneTableCursor(currentPosition)
-		currentPosition, err = p.sync(ctx, logger, tableName, existingColumns, currentPosition, latestCursorPosition, ps, tabletType, readDuration, onResult, onCursor, onUpdate)
+		currentPosition, err = p.sync(ctx, logger, tableName, existingColumns, adoptNewColumns, currentPosition, latestCursorPosition, ps, tabletType, readDuration, onResult, onCursor, onUpdate)
 		madeProgress := tableCursorMadeProgress(previousPosition, currentPosition)
 		if tableCursorHasProgress(currentPosition) {
 			currentSerializedCursor, sErr = TableCursorToSerializedCursor(currentPosition)
@@ -171,6 +197,37 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 			}
 		}
 		if err != nil {
+			// The stream stopped at a schema change so the projection can be
+			// rebuilt against the new schema. The cursor is already at the DDL
+			// (vstreamer emits a GTID immediately before the DDL event, which
+			// vtgate converts to the VGTID we consumed), so resuming from here
+			// replays no pre-DDL row events and the widened projection
+			// resolves.
+			if errors.Is(err, errAdoptNewColumns) {
+				if rebuiltAtLeastOnce && currentPosition.Position == lastRebuildPosition {
+					logger.Warning(fmt.Sprintf("%sSchema change observed again at position [%v] with no progress; leaving the projection alone for the rest of this read", preamble, currentPosition.Position))
+					adoptNewColumns = false
+					continue
+				}
+				lastRebuildPosition = currentPosition.Position
+				rebuiltAtLeastOnce = true
+
+				rebuild, rebuildErr := p.rebuildProjection(ctx, ps, tableName, existingColumns)
+				if rebuildErr != nil {
+					// Losing the rebuild is survivable -- keep streaming on the
+					// current projection rather than failing the table.
+					logger.Warning(fmt.Sprintf("%sCouldn't read columns after schema change, continuing with the current projection: %s", preamble, rebuildErr.Error()))
+					continue
+				}
+				if rebuild.changed() {
+					logger.Info(fmt.Sprintf("%sSchema change observed; rebuilding projection (added: [%s], removed: [%s])", preamble, strings.Join(rebuild.Added, ","), strings.Join(rebuild.Removed, ",")))
+					existingColumns = rebuild.Columns
+				} else {
+					logger.Info(fmt.Sprintf("%sSchema change observed with no column changes; continuing", preamble))
+				}
+				continue
+			}
+
 			if s, ok := status.FromError(err); ok {
 				// if the error is anything other than server timeout, keep going
 				if s.Code() != codes.DeadlineExceeded {
@@ -292,7 +349,7 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 	}
 }
 
-func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableName string, columns []string, tc *psdbconnect.TableCursor, stopPosition string, ps PlanetScaleSource, tabletType psdbconnect.TabletType, readDuration time.Duration, onResult OnResult, onCursor OnCursor, onUpdate OnUpdate) (*psdbconnect.TableCursor, error) {
+func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableName string, columns []string, stopOnDDL bool, tc *psdbconnect.TableCursor, stopPosition string, ps PlanetScaleSource, tabletType psdbconnect.TabletType, readDuration time.Duration, onResult OnResult, onCursor OnCursor, onUpdate OnUpdate) (*psdbconnect.TableCursor, error) {
 	ctx, cancel := context.WithTimeout(ctx, readDuration)
 	defer cancel()
 
@@ -331,17 +388,39 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 		}
 
 		copyCompleted := false
+		schemaChanged := false
 		for _, event := range res.Events {
 			var (
 				eventRecords       int
 				eventCopyCompleted bool
+				eventSchemaChanged bool
 			)
-			tc, eventRecords, eventCopyCompleted, err = handleVStreamEvent(tableName, tc, event, fieldsByTable, onResult, onUpdate)
+			tc, eventRecords, eventCopyCompleted, eventSchemaChanged, err = handleVStreamEvent(tableName, tc, event, fieldsByTable, onResult, onUpdate)
 			if err != nil {
 				return syncStartCursor, err
 			}
 			recordsSinceCheckpoint += eventRecords
 			copyCompleted = copyCompleted || eventCopyCompleted
+			if eventSchemaChanged && stopOnDDL {
+				schemaChanged = true
+				// Stop on the first DDL rather than draining the response: any
+				// later event in this batch could be a row event that the
+				// widened projection should have decoded.
+				break
+			}
+		}
+
+		// Hand the cursor back at the DDL so Read can widen the projection and
+		// resume from here. Checkpoint first so the rows already streamed in
+		// this session are not replayed.
+		if schemaChanged {
+			logger.Info(fmt.Sprintf("%sSchema change observed at position [%v], stopping to rebuild the projection", preamble, tc.Position))
+			if onCursor != nil {
+				if err := onCursor(tc); err != nil {
+					return tc, status.Error(codes.Internal, "unable to serialize cursor")
+				}
+			}
+			return tc, errAdoptNewColumns
 		}
 
 		// A single VGTID can appear in multiple ordered responses. Once we reach
@@ -706,7 +785,10 @@ func quoteVStreamIdentifier(identifier string) string {
 	return "`" + strings.ReplaceAll(identifier, "`", "``") + "`"
 }
 
-func handleVStreamEvent(tableName string, cursor *psdbconnect.TableCursor, event *binlogdatapb.VEvent, fieldsByTable map[string][]*query.Field, onResult OnResult, onUpdate OnUpdate) (*psdbconnect.TableCursor, int, bool, error) {
+// handleVStreamEvent applies a single VStream event, returning the advanced
+// cursor, the number of records emitted, whether the historical copy finished,
+// and whether the event was a schema change for this table.
+func handleVStreamEvent(tableName string, cursor *psdbconnect.TableCursor, event *binlogdatapb.VEvent, fieldsByTable map[string][]*query.Field, onResult OnResult, onUpdate OnUpdate) (*psdbconnect.TableCursor, int, bool, bool, error) {
 	switch event.Type {
 	case binlogdatapb.VEventType_FIELD:
 		if event.FieldEvent != nil {
@@ -715,19 +797,24 @@ func handleVStreamEvent(tableName string, cursor *psdbconnect.TableCursor, event
 	case binlogdatapb.VEventType_ROW:
 		count, err := handleVStreamRows(tableName, event.RowEvent, fieldsByTable, onResult, onUpdate)
 		if err != nil {
-			return cursor, 0, false, err
+			return cursor, 0, false, false, err
 		}
-		return cursor, count, false, nil
+		return cursor, count, false, false, nil
 	case binlogdatapb.VEventType_VGTID:
 		next, err := tableCursorFromVGtid(cursor, event.Vgtid, tableName)
-		return next, 0, false, err
+		return next, 0, false, false, err
 	case binlogdatapb.VEventType_LASTPK:
 		next, err := tableCursorFromLastPK(cursor, event.LastPKEvent, tableName)
-		return next, 0, false, err
+		return next, 0, false, false, err
 	case binlogdatapb.VEventType_COPY_COMPLETED:
-		return cursor, 0, true, nil
+		return cursor, 0, true, false, nil
+	case binlogdatapb.VEventType_DDL:
+		// vstreamer only sends DDL events whose statement matches a table in
+		// the stream's filter (mustSendDDL -> tableMatches), and this stream
+		// filters on a single table, so no statement parsing is needed here.
+		return cursor, 0, false, true, nil
 	}
-	return cursor, 0, false, nil
+	return cursor, 0, false, false, nil
 }
 
 func handleVStreamRows(tableName string, rowEvent *binlogdatapb.RowEvent, fieldsByTable map[string][]*query.Field, onResult OnResult, onUpdate OnUpdate) (int, error) {
@@ -903,6 +990,63 @@ func (p connectClient) filterExistingColumns(ctx context.Context, ps PlanetScale
 
 	}
 	return existingColumns, err
+}
+
+// projectionRebuild is the result of recomputing the VStream projection against
+// a table's current columns.
+type projectionRebuild struct {
+	Columns []string
+	Added   []string
+	Removed []string
+}
+
+func (r projectionRebuild) changed() bool {
+	return len(r.Added) > 0 || len(r.Removed) > 0
+}
+
+// rebuildProjection recomputes the projection against the table's current
+// columns: the previously projected columns that still exist, plus columns the
+// database has that Fivetran never named at all. Columns Fivetran explicitly
+// deselected are absent from projected and are not recovered here -- only
+// never-named columns are adopted, which is what include_new_columns means.
+//
+// Dropping columns that no longer exist matters as much as adding new ones:
+// naming a column that has gone away fails the post-DDL replay the same way
+// naming one that did not yet exist fails a pre-DDL replay.
+func (p connectClient) rebuildProjection(ctx context.Context, ps PlanetScaleSource, tableName string, projected []string) (projectionRebuild, error) {
+	results, err := (*p.Mysql).GetKeyspaceTableColumns(ctx, ps.Database, tableName)
+	if err != nil {
+		return projectionRebuild{Columns: projected}, err
+	}
+
+	live := make(map[string]bool, len(results))
+	for _, result := range results {
+		live[result.Name] = true
+	}
+	projectedSet := make(map[string]bool, len(projected))
+	for _, c := range projected {
+		projectedSet[c] = true
+	}
+
+	rebuild := projectionRebuild{
+		Columns: make([]string, 0, len(results)),
+		Added:   []string{},
+		Removed: []string{},
+	}
+	for _, c := range projected {
+		if live[c] {
+			rebuild.Columns = append(rebuild.Columns, c)
+		} else {
+			rebuild.Removed = append(rebuild.Removed, c)
+		}
+	}
+	for _, result := range results {
+		if !projectedSet[result.Name] {
+			rebuild.Columns = append(rebuild.Columns, result.Name)
+			rebuild.Added = append(rebuild.Added, result.Name)
+		}
+	}
+	return rebuild, nil
 }
 
 func (p connectClient) getLatestCursorPosition(ctx context.Context, shard, keyspace string, tableName string, ps PlanetScaleSource, tabletType psdbconnect.TabletType) (string, error) {

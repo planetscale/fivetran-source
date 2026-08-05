@@ -291,7 +291,7 @@ func geometryTypeTest(t *testing.T, geometry []byte, geojson string) {
 				return nil
 			},
 			ReadFn: func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string,
-				tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
+				includeNewColumns bool, tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
 			) (*lib.SerializedCursor, error) {
 				assert.Equal(t, "customers", tableName)
 				assert.NotNil(t, columns)
@@ -389,7 +389,7 @@ func TestUpdateReturnsInserts(t *testing.T) {
 				return nil
 			},
 			ReadFn: func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string,
-				tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
+				includeNewColumns bool, tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
 			) (*lib.SerializedCursor, error) {
 				assert.Equal(t, "customers", tableName)
 				assert.NotNil(t, columns)
@@ -508,7 +508,7 @@ func TestUpdateReturnsErrors(t *testing.T) {
 				return nil
 			},
 			ReadFn: func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string,
-				tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
+				includeNewColumns bool, tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
 			) (*lib.SerializedCursor, error) {
 				assert.Equal(t, "customers", tableName)
 				assert.NotNil(t, columns)
@@ -592,7 +592,7 @@ func TestUpdateReturnsDeletes(t *testing.T) {
 				return nil
 			},
 			ReadFn: func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string,
-				tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
+				includeNewColumns bool, tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
 			) (*lib.SerializedCursor, error) {
 				assert.Equal(t, "customers", tableName)
 				assert.NotNil(t, columns)
@@ -709,7 +709,7 @@ func TestUpdateReturnsUpdates(t *testing.T) {
 			CanConnectFn: func(ctx context.Context, ps lib.PlanetScaleSource) error {
 				return nil
 			},
-			ReadFn: func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string, tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate) (*lib.SerializedCursor, error) {
+			ReadFn: func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string, includeNewColumns bool, tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate) (*lib.SerializedCursor, error) {
 				assert.Equal(t, "customers", tableName)
 				assert.NotNil(t, columns)
 				onUpdate(&lib.UpdatedRow{
@@ -960,7 +960,7 @@ func TestUpdateReturnsState(t *testing.T) {
 			},
 
 			ReadFn: func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string,
-				tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
+				includeNewColumns bool, tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
 			) (*lib.SerializedCursor, error) {
 				onCursor(&psdbconnect.TableCursor{
 					Position: "THIS_IS_A_VALID_GTID",
@@ -1152,4 +1152,41 @@ func TestAutoResyncFlagRoundTripsFromConfigurationForm(t *testing.T) {
 
 	_, err = SourceFromRequest(withConnDetails(map[string]string{fieldName: "yes-please"}))
 	assert.Error(t, err, "non-boolean value should be rejected rather than silently ignored")
+}
+
+// Same round trip as the flag above, for the same reason: propagate_new_columns
+// gates an experimental behaviour, so a drift between the form field name and
+// the key the parser reads would leave the operator setting a toggle that does
+// nothing. An absent or malformed value must never silently enable it.
+func TestPropagateNewColumnsFlagRoundTripsFromConfigurationForm(t *testing.T) {
+	ctx := context.Background()
+	form, err := (handlers.ConfigurationForm{}).Handle(ctx, &fivetransdk.ConfigurationFormRequest{})
+	assert.NoError(t, err)
+
+	var fieldName string
+	for _, f := range form.Fields {
+		if f.Name == "propagate_new_columns" {
+			fieldName = f.Name
+			assert.NotNil(t, f.GetDropdownField(), "expected a dropdown, matching the other boolean fields")
+			assert.Equal(t, []string{"true", "false"}, f.GetDropdownField().DropdownField)
+		}
+	}
+	assert.NotEmpty(t, fieldName, "propagate_new_columns missing from the configuration form")
+
+	on, err := SourceFromRequest(withConnDetails(map[string]string{fieldName: "true"}))
+	assert.NoError(t, err)
+	assert.True(t, on.PropagateNewColumns, "form field name does not match the key SourceFromRequest reads")
+
+	off, err := SourceFromRequest(withConnDetails(map[string]string{fieldName: "false"}))
+	assert.NoError(t, err)
+	assert.False(t, off.PropagateNewColumns)
+
+	// Absent key must default to false: the feature is experimental and must
+	// never switch itself on.
+	def, err := SourceFromRequest(withConnDetails(nil))
+	assert.NoError(t, err)
+	assert.False(t, def.PropagateNewColumns)
+
+	_, err = SourceFromRequest(withConnDetails(map[string]string{fieldName: "yes-please"}))
+	assert.ErrorContains(t, err, "propagate_new_columns is not a boolean")
 }

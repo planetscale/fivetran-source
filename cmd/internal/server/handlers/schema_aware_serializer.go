@@ -47,6 +47,12 @@ type schemaAwareSerializer struct {
 	serializers            map[string]*recordSerializer
 	schemaList             *fivetransdk.SchemaList
 	enumsAndSets           SchemaEnumsAndSets
+	// propagateNewColumns mirrors PlanetScaleSource.PropagateNewColumns. When
+	// set, columns that exist in the database but were never named in
+	// Fivetran's selection are serialized too, for tables that allow new
+	// columns. Without this the widened VStream projection would be discarded
+	// here.
+	propagateNewColumns bool
 }
 
 type recordSerializer interface {
@@ -152,7 +158,7 @@ func convertRowToMap(row *sqltypes.Row, columns []string) (map[string]sqltypes.V
 	return record, nil
 }
 
-func NewSchemaAwareSerializer(sender LogSender, prefix string, serializeTinyIntAsBool bool, schemaList *fivetransdk.SchemaList, enumsAndSets SchemaEnumsAndSets) Serializer {
+func NewSchemaAwareSerializer(sender LogSender, prefix string, serializeTinyIntAsBool bool, schemaList *fivetransdk.SchemaList, enumsAndSets SchemaEnumsAndSets, propagateNewColumns bool) Serializer {
 	return &schemaAwareSerializer{
 		prefix:                 prefix,
 		sender:                 sender,
@@ -160,6 +166,7 @@ func NewSchemaAwareSerializer(sender LogSender, prefix string, serializeTinyIntA
 		schemaList:             schemaList,
 		enumsAndSets:           enumsAndSets,
 		serializers:            map[string]*recordSerializer{},
+		propagateNewColumns:    propagateNewColumns,
 	}
 }
 
@@ -300,6 +307,14 @@ func (l *schemaAwareSerializer) generateRecordSerializer(table *fivetransdk.Tabl
 	serializers := map[string]func(value sqltypes.Value) (*fivetransdk.ValueType, error){}
 	var err error
 	pks := map[string]bool{}
+
+	// Start from Fivetran's selection verbatim so behaviour is unchanged when
+	// the feature is off, then add any adopted columns as selected.
+	effectiveSelection := make(map[string]bool, len(table.Columns))
+	for colName, included := range table.Columns {
+		effectiveSelection[colName] = included
+	}
+
 	for _, schema := range l.schemaList.Schemas {
 		if schema.Name != selectedSchemaName {
 			continue
@@ -326,7 +341,18 @@ func (l *schemaAwareSerializer) generateRecordSerializer(table *fivetransdk.Tabl
 			tableSchemaEnumAndSetValues = map[string]ValueMap{}
 		}
 
-		for colName, included := range table.Columns {
+		// A column absent from table.Columns is one Fivetran has never seen;
+		// adopt it when the table allows new columns. An explicitly deselected
+		// column is present with false and stays excluded.
+		if l.propagateNewColumns && table.IncludeNewColumns {
+			for _, columnWithSchema := range tableSchema.Columns {
+				if _, named := table.Columns[columnWithSchema.Name]; !named {
+					effectiveSelection[columnWithSchema.Name] = true
+				}
+			}
+		}
+
+		for colName, included := range effectiveSelection {
 			if !included {
 				continue
 			}
@@ -366,7 +392,7 @@ func (l *schemaAwareSerializer) generateRecordSerializer(table *fivetransdk.Tabl
 	}
 
 	return &schemaAwareRecordSerializer{
-		columnSelection: table.Columns,
+		columnSelection: effectiveSelection,
 		primaryKeys:     pks,
 		columnWriters:   serializers,
 	}, nil

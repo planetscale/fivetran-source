@@ -18,6 +18,11 @@ func (ConfigurationForm) Handle(ctx context.Context, _ *fivetransdk.Configuratio
 	tinyIntDesc := "Enable this setting to serialize tinyint(1) as boolean values"
 	useReplicaDesc := "Only set to true if your PlanetScale branch has a replica. PlanetScale Development branches do not have replicas."
 	autoResyncDesc := "When a schema change leaves the saved position unreadable, automatically reset the cursor and run a historical sync for the affected table instead of failing the sync and waiting for a manual re-sync. Defaults to false; enabling it trades additional monthly active rows for unattended recovery."
+	propagateNewColumnsDesc := "EXPERIMENTAL - leave disabled unless you have been asked to turn it on. " +
+		"When enabled, a column added to a table after this connection was set up starts syncing on its own, " +
+		"instead of requiring a historical re-sync; a dropped column stops being requested. " +
+		"This only applies to tables where you have allowed new columns in the connection's schema settings. " +
+		"Defaults to false. If a sync behaves unexpectedly after enabling this, turn it off and re-sync."
 	required := true
 	resp := &fivetransdk.ConfigurationFormResponse{
 		Fields: []*fivetransdk.FormField{
@@ -92,6 +97,18 @@ func (ConfigurationForm) Handle(ctx context.Context, _ *fivetransdk.Configuratio
 				Name:        "auto_resync_on_schema_change",
 				Label:       "Automatically re-sync after a schema change?",
 				Description: &autoResyncDesc,
+				Type: &fivetransdk.FormField_DropdownField{
+					DropdownField: &fivetransdk.DropdownField{
+						DropdownField: []string{
+							"true", "false",
+						},
+					},
+				},
+			},
+			{
+				Name:        "propagate_new_columns",
+				Label:       "[Experimental] Adapt to added and dropped columns automatically?",
+				Description: &propagateNewColumnsDesc,
 				Type: &fivetransdk.FormField_DropdownField{
 					DropdownField: &fivetransdk.DropdownField{
 						DropdownField: []string{

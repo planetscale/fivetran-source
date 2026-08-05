@@ -79,7 +79,7 @@ func (s *Sync) Handle(ctx context.Context, psc *lib.PlanetScaleSource, db *lib.C
 				}
 
 				columns := includedColumns(table)
-				sc, err := (*db).Read(ctx, logger, *psc, table.TableName, columns, tc, onRow, onCursor, onUpdate)
+				sc, err := (*db).Read(ctx, logger, *psc, table.TableName, columns, table.IncludeNewColumns, tc, onRow, onCursor, onUpdate)
 				if err != nil {
 					if lib.IsVStreamSchemaIncompatibilityError(err) {
 						return status.Error(codes.FailedPrecondition, err.Error())

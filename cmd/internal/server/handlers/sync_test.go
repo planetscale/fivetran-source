@@ -44,7 +44,7 @@ func TestCallsReadWithSelectedSchema(t *testing.T) {
 	}
 
 	readFn := func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string,
-		tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
+		includeNewColumns bool, tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
 	) (*lib.SerializedCursor, error) {
 		assert.Equal(t, "sync-request", ctx.Value(contextKey{}))
 		assert.Equal(t, "customers", tableName)
@@ -89,7 +89,7 @@ func TestCallsTruncateOnInitialSync(t *testing.T) {
 	}
 
 	readFn := func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string,
-		tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
+		includeNewColumns bool, tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
 	) (*lib.SerializedCursor, error) {
 		assert.Equal(t, "customers", tableName)
 		return nil, nil
@@ -135,7 +135,7 @@ func TestInitialSyncReturnsErrorWhenTruncateFails(t *testing.T) {
 
 	readCalled := false
 	readFn := func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string,
-		tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
+		includeNewColumns bool, tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
 	) (*lib.SerializedCursor, error) {
 		readCalled = true
 		return nil, nil
@@ -191,7 +191,7 @@ func TestCallsReadWithStartingGtids(t *testing.T) {
 	}
 
 	readFn := func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string,
-		tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
+		includeNewColumns bool, tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
 	) (*lib.SerializedCursor, error) {
 		assert.Equal(t, "customers", tableName)
 		return nil, nil
@@ -251,7 +251,7 @@ func TestVStreamSchemaIncompatibilityReturnsFailedPrecondition(t *testing.T) {
 	}
 
 	readFn := func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string,
-		tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
+		includeNewColumns bool, tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
 	) (*lib.SerializedCursor, error) {
 		return nil, status.Error(codes.Unknown, "Code: FAILED_PRECONDITION\n"+
 			"column after_col not found in table customers\n\n"+
@@ -300,7 +300,7 @@ func TestCheckpointsHistoricalCopyCursorFromRead(t *testing.T) {
 		LastKnownPk: testLastKnownPK("42"),
 	}
 	readFn := func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string,
-		tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
+		includeNewColumns bool, tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
 	) (*lib.SerializedCursor, error) {
 		return nil, onCursor(copyCursor)
 	}
@@ -351,7 +351,7 @@ func TestDoesNotTruncateWhenStateHasHistoricalCopyProgress(t *testing.T) {
 
 	readCalled := false
 	readFn := func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string,
-		tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
+		includeNewColumns bool, tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
 	) (*lib.SerializedCursor, error) {
 		readCalled = true
 		assert.Empty(t, tc.Position)

@@ -109,6 +109,14 @@ func SourceFromRequest(request ConfiguredRequest) (*lib.PlanetScaleSource, error
 		psc.AutoResyncOnSchemaChange = b
 	}
 
+	if val, ok := configuration["propagate_new_columns"]; ok {
+		b, err := strconv.ParseBool(val)
+		if err != nil {
+			return nil, errors.New("propagate_new_columns is not a boolean")
+		}
+		psc.PropagateNewColumns = b
+	}
+
 	if val, ok := configuration["starting_gtids"]; ok {
 		psc.StartingGtids = val
 	}

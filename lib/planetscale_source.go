@@ -26,6 +26,22 @@ type PlanetScaleSource struct {
 	// undecodable. Defaults to false, which keeps the existing behaviour of
 	// surfacing the error and waiting for an operator-triggered re-sync.
 	AutoResyncOnSchemaChange bool `json:"auto_resync_on_schema_change"`
+	// PropagateNewColumns opts in to honouring Fivetran's per-table
+	// include_new_columns choice: when the stream sees a schema change, the
+	// projection is rebuilt against the table's current columns, so a column
+	// that exists in the database but was never named in the selection starts
+	// streaming, and one that has been dropped stops being requested.
+	//
+	// Rebuilding is deferred until the stream observes the DDL event for the
+	// table, because naming a column that did not exist at the replay position
+	// is exactly what makes a lagging cursor fail ("column X not found in
+	// table Y"). Resuming at the DDL means no pre-DDL row events are replayed,
+	// which is why this needs no help from vttablet's schema historian
+	// (--track-schema-versions).
+	//
+	// Defaults to false: the behaviour is not yet well exercised in
+	// production.
+	PropagateNewColumns bool `json:"propagate_new_columns"`
 }
 
 // DSN returns a DataSource that mysql libraries can use to connect to a PlanetScale database.

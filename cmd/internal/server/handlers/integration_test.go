@@ -802,7 +802,7 @@ func runIntegrationSyncWithSender(t *testing.T, ctx context.Context, psc lib.Pla
 	}
 
 	selection := integrationSelection(psc.Database, tableName, columns)
-	logger := NewSchemaAwareSerializer(sender, "integration", psc.TreatTinyIntAsBoolean, sourceSchema.SchemaList, sourceSchema.EnumsAndSets)
+	logger := NewSchemaAwareSerializer(sender, "integration", psc.TreatTinyIntAsBoolean, sourceSchema.SchemaList, sourceSchema.EnumsAndSets, psc.PropagateNewColumns)
 	syncer := &Sync{}
 	if err := syncer.Handle(ctx, &psc, &connectClient, logger, state, selection); err != nil {
 		return state, err
