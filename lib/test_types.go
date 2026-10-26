@@ -16,7 +16,12 @@ type dbLogMessage struct {
 	message string
 }
 type dbLogger struct {
-	messages []dbLogMessage
+	messages          []dbLogMessage
+	binlogExpirations []string
+}
+
+func (dbl *dbLogger) RecordBinlogExpiration(keyspace, table, shard string) {
+	dbl.binlogExpirations = append(dbl.binlogExpirations, keyspace+"."+table+"/"+shard)
 }
 
 func (dbl *dbLogger) Info(s string) error {

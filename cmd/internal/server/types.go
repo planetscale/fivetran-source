@@ -3,7 +3,10 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/pkg/errors"
 	psdbconnect "github.com/planetscale/airbyte-source/proto/psdbconnect/v1alpha1"
@@ -124,6 +127,9 @@ func StateFromRequest(logger handlers.Serializer, request StatefulRequest, sourc
 		}
 	}
 
+	// keyspace -> stale shard names dropped from state (see below).
+	prunedShards := map[string][]string{}
+
 	for _, s := range schemaSelection.WithSchema.Schemas {
 		if !s.Included {
 			continue
@@ -149,6 +155,20 @@ func StateFromRequest(logger handlers.Serializer, request StatefulRequest, sourc
 				keyspaceState.Streams[stateKey] = initialState
 			}
 			streamState := keyspaceState.Streams[stateKey]
+			// Connector versions before #91 matched shards with
+			// `show vitess_shards like "%<db>%"` and could store shards of a
+			// different keyspace (e.g. "prod_main_sharded/-40" under keyspace
+			// "prod_main"). A real shard name never contains "/", so drop these
+			// entries instead of failing the sync with FailedPrecondition.
+			for shard := range streamState.Shards {
+				if strings.Contains(shard, "/") && !slices.Contains(shards, shard) {
+					logger.Warning(fmt.Sprintf("dropping invalid shard %q from state of stream %s (written by an older connector version)", shard, stateKey))
+					delete(streamState.Shards, shard)
+					if !slices.Contains(prunedShards[s.SchemaName], shard) {
+						prunedShards[s.SchemaName] = append(prunedShards[s.SchemaName], shard)
+					}
+				}
+			}
 			// does this streamState have values for all shards?
 			// if not, fill them in with initial state.
 			for _, shard := range shards {
@@ -162,6 +182,13 @@ func StateFromRequest(logger handlers.Serializer, request StatefulRequest, sourc
 			}
 		}
 		syncState.Keyspaces[s.SchemaName] = keyspaceState
+	}
+
+	// One dismissible Warning per sync for all pruned shard entries.
+	if msg := handlers.StaleShardsWarningMessage(prunedShards); msg != "" {
+		if err := logger.SendWarningAlert(msg); err != nil {
+			logger.Warning(fmt.Sprintf("failed to send stale shard warning: %v", err))
+		}
 	}
 
 	return &syncState, nil

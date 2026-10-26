@@ -2,7 +2,10 @@ package handlers
 
 import (
 	"context"
+	"strings"
 	"testing"
+
+	"github.com/pkg/errors"
 
 	"github.com/planetscale/fivetran-source/lib"
 
@@ -229,7 +232,7 @@ func TestCallsReadWithStartingGtids(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-func TestVStreamSchemaIncompatibilityReturnsFailedPrecondition(t *testing.T) {
+func TestVStreamSchemaIncompatibilityRaisesResyncTask(t *testing.T) {
 	psc := &lib.PlanetScaleSource{}
 	tl := &testLogger{}
 	schema := fivetransdk.SchemaSelection{
@@ -270,8 +273,127 @@ func TestVStreamSchemaIncompatibilityReturnsFailedPrecondition(t *testing.T) {
 			},
 		},
 	}, schemaSelection)
-	assert.Error(t, err)
-	assert.Equal(t, codes.FailedPrecondition, status.Code(err))
+	assert.NoError(t, err)
+	assert.Len(t, tl.tasks, 1)
+	assert.Contains(t, tl.tasks[0], "Re-sync required")
+	assert.Contains(t, tl.tasks[0], "customers")
+}
+
+func TestShardNotFoundInVGTIDRaisesResyncTask(t *testing.T) {
+	psc := &lib.PlanetScaleSource{}
+	tl := &testLogger{}
+	schema := fivetransdk.SchemaSelection{
+		SchemaName: "prod_main",
+		Included:   true,
+		Tables:     []*fivetransdk.TableSelection{{Included: true, TableName: "states"}},
+	}
+	schemaSelection := &fivetransdk.Selection_WithSchema{
+		WithSchema: &fivetransdk.TablesWithSchema{Schemas: []*fivetransdk.SchemaSelection{&schema}},
+	}
+	readFn := func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string,
+		tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
+	) (*lib.SerializedCursor, error) {
+		return nil, errors.Wrap(status.Error(codes.FailedPrecondition, `error starting stream from shard GTID keyspace:"prod_main" shard:"-40" gtid:"current": `+
+			`failed to determine if keyspace prod_main has been resharded: shard provided in VGTID, -40, not found in the prod_main keyspace`),
+			"Unable to get latest cursor position")
+	}
+	state, err := psc.GetInitialState("prod_main", []string{"-40"})
+	assert.NoError(t, err)
+	db := lib.NewTestConnectClient(readFn)
+	err = (&Sync{}).Handle(context.Background(), psc, &db, tl, &lib.SyncState{
+		Keyspaces: map[string]lib.KeyspaceState{
+			"prod_main": {Streams: map[string]lib.ShardStates{"prod_main:states": state}},
+		},
+	}, schemaSelection)
+	assert.NoError(t, err)
+	assert.Len(t, tl.tasks, 1)
+	assert.Contains(t, tl.tasks[0], `shard "-40"`)
+}
+
+func TestBinlogExpirationsSendOneCombinedWarning(t *testing.T) {
+	psc := &lib.PlanetScaleSource{}
+	tl := &testLogger{}
+	schema := fivetransdk.SchemaSelection{
+		SchemaName: "prod_main",
+		Included:   true,
+		Tables: []*fivetransdk.TableSelection{
+			{Included: true, TableName: "states"},
+			{Included: true, TableName: "users"},
+		},
+	}
+	schemaSelection := &fivetransdk.Selection_WithSchema{
+		WithSchema: &fivetransdk.TablesWithSchema{Schemas: []*fivetransdk.SchemaSelection{&schema}},
+	}
+	readFn := func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string,
+		tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
+	) (*lib.SerializedCursor, error) {
+		recorder := logger.(lib.BinlogExpirationRecorder)
+		// Simulate connectClient.Read resetting the cursor (twice for the same shard).
+		recorder.RecordBinlogExpiration(tc.Keyspace, tableName, tc.Shard)
+		recorder.RecordBinlogExpiration(tc.Keyspace, tableName, tc.Shard)
+		return lib.TableCursorToSerializedCursor(&psdbconnect.TableCursor{Keyspace: tc.Keyspace, Shard: tc.Shard})
+	}
+	states, err := psc.GetInitialState("prod_main", []string{"-80", "80-"})
+	assert.NoError(t, err)
+	users, err := psc.GetInitialState("prod_main", []string{"-80"})
+	assert.NoError(t, err)
+	db := lib.NewTestConnectClient(readFn)
+	err = (&Sync{}).Handle(context.Background(), psc, &db, tl, &lib.SyncState{
+		Keyspaces: map[string]lib.KeyspaceState{
+			"prod_main": {Streams: map[string]lib.ShardStates{"prod_main:states": states, "prod_main:users": users}},
+		},
+	}, schemaSelection)
+	assert.NoError(t, err)
+	if assert.Len(t, tl.warnings, 1) {
+		w := tl.warnings[0]
+		assert.Contains(t, w, "PlanetScale binary logs expired before Fivetran could read the latest changes for the following table(s): ")
+		assert.Contains(t, w, "prod_main.states (shard -80)")
+		assert.Contains(t, w, "prod_main.states (shard 80-)")
+		assert.Contains(t, w, "prod_main.users (shard -80)")
+		assert.Equal(t, 3, strings.Count(w, "(shard "))
+		assert.True(t, strings.HasSuffix(w, ". A historical re-sync of these tables was started automatically. No action is needed."))
+	}
+}
+
+func TestNoBinlogExpirationWarningWhenNothingExpired(t *testing.T) {
+	tl := &testLogger{}
+	assert.NoError(t, tl.FlushBinlogExpirationWarning())
+	assert.Empty(t, tl.warnings)
+}
+
+func TestBinlogExpirationWarningSentBeforeResyncTask(t *testing.T) {
+	psc := &lib.PlanetScaleSource{}
+	tl := &testLogger{}
+	schema := fivetransdk.SchemaSelection{
+		SchemaName: "prod_main",
+		Included:   true,
+		Tables: []*fivetransdk.TableSelection{
+			{Included: true, TableName: "states"},
+		},
+	}
+	schemaSelection := &fivetransdk.Selection_WithSchema{
+		WithSchema: &fivetransdk.TablesWithSchema{Schemas: []*fivetransdk.SchemaSelection{&schema}},
+	}
+	readFn := func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string,
+		tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
+	) (*lib.SerializedCursor, error) {
+		logger.(lib.BinlogExpirationRecorder).RecordBinlogExpiration(tc.Keyspace, tableName, tc.Shard)
+		return nil, status.Error(codes.Unknown, "Code: FAILED_PRECONDITION\n"+
+			"column after_col not found in table states\n\n"+
+			"failed to build table replication plan for table states")
+	}
+	state, err := psc.GetInitialState("prod_main", []string{"-"})
+	assert.NoError(t, err)
+	db := lib.NewTestConnectClient(readFn)
+	err = (&Sync{}).Handle(context.Background(), psc, &db, tl, &lib.SyncState{
+		Keyspaces: map[string]lib.KeyspaceState{
+			"prod_main": {Streams: map[string]lib.ShardStates{"prod_main:states": state}},
+		},
+	}, schemaSelection)
+	assert.NoError(t, err)
+	assert.Len(t, tl.tasks, 1)
+	assert.Len(t, tl.warnings, 1, "warning must be flushed exactly once, before the task")
+	assert.Equal(t, []string{"warning", "task"}, tl.events)
 }
 
 func TestCheckpointsHistoricalCopyCursorFromRead(t *testing.T) {

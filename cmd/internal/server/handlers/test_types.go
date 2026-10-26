@@ -22,6 +22,23 @@ type testLogger struct {
 	truncateCalled bool
 	truncateErr    error
 	states         []lib.SyncState
+	tasks          []string
+	warnings       []string
+	events         []string // order of alerts sent: "warning" / "task"
+	binlogExpired  binlogExpirationSet
+}
+
+func (tl *testLogger) RecordBinlogExpiration(keyspace, table, shard string) {
+	tl.binlogExpired.add(keyspace, table, shard)
+}
+
+func (tl *testLogger) FlushBinlogExpirationWarning() error {
+	msg := tl.binlogExpired.warningMessage()
+	tl.binlogExpired = binlogExpirationSet{}
+	if msg == "" {
+		return nil
+	}
+	return tl.SendWarningAlert(msg)
 }
 
 func (testLogger) Info(s string) error {
@@ -34,14 +51,20 @@ func (testLogger) Warning(s string) error {
 	panic("implement me")
 }
 
-func (testLogger) SendWarningAlert(s string) error {
-	// TODO implement me
-	panic("implement me")
+func (tl *testLogger) SendWarningAlert(s string) error {
+	tl.warnings = append(tl.warnings, s)
+	tl.events = append(tl.events, "warning")
+	return nil
+}
+
+func (tl *testLogger) SendTask(s string) error {
+	tl.tasks = append(tl.tasks, s)
+	tl.events = append(tl.events, "task")
+	return nil
 }
 
 func (t *testLogger) Severe(s string) error {
-	// TODO implement me
-	panic("implement me")
+	return nil
 }
 
 func (tl *testLogger) Log(level string, msg string) error {
