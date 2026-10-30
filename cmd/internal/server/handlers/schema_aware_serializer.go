@@ -32,6 +32,9 @@ type Serializer interface {
 	Update(*lib.UpdatedRow, *fivetransdk.SchemaSelection, *fivetransdk.TableSelection) error
 	Truncate(*fivetransdk.SchemaSelection, *fivetransdk.TableSelection) error
 	SendWarningAlert(string) error
+	SendTask(string) error
+	RecordBinlogExpiration(keyspace, table, shard string)
+	FlushBinlogExpirationWarning() error
 }
 
 type LogSender interface {
@@ -47,6 +50,7 @@ type schemaAwareSerializer struct {
 	serializers            map[string]*recordSerializer
 	schemaList             *fivetransdk.SchemaList
 	enumsAndSets           SchemaEnumsAndSets
+	binlogExpirations      binlogExpirationSet
 }
 
 type recordSerializer interface {
@@ -185,6 +189,36 @@ func (l *schemaAwareSerializer) SendWarningAlert(message string) error {
 			Warning: warning,
 		},
 	})
+}
+
+// SendTask raises a Fivetran Task (dashboard Error) for the connection. Per the
+// Partner SDK, only one Task may be sent per Update call and Fivetran stops the
+// sync once it receives it, so callers must return right after sending.
+// Fivetran resolves the Error after the next successful sync.
+func (l *schemaAwareSerializer) SendTask(message string) error {
+	return l.sender.Send(&fivetransdk.UpdateResponse{
+		Operation: &fivetransdk.UpdateResponse_Task{
+			Task: &fivetransdk.Task{
+				Message: message,
+			},
+		},
+	})
+}
+
+// RecordBinlogExpiration implements lib.BinlogExpirationRecorder.
+func (l *schemaAwareSerializer) RecordBinlogExpiration(keyspace, table, shard string) {
+	l.binlogExpirations.add(keyspace, table, shard)
+}
+
+// FlushBinlogExpirationWarning sends at most one combined Warning for all
+// binlog expirations recorded since the last flush.
+func (l *schemaAwareSerializer) FlushBinlogExpirationWarning() error {
+	msg := l.binlogExpirations.warningMessage()
+	l.binlogExpirations = binlogExpirationSet{}
+	if msg == "" {
+		return nil
+	}
+	return l.SendWarningAlert(msg)
 }
 
 func (l *schemaAwareSerializer) State(sc lib.SyncState) error {

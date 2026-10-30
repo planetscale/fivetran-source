@@ -1105,6 +1105,7 @@ func TestRead_BinlogExpirationReturnsResetCursor(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 3, cc.syncFnInvokedCount)
+	assert.Equal(t, []string{"connect-test.customers/-"}, dbl.binlogExpirations)
 }
 
 func TestSync_DirectVStreamHandlesRawEventsAndCopyCompleted(t *testing.T) {
