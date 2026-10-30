@@ -34,7 +34,7 @@ func (b *binlogExpirationSet) warningMessage() string {
 	}
 	return "PlanetScale binary logs expired before Fivetran could read the latest changes for the following table(s): " +
 		joinLimited(b.items) + ". " +
-		"A historical re-sync of these tables was started automatically. No action is needed."
+		"An automatic historical re-sync has been initiated. No action is needed."
 }
 
 // StaleShardsWarningMessage builds the customer-facing Warning sent when stale
@@ -49,14 +49,27 @@ func StaleShardsWarningMessage(prunedByKeyspace map[string][]string) string {
 		keyspaces = append(keyspaces, ks)
 	}
 	sort.Strings(keyspaces)
+	// The cap applies to the total number of shards listed, across keyspaces.
 	var items []string
+	listed, total := 0, 0
 	for _, ks := range keyspaces {
 		shards := append([]string(nil), prunedByKeyspace[ks]...)
 		sort.Strings(shards)
-		items = append(items, fmt.Sprintf("keyspace %s: %s", ks, strings.Join(shards, ", ")))
+		total += len(shards)
+		if room := maxAlertItems - listed; room > 0 {
+			if len(shards) > room {
+				shards = shards[:room]
+			}
+			listed += len(shards)
+			items = append(items, fmt.Sprintf("keyspace %s: %s", ks, strings.Join(shards, ", ")))
+		}
+	}
+	list := strings.Join(items, ", ")
+	if total > listed {
+		list += fmt.Sprintf(" and %d more", total-listed)
 	}
 	return "PlanetScale removed stale shard references left in this connection's sync state by an older connector version (" +
-		joinLimited(items) + "). " +
+		list + "). " +
 		"These references never contained data. No action or re-sync is needed."
 }
 

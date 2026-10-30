@@ -351,7 +351,7 @@ func TestBinlogExpirationsSendOneCombinedWarning(t *testing.T) {
 		assert.Contains(t, w, "prod_main.states (shard 80-)")
 		assert.Contains(t, w, "prod_main.users (shard -80)")
 		assert.Equal(t, 3, strings.Count(w, "(shard "))
-		assert.True(t, strings.HasSuffix(w, ". A historical re-sync of these tables was started automatically. No action is needed."))
+		assert.True(t, strings.HasSuffix(w, ". An automatic historical re-sync has been initiated. No action is needed."))
 	}
 }
 
@@ -394,6 +394,38 @@ func TestBinlogExpirationWarningSentBeforeResyncTask(t *testing.T) {
 	assert.Len(t, tl.tasks, 1)
 	assert.Len(t, tl.warnings, 1, "warning must be flushed exactly once, before the task")
 	assert.Equal(t, []string{"warning", "task"}, tl.events)
+}
+
+func TestNoBinlogExpirationWarningWhenSyncFails(t *testing.T) {
+	psc := &lib.PlanetScaleSource{}
+	tl := &testLogger{}
+	schema := fivetransdk.SchemaSelection{
+		SchemaName: "prod_main",
+		Included:   true,
+		Tables: []*fivetransdk.TableSelection{
+			{Included: true, TableName: "states"},
+		},
+	}
+	schemaSelection := &fivetransdk.Selection_WithSchema{
+		WithSchema: &fivetransdk.TablesWithSchema{Schemas: []*fivetransdk.SchemaSelection{&schema}},
+	}
+	readFn := func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string,
+		tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
+	) (*lib.SerializedCursor, error) {
+		logger.(lib.BinlogExpirationRecorder).RecordBinlogExpiration(tc.Keyspace, tableName, tc.Shard)
+		return nil, status.Error(codes.Unavailable, "connection reset by peer")
+	}
+	state, err := psc.GetInitialState("prod_main", []string{"-"})
+	assert.NoError(t, err)
+	db := lib.NewTestConnectClient(readFn)
+	err = (&Sync{}).Handle(context.Background(), psc, &db, tl, &lib.SyncState{
+		Keyspaces: map[string]lib.KeyspaceState{
+			"prod_main": {Streams: map[string]lib.ShardStates{"prod_main:states": state}},
+		},
+	}, schemaSelection)
+	assert.Error(t, err)
+	assert.Empty(t, tl.tasks)
+	assert.Empty(t, tl.warnings, "no \"No action is needed\" warning on a failing sync")
 }
 
 func TestCheckpointsHistoricalCopyCursorFromRead(t *testing.T) {

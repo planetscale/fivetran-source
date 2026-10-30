@@ -16,14 +16,20 @@ import (
 type Sync struct{}
 
 func (s *Sync) Handle(ctx context.Context, psc *lib.PlanetScaleSource, db *lib.ConnectClient, logger Serializer, state *lib.SyncState, schema *fivetransdk.Selection_WithSchema) error {
-	err := s.handle(ctx, psc, db, logger, state, schema)
+	if err := s.handle(ctx, psc, db, logger, state, schema); err != nil {
+		// Don't tell the customer "No action is needed" on a failing sync. The
+		// historical re-sync still recovers on the next sync: either the reset
+		// cursor was already checkpointed, or the binlogs are still expired and
+		// the cursor is reset (and recorded) again.
+		return err
+	}
 	// Send at most one combined Warning for every table/shard whose cursor was
 	// reset because binlogs expired during this sync (no-op if none, or if it
 	// was already flushed before raising a Task).
 	if fErr := logger.FlushBinlogExpirationWarning(); fErr != nil {
 		logger.Severe(fmt.Sprintf("failed to send binlog expiration warning: %v", fErr))
 	}
-	return err
+	return nil
 }
 
 func (s *Sync) handle(ctx context.Context, psc *lib.PlanetScaleSource, db *lib.ConnectClient, logger Serializer, state *lib.SyncState, schema *fivetransdk.Selection_WithSchema) error {
