@@ -16,6 +16,23 @@ import (
 type Sync struct{}
 
 func (s *Sync) Handle(ctx context.Context, psc *lib.PlanetScaleSource, db *lib.ConnectClient, logger Serializer, state *lib.SyncState, schema *fivetransdk.Selection_WithSchema) error {
+	if err := s.handle(ctx, psc, db, logger, state, schema); err != nil {
+		// Don't tell the customer "No action is needed" on a failing sync. The
+		// historical re-sync still recovers on the next sync: either the reset
+		// cursor was already checkpointed, or the binlogs are still expired and
+		// the cursor is reset (and recorded) again.
+		return err
+	}
+	// Send at most one combined Warning for every table/shard whose cursor was
+	// reset because binlogs expired during this sync (no-op if none, or if it
+	// was already flushed before raising a Task).
+	if fErr := logger.FlushBinlogExpirationWarning(); fErr != nil {
+		logger.Severe(fmt.Sprintf("failed to send binlog expiration warning: %v", fErr))
+	}
+	return nil
+}
+
+func (s *Sync) handle(ctx context.Context, psc *lib.PlanetScaleSource, db *lib.ConnectClient, logger Serializer, state *lib.SyncState, schema *fivetransdk.Selection_WithSchema) error {
 	if state == nil {
 		return status.Error(codes.Internal, "syncState cannot be nil")
 	}
@@ -81,8 +98,21 @@ func (s *Sync) Handle(ctx context.Context, psc *lib.PlanetScaleSource, db *lib.C
 				columns := includedColumns(table)
 				sc, err := (*db).Read(ctx, logger, *psc, table.TableName, columns, tc, onRow, onCursor, onUpdate)
 				if err != nil {
-					if lib.IsVStreamSchemaIncompatibilityError(err) {
-						return status.Error(codes.FailedPrecondition, err.Error())
+					if task := resyncTaskMessage(err, ks.SchemaName, table.TableName, shardName); task != "" {
+						// Checkpoint whatever progress the other shards/tables made, then
+						// raise a single Task. Fivetran stops the sync on a Task.
+						if sErr := logger.State(*state); sErr != nil {
+							return status.Error(codes.Internal, sErr.Error())
+						}
+						logger.Severe(fmt.Sprintf("raising re-sync task for %s: %v", stateKey, err))
+						// Warnings must go out before the Task: Fivetran stops the sync on a Task.
+						if fErr := logger.FlushBinlogExpirationWarning(); fErr != nil {
+							logger.Severe(fmt.Sprintf("failed to send binlog expiration warning: %v", fErr))
+						}
+						if tErr := logger.SendTask(task); tErr != nil {
+							return status.Error(codes.FailedPrecondition, task)
+						}
+						return nil
 					}
 					return status.Error(codes.Internal, fmt.Sprintf("failed to download rows for table : %s , error : %s", table.TableName, err.Error()))
 				}
@@ -96,6 +126,31 @@ func (s *Sync) Handle(ctx context.Context, psc *lib.PlanetScaleSource, db *lib.C
 		}
 	}
 	return logger.State(*state)
+}
+
+// resyncTaskMessage returns the customer-facing Fivetran Task text for read
+// errors that cannot be recovered without a historical re-sync, or "" if the
+// error should keep the existing retry/error behaviour.
+func resyncTaskMessage(err error, keyspace, table, shard string) string {
+	switch {
+	// The PlanetScale connector only supports connection-level re-syncs in the
+	// Fivetran dashboard (https://fivetran.com/docs/connectors/databases/planetscale),
+	// so every Task points the customer at "Resync all data".
+	case lib.IsShardNotFoundInVGTIDError(err):
+		// Cursors are stored per table *and* per shard, so a removed shard affects
+		// every table in the keyspace, not just the one that failed first.
+		return fmt.Sprintf("Re-sync required: shard %q no longer exists in PlanetScale keyspace %q (for example after a reshard), "+
+			"so incremental replication cannot resume for the tables in this keyspace. "+
+			"To fix this, go to the connection's Settings tab in Fivetran and click \"Resync all data\".",
+			shard, keyspace)
+	case lib.IsVStreamSchemaIncompatibilityError(err):
+		return fmt.Sprintf("Re-sync required: a schema change on table %q in PlanetScale keyspace %q (for example a column added in the middle "+
+			"of the table, or a dropped or renamed column) prevents incremental replication from continuing. "+
+			"To fix this, go to the connection's Settings tab in Fivetran and click \"Resync all data\".",
+			table, keyspace)
+	default:
+		return ""
+	}
 }
 
 func includedKeyspaces(schema *fivetransdk.Selection_WithSchema) []*fivetransdk.SchemaSelection {

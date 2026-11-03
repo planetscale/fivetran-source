@@ -18,7 +18,6 @@ import (
 	psdbconnect "github.com/planetscale/airbyte-source/proto/psdbconnect/v1alpha1"
 	fivetransdk "github.com/planetscale/fivetran-source/fivetran_sdk.v2"
 	"github.com/planetscale/fivetran-source/lib"
-	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	"vitess.io/vitess/go/sqltypes"
@@ -481,7 +480,7 @@ func TestIntegrationRepeatedSyncBursts(t *testing.T) {
 	}
 }
 
-func TestIntegrationMidTableDDLRequiresHistoricalResync(t *testing.T) {
+func TestIntegrationMidTableDDLRaisesResyncTask(t *testing.T) {
 	psc := loadIntegrationSource(t)
 	ctx := context.Background()
 	tableName := integrationTableName(t)
@@ -517,24 +516,47 @@ func TestIntegrationMidTableDDLRequiresHistoricalResync(t *testing.T) {
 		quoteIdent(tableName),
 	))
 
+	// Snapshot the cursors before the failing sync; Sync.Handle mutates state in place.
+	beforeCursors := integrationStateTableCursors(t, state, psc.Database, tableName)
+
 	sender, failedState, err := runIntegrationSyncWithError(t, psc, tableName, columns, state)
-	if err == nil {
-		t.Fatalf("expected mid-table DDL to require a historical re-sync")
+	if err != nil {
+		t.Fatalf("expected mid-table DDL to raise a Fivetran Task and return nil, got %s: %v", status.Code(err), err)
 	}
-	if got := status.Code(err); got != codes.FailedPrecondition {
-		t.Fatalf("expected FailedPrecondition, got %s: %v", got, err)
+
+	tasks := sender.tasks()
+	if len(tasks) != 1 {
+		t.Fatalf("expected exactly one Task, got %d: %q", len(tasks), tasks)
 	}
-	for _, want := range []string{"historical re-sync", "failed to build table replication plan"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("expected error to contain %q, got %v", want, err)
+	for _, want := range []string{"Re-sync required", tableName, "Resync all data"} {
+		if !strings.Contains(tasks[0], want) {
+			t.Fatalf("expected Task to contain %q, got %q", want, tasks[0])
 		}
 	}
-	assertIntegrationRecordCount(t, sender.recordsForTable(tableName), 0)
-	if _, ok := sender.latestState(t); ok {
-		t.Fatalf("failed sync should not checkpoint state")
+	if last := sender.responses[len(sender.responses)-1]; last.GetTask() == nil {
+		t.Fatalf("expected the Task to be the last response (Fivetran stops the sync on a Task), got %T", last.GetOperation())
 	}
-	if !reflect.DeepEqual(state, failedState) {
-		t.Fatalf("failed sync changed state")
+	if warnings := sender.warnings(); len(warnings) != 0 {
+		t.Fatalf("expected no Warnings, got %q", warnings)
+	}
+	assertIntegrationRecordCount(t, sender.recordsForTable(tableName), 0)
+
+	// Sync.Handle checkpoints state right before raising the Task. That checkpoint
+	// must not advance this table past the position that failed.
+	checkpoint, ok := sender.latestState(t)
+	if !ok {
+		t.Fatalf("expected a checkpoint before the Task")
+	}
+	for _, got := range []*lib.SyncState{checkpoint, failedState} {
+		afterCursors := integrationStateTableCursors(t, got, psc.Database, tableName)
+		if len(afterCursors) != len(beforeCursors) {
+			t.Fatalf("checkpoint shards changed: before %v, after %v", beforeCursors, afterCursors)
+		}
+		for shard, before := range beforeCursors {
+			if !proto.Equal(before, afterCursors[shard]) {
+				t.Fatalf("checkpoint advanced cursor for shard %s past the failed position: before %v, after %v", shard, before, afterCursors[shard])
+			}
+		}
 	}
 }
 
@@ -861,6 +883,26 @@ func (s *integrationSender) latestState(t *testing.T) (*lib.SyncState, bool) {
 		return &state, true
 	}
 	return nil, false
+}
+
+func (s *integrationSender) tasks() []string {
+	var tasks []string
+	for _, response := range s.responses {
+		if task := response.GetTask(); task != nil {
+			tasks = append(tasks, task.GetMessage())
+		}
+	}
+	return tasks
+}
+
+func (s *integrationSender) warnings() []string {
+	var warnings []string
+	for _, response := range s.responses {
+		if warning := response.GetWarning(); warning != nil {
+			warnings = append(warnings, warning.GetMessage())
+		}
+	}
+	return warnings
 }
 
 func (s *integrationSender) recordCountForTable(tableName string) int {

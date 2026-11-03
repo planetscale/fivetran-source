@@ -42,6 +42,13 @@ type DatabaseLogger interface {
 	Warning(string) error
 }
 
+// BinlogExpirationRecorder is optionally implemented by a DatabaseLogger to
+// collect the tables/shards whose cursor was reset because binlogs expired, so
+// the caller can raise a single combined Fivetran Warning per sync.
+type BinlogExpirationRecorder interface {
+	RecordBinlogExpiration(keyspace, table, shard string)
+}
+
 var (
 	cursorCheckpointRows       = 1000
 	cursorCheckpointInterval   = 10 * time.Minute
@@ -179,6 +186,9 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 					// Check for binlog expiration error and reset cursor for historical sync
 					if IsBinlogsExpirationError(err) {
 						logger.Warning(fmt.Sprintf("%sBinlogs have expired. Resetting cursor position to trigger historical sync", preamble))
+						if recorder, ok := logger.(BinlogExpirationRecorder); ok {
+							recorder.RecordBinlogExpiration(currentPosition.Keyspace, tableName, currentPosition.Shard)
+						}
 						// Reset the cursor position to empty to trigger historical sync on next iteration
 						currentPosition.Position = ""
 						currentPosition.LastKnownPk = nil
@@ -938,6 +948,25 @@ func IsBinlogsExpirationError(err error) bool {
 		return false
 	}
 	return strings.Contains(err.Error(), "Cannot replicate because the source purged required binary logs")
+}
+
+// IsShardNotFoundInVGTIDError reports whether VStream refused to start because a
+// shard stored in the Fivetran cursor no longer exists in the keyspace, e.g.
+// after a reshard, or because older connector versions stored a bogus shard
+// name such as "prod_main_sharded/-40" for keyspace "prod_main".
+//
+// Example (vtgate, FailedPrecondition):
+//
+//	error starting stream from shard GTID keyspace:"prod_main" shard:"prod_main_sharded/-40" gtid:"current":
+//	failed to determine if keyspace prod_main has been resharded:
+//	shard provided in VGTID, prod_main_sharded/-40, not found in the prod_main keyspace
+func IsShardNotFoundInVGTIDError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return strings.Contains(message, "shard provided in VGTID") &&
+		strings.Contains(message, "not found in the")
 }
 
 func IsVStreamSchemaIncompatibilityError(err error) bool {
