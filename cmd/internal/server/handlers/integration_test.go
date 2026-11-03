@@ -72,6 +72,190 @@ func TestIntegrationBasicInsertUpdateDelete(t *testing.T) {
 	})
 }
 
+func TestIntegrationCompositePrimaryKeyInsertUpdateDelete(t *testing.T) {
+	psc := loadIntegrationSource(t)
+	ctx := context.Background()
+	tableName := integrationTableName(t)
+
+	db := openIntegrationSQL(t, psc)
+	t.Cleanup(func() {
+		if _, err := db.ExecContext(context.Background(), "drop table if exists "+quoteIdent(tableName)); err != nil {
+			t.Logf("drop integration table %s: %v", tableName, err)
+		}
+		_ = db.Close()
+	})
+
+	mustExec(t, ctx, db, fmt.Sprintf(`
+		create table %s (
+			label varchar(64) not null,
+			tenant_id bigint not null,
+			item_id bigint not null,
+			qty int not null,
+			flag tinyint(1) not null,
+			note varchar(64) null,
+			primary key (tenant_id, item_id)
+		)`, quoteIdent(tableName)))
+	mustExec(t, ctx, db, fmt.Sprintf(
+		`insert into %s (label, tenant_id, item_id, qty, flag, note) values
+			('one-ten', 1, 10, 10, 1, null),
+			('one-eleven', 1, 11, 11, 0, 'old'),
+			('two-ten', 2, 10, 20, 1, 'keep')`,
+		quoteIdent(tableName),
+	))
+
+	columns := []string{"label", "tenant_id", "item_id", "qty", "flag", "note"}
+	model := map[integrationCompositeKey]map[string]any{}
+	first, state := runIntegrationSync(t, psc, tableName, columns, nil)
+	applyIntegrationCompositeRecords(t, model, first.recordsForTable(tableName))
+	assertIntegrationCompositeRows(t, model, map[integrationCompositeKey]map[string]any{
+		{tenantID: 1, itemID: 10}: {"label": "one-ten", "tenant_id": int64(1), "item_id": int64(10), "qty": int64(10), "flag": true, "note": nil},
+		{tenantID: 1, itemID: 11}: {"label": "one-eleven", "tenant_id": int64(1), "item_id": int64(11), "qty": int64(11), "flag": false, "note": "old"},
+		{tenantID: 2, itemID: 10}: {"label": "two-ten", "tenant_id": int64(2), "item_id": int64(10), "qty": int64(20), "flag": true, "note": "keep"},
+	})
+
+	mustExec(t, ctx, db, fmt.Sprintf(
+		"update %s set qty = 12, note = 'changed' where tenant_id = 1 and item_id = 10",
+		quoteIdent(tableName),
+	))
+	mustExec(t, ctx, db, fmt.Sprintf(
+		"delete from %s where tenant_id = 1 and item_id = 11",
+		quoteIdent(tableName),
+	))
+	mustExec(t, ctx, db, fmt.Sprintf(
+		"insert into %s (label, tenant_id, item_id, qty, flag, note) values ('one-twelve', 1, 12, 12, 0, 'new')",
+		quoteIdent(tableName),
+	))
+
+	second, _ := runIntegrationSync(t, psc, tableName, columns, state)
+	applyIntegrationCompositeRecords(t, model, second.recordsForTable(tableName))
+	assertIntegrationCompositeRows(t, model, map[integrationCompositeKey]map[string]any{
+		{tenantID: 1, itemID: 10}: {"label": "one-ten", "tenant_id": int64(1), "item_id": int64(10), "qty": int64(12), "flag": true, "note": "changed"},
+		{tenantID: 1, itemID: 12}: {"label": "one-twelve", "tenant_id": int64(1), "item_id": int64(12), "qty": int64(12), "flag": false, "note": "new"},
+		{tenantID: 2, itemID: 10}: {"label": "two-ten", "tenant_id": int64(2), "item_id": int64(10), "qty": int64(20), "flag": true, "note": "keep"},
+	})
+}
+
+func TestIntegrationSelectedColumnProjectionIgnoresUnselectedChanges(t *testing.T) {
+	psc := loadIntegrationSource(t)
+	ctx := context.Background()
+	tableName := integrationTableName(t)
+
+	db := openIntegrationSQL(t, psc)
+	t.Cleanup(func() {
+		if _, err := db.ExecContext(context.Background(), "drop table if exists "+quoteIdent(tableName)); err != nil {
+			t.Logf("drop integration table %s: %v", tableName, err)
+		}
+		_ = db.Close()
+	})
+
+	mustExec(t, ctx, db, fmt.Sprintf(`
+		create table %s (
+			id bigint primary key,
+			visible_col varchar(64) not null,
+			hidden_col varchar(64) not null,
+			status varchar(64) not null
+		)`, quoteIdent(tableName)))
+	mustExec(t, ctx, db, fmt.Sprintf(
+		"insert into %s (id, visible_col, hidden_col, status) values (1, 'visible-one', 'hidden-one', 'open'), (2, 'visible-two', 'hidden-two', 'closed')",
+		quoteIdent(tableName),
+	))
+
+	columns := []string{"id", "visible_col", "status"}
+	model := map[int64]map[string]any{}
+	first, state := runIntegrationSync(t, psc, tableName, columns, nil)
+	firstRecords := first.recordsForTable(tableName)
+	assertIntegrationRecordsExcludeColumns(t, firstRecords, "hidden_col")
+	applyIntegrationRecords(t, model, firstRecords)
+	assertIntegrationRows(t, model, map[int64]map[string]any{
+		1: {"id": int64(1), "visible_col": "visible-one", "status": "open"},
+		2: {"id": int64(2), "visible_col": "visible-two", "status": "closed"},
+	})
+
+	mustExec(t, ctx, db, fmt.Sprintf("update %s set hidden_col = 'hidden-one-updated' where id = 1", quoteIdent(tableName)))
+	hiddenOnly, state := runIntegrationSync(t, psc, tableName, columns, state)
+	hiddenOnlyRecords := hiddenOnly.recordsForTable(tableName)
+	assertIntegrationRecordsExcludeColumns(t, hiddenOnlyRecords, "hidden_col")
+	applyIntegrationRecords(t, model, hiddenOnlyRecords)
+	assertIntegrationRows(t, model, map[int64]map[string]any{
+		1: {"id": int64(1), "visible_col": "visible-one", "status": "open"},
+		2: {"id": int64(2), "visible_col": "visible-two", "status": "closed"},
+	})
+
+	mustExec(t, ctx, db, fmt.Sprintf("update %s set visible_col = 'visible-one-updated', hidden_col = 'hidden-one-again' where id = 1", quoteIdent(tableName)))
+	mustExec(t, ctx, db, fmt.Sprintf("delete from %s where id = 2", quoteIdent(tableName)))
+	second, _ := runIntegrationSync(t, psc, tableName, columns, state)
+	secondRecords := second.recordsForTable(tableName)
+	assertIntegrationRecordsExcludeColumns(t, secondRecords, "hidden_col")
+	applyIntegrationRecords(t, model, secondRecords)
+	assertIntegrationRows(t, model, map[int64]map[string]any{
+		1: {"id": int64(1), "visible_col": "visible-one-updated", "status": "open"},
+	})
+}
+
+func TestIntegrationMultipleTablesSingleSync(t *testing.T) {
+	psc := loadIntegrationSource(t)
+	ctx := context.Background()
+	baseTableName := integrationTableName(t)
+	leftTableName := baseTableName + "_left"
+	rightTableName := baseTableName + "_right"
+	tableNames := []string{leftTableName, rightTableName}
+
+	db := openIntegrationSQL(t, psc)
+	t.Cleanup(func() {
+		for _, tableName := range tableNames {
+			if _, err := db.ExecContext(context.Background(), "drop table if exists "+quoteIdent(tableName)); err != nil {
+				t.Logf("drop integration table %s: %v", tableName, err)
+			}
+		}
+		_ = db.Close()
+	})
+
+	for _, tableName := range tableNames {
+		mustExec(t, ctx, db, fmt.Sprintf(`
+			create table %s (
+				id bigint primary key,
+				version int not null,
+				payload varchar(128) not null,
+				active tinyint(1) not null
+			)`, quoteIdent(tableName)))
+	}
+
+	columns := []string{"id", "version", "payload", "active"}
+	tables := []integrationTableSelection{
+		{tableName: leftTableName, columns: columns},
+		{tableName: rightTableName, columns: columns},
+	}
+
+	leftExpected := map[int64]map[string]any{}
+	rightExpected := map[int64]map[string]any{}
+	insertIntegrationLoadRows(t, ctx, db, leftTableName, 1, 2, 0, leftExpected)
+	insertIntegrationLoadRows(t, ctx, db, rightTableName, 101, 2, 0, rightExpected)
+
+	leftModel := map[int64]map[string]any{}
+	rightModel := map[int64]map[string]any{}
+	first, state := runIntegrationSyncForTables(t, psc, tables, nil)
+	applyIntegrationRecords(t, leftModel, first.recordsForTable(leftTableName))
+	applyIntegrationRecords(t, rightModel, first.recordsForTable(rightTableName))
+	assertIntegrationRows(t, leftModel, leftExpected)
+	assertIntegrationRows(t, rightModel, rightExpected)
+
+	updateIntegrationLoadRow(t, ctx, db, leftTableName, 1, 1, true, leftExpected)
+	deleteIntegrationLoadRow(t, ctx, db, leftTableName, 2, leftExpected)
+	insertIntegrationLoadRows(t, ctx, db, leftTableName, 3, 1, 1, leftExpected)
+	updateIntegrationLoadRow(t, ctx, db, rightTableName, 101, 1, false, rightExpected)
+	insertIntegrationLoadRows(t, ctx, db, rightTableName, 103, 1, 1, rightExpected)
+
+	second, state := runIntegrationSyncForTables(t, psc, tables, state)
+	applyIntegrationRecords(t, leftModel, second.recordsForTable(leftTableName))
+	applyIntegrationRecords(t, rightModel, second.recordsForTable(rightTableName))
+	assertIntegrationRows(t, leftModel, leftExpected)
+	assertIntegrationRows(t, rightModel, rightExpected)
+
+	idle, _ := runIntegrationSyncForTables(t, psc, tables, state)
+	assertIntegrationRecordCount(t, idle.recordsForTable(leftTableName), 0)
+	assertIntegrationRecordCount(t, idle.recordsForTable(rightTableName), 0)
+}
+
 func TestIntegrationShardDiscoveryIgnoresSiblingKeyspacePrefix(t *testing.T) {
 	psc := loadIntegrationSource(t)
 	shardedPSC := psc
@@ -181,6 +365,90 @@ func TestIntegrationShardedInsertUpdateDelete(t *testing.T) {
 
 	idle, state := runIntegrationSync(t, psc, tableName, []string{"id", "name", "qty", "flag"}, state)
 	assertIntegrationStateShards(t, state, psc.Database, tableName, shards)
+	assertIntegrationRecordCount(t, idle.recordsForTable(tableName), 0)
+}
+
+func TestIntegrationShardedInterruptedCopyResume(t *testing.T) {
+	restoreCheckpointPolicy := lib.SetCursorCheckpointPolicyForIntegrationTest(1, 0)
+	defer restoreCheckpointPolicy()
+
+	psc := loadIntegrationSource(t)
+	psc, shards := loadIntegrationShardedSource(t, psc)
+	ctx := context.Background()
+	tableName := integrationTableName(t)
+
+	assertIntegrationShardSet(t, shards, []string{"-80", "80-"})
+
+	db := openIntegrationSQL(t, psc)
+	t.Cleanup(func() {
+		if _, err := db.ExecContext(context.Background(), fmt.Sprintf(
+			"alter vschema on %s drop vindex hash",
+			quoteQualifiedIdent(psc.Database, tableName),
+		)); err != nil {
+			t.Logf("drop integration vschema vindex for %s.%s: %v", psc.Database, tableName, err)
+		}
+		if _, err := db.ExecContext(context.Background(), "drop table if exists "+quoteIdent(tableName)); err != nil {
+			t.Logf("drop integration table %s: %v", tableName, err)
+		}
+		_ = db.Close()
+	})
+
+	mustExec(t, ctx, db, fmt.Sprintf(`
+		create table %s (
+			id bigint primary key,
+			version int not null,
+			payload varchar(2048) not null,
+			active tinyint(1) not null
+		)`, quoteIdent(tableName)))
+	mustExec(t, ctx, db, fmt.Sprintf(
+		"alter vschema on %s add vindex hash(id) using hash",
+		quoteQualifiedIdent(psc.Database, tableName),
+	))
+
+	columns := []string{"id", "version", "payload", "active"}
+	expected := map[int64]map[string]any{}
+	const rowCount = int64(2500)
+	insertIntegrationResumeRows(t, ctx, db, tableName, 1, rowCount, 0, expected)
+	assertIntegrationRowsOnEveryShard(t, psc, tableName, shards)
+
+	interruptCtx, cancelInterrupt := context.WithCancel(context.Background())
+	interruptSender := &interruptAfterCopyCheckpointSender{
+		t:            t,
+		keyspaceName: psc.Database,
+		tableName:    tableName,
+		cancel:       cancelInterrupt,
+	}
+	_, err := runIntegrationSyncWithSender(t, interruptCtx, psc, tableName, columns, nil, interruptSender)
+	cancelInterrupt()
+	if err == nil {
+		t.Fatalf("expected interrupted sharded copy sync to return an error")
+	}
+	if interruptSender.checkpointState == nil {
+		t.Fatalf("interrupted sharded copy did not checkpoint a LastKnownPk cursor")
+	}
+	if interruptSender.checkpointRecordCount == 0 {
+		t.Fatalf("interrupted sharded copy checkpointed before emitting table records")
+	}
+	assertIntegrationStateShards(t, interruptSender.checkpointState, psc.Database, tableName, shards)
+
+	checkpointedRecords := interruptSender.recordsForTable(tableName)[:interruptSender.checkpointRecordCount]
+	model := map[int64]map[string]any{}
+	applyIntegrationRecords(t, model, checkpointedRecords)
+
+	lastCopiedID := integrationLastKnownPKID(t, interruptSender.checkpointState, psc.Database, tableName)
+	if lastCopiedID < 1 || lastCopiedID > rowCount {
+		t.Fatalf("unexpected sharded LastKnownPk id %d for row count %d", lastCopiedID, rowCount)
+	}
+	updateIntegrationResumeRow(t, ctx, db, tableName, lastCopiedID, 1, true, expected)
+
+	resumed, finalState := runIntegrationSync(t, psc, tableName, columns, interruptSender.checkpointState)
+	assertIntegrationStateShards(t, finalState, psc.Database, tableName, shards)
+	applyIntegrationRecords(t, model, resumed.recordsForTable(tableName))
+	assertIntegrationRowsExactly(t, model, expected)
+	assertIntegrationStateHasNoLastKnownPK(t, finalState, psc.Database, tableName)
+
+	idle, finalState := runIntegrationSync(t, psc, tableName, columns, finalState)
+	assertIntegrationStateShards(t, finalState, psc.Database, tableName, shards)
 	assertIntegrationRecordCount(t, idle.recordsForTable(tableName), 0)
 }
 
@@ -416,6 +684,75 @@ func TestIntegrationInterruptedCopyResume(t *testing.T) {
 	resumed, finalState := runIntegrationSync(t, psc, tableName, columns, interruptSender.checkpointState)
 	applyIntegrationRecords(t, model, resumed.recordsForTable(tableName))
 	assertIntegrationRowsExactly(t, model, expected)
+	assertIntegrationStateHasNoLastKnownPK(t, finalState, psc.Database, tableName)
+
+	idle, _ := runIntegrationSync(t, psc, tableName, columns, finalState)
+	assertIntegrationRecordCount(t, idle.recordsForTable(tableName), 0)
+}
+
+func TestIntegrationCompositePrimaryKeyInterruptedCopyResume(t *testing.T) {
+	restoreCheckpointPolicy := lib.SetCursorCheckpointPolicyForIntegrationTest(1, 0)
+	defer restoreCheckpointPolicy()
+
+	psc := loadIntegrationSource(t)
+	ctx := context.Background()
+	tableName := integrationTableName(t)
+
+	db := openIntegrationSQL(t, psc)
+	t.Cleanup(func() {
+		if _, err := db.ExecContext(context.Background(), "drop table if exists "+quoteIdent(tableName)); err != nil {
+			t.Logf("drop integration table %s: %v", tableName, err)
+		}
+		_ = db.Close()
+	})
+
+	mustExec(t, ctx, db, fmt.Sprintf(`
+		create table %s (
+			label varchar(64) not null,
+			tenant_id bigint not null,
+			item_id bigint not null,
+			version int not null,
+			payload varchar(2048) not null,
+			active tinyint(1) not null,
+			primary key (tenant_id, item_id)
+		)`, quoteIdent(tableName)))
+
+	columns := []string{"label", "tenant_id", "item_id", "version", "payload", "active"}
+	expected := map[integrationCompositeKey]map[string]any{}
+	insertIntegrationCompositeResumeRows(t, ctx, db, tableName, 30, 60, 0, expected)
+
+	interruptCtx, cancelInterrupt := context.WithCancel(context.Background())
+	interruptSender := &interruptAfterCopyCheckpointSender{
+		t:            t,
+		keyspaceName: psc.Database,
+		tableName:    tableName,
+		cancel:       cancelInterrupt,
+	}
+	_, err := runIntegrationSyncWithSender(t, interruptCtx, psc, tableName, columns, nil, interruptSender)
+	cancelInterrupt()
+	if err == nil {
+		t.Fatalf("expected interrupted composite copy sync to return an error")
+	}
+	if interruptSender.checkpointState == nil {
+		t.Fatalf("interrupted composite copy did not checkpoint a LastKnownPk cursor")
+	}
+	if interruptSender.checkpointRecordCount == 0 {
+		t.Fatalf("interrupted composite copy checkpointed before emitting table records")
+	}
+
+	checkpointedRecords := interruptSender.recordsForTable(tableName)[:interruptSender.checkpointRecordCount]
+	model := map[integrationCompositeKey]map[string]any{}
+	applyIntegrationCompositeRecords(t, model, checkpointedRecords)
+
+	lastCopiedKey := integrationLastKnownPKCompositeKey(t, interruptSender.checkpointState, psc.Database, tableName)
+	if _, ok := expected[lastCopiedKey]; !ok {
+		t.Fatalf("unexpected composite LastKnownPk %+v for %d expected rows", lastCopiedKey, len(expected))
+	}
+	updateIntegrationCompositeResumeRow(t, ctx, db, tableName, lastCopiedKey, 1, true, expected)
+
+	resumed, finalState := runIntegrationSync(t, psc, tableName, columns, interruptSender.checkpointState)
+	applyIntegrationCompositeRecords(t, model, resumed.recordsForTable(tableName))
+	assertIntegrationCompositeRows(t, model, expected)
 	assertIntegrationStateHasNoLastKnownPK(t, finalState, psc.Database, tableName)
 
 	idle, _ := runIntegrationSync(t, psc, tableName, columns, finalState)
@@ -762,7 +1099,31 @@ type integrationStatefulSender interface {
 	latestState(*testing.T) (*lib.SyncState, bool)
 }
 
+type integrationTableSelection struct {
+	tableName string
+	columns   []string
+}
+
+func runIntegrationSyncForTables(t *testing.T, psc lib.PlanetScaleSource, tables []integrationTableSelection, state *lib.SyncState) (*integrationSender, *lib.SyncState) {
+	t.Helper()
+
+	sender := &integrationSender{}
+	state, err := runIntegrationSyncForTablesWithSender(t, context.Background(), psc, tables, state, sender)
+	if err != nil {
+		t.Fatalf("run sync: %v", err)
+	}
+	return sender, state
+}
+
 func runIntegrationSyncWithSender(t *testing.T, ctx context.Context, psc lib.PlanetScaleSource, tableName string, columns []string, state *lib.SyncState, sender integrationStatefulSender) (*lib.SyncState, error) {
+	t.Helper()
+
+	return runIntegrationSyncForTablesWithSender(t, ctx, psc, []integrationTableSelection{
+		{tableName: tableName, columns: columns},
+	}, state, sender)
+}
+
+func runIntegrationSyncForTablesWithSender(t *testing.T, ctx context.Context, psc lib.PlanetScaleSource, tables []integrationTableSelection, state *lib.SyncState, sender integrationStatefulSender) (*lib.SyncState, error) {
 	t.Helper()
 
 	mysqlClient, err := lib.NewMySQL(&psc)
@@ -786,22 +1147,23 @@ func runIntegrationSyncWithSender(t *testing.T, ctx context.Context, psc lib.Pla
 		if err != nil {
 			t.Fatalf("list shards: %v", err)
 		}
-		shardState, err := psc.GetInitialState(psc.Database, shards)
-		if err != nil {
-			t.Fatalf("build initial state: %v", err)
-		}
 		state = &lib.SyncState{
 			Keyspaces: map[string]lib.KeyspaceState{
 				psc.Database: {
-					Streams: map[string]lib.ShardStates{
-						psc.Database + ":" + tableName: shardState,
-					},
+					Streams: map[string]lib.ShardStates{},
 				},
 			},
 		}
+		for _, table := range tables {
+			shardState, err := psc.GetInitialState(psc.Database, shards)
+			if err != nil {
+				t.Fatalf("build initial state for table %s: %v", table.tableName, err)
+			}
+			state.Keyspaces[psc.Database].Streams[psc.Database+":"+table.tableName] = shardState
+		}
 	}
 
-	selection := integrationSelection(psc.Database, tableName, columns)
+	selection := integrationSelectionForTables(psc.Database, tables)
 	logger := NewSchemaAwareSerializer(sender, "integration", psc.TreatTinyIntAsBoolean, sourceSchema.SchemaList, sourceSchema.EnumsAndSets)
 	syncer := &Sync{}
 	if err := syncer.Handle(ctx, &psc, &connectClient, logger, state, selection); err != nil {
@@ -814,23 +1176,32 @@ func runIntegrationSyncWithSender(t *testing.T, ctx context.Context, psc lib.Pla
 }
 
 func integrationSelection(schemaName, tableName string, columns []string) *fivetransdk.Selection_WithSchema {
-	selectedColumns := map[string]bool{}
-	for _, column := range columns {
-		selectedColumns[column] = true
+	return integrationSelectionForTables(schemaName, []integrationTableSelection{
+		{tableName: tableName, columns: columns},
+	})
+}
+
+func integrationSelectionForTables(schemaName string, tables []integrationTableSelection) *fivetransdk.Selection_WithSchema {
+	tableSelections := make([]*fivetransdk.TableSelection, 0, len(tables))
+	for _, table := range tables {
+		selectedColumns := map[string]bool{}
+		for _, column := range table.columns {
+			selectedColumns[column] = true
+		}
+		tableSelections = append(tableSelections, &fivetransdk.TableSelection{
+			TableName: table.tableName,
+			Included:  true,
+			Columns:   selectedColumns,
+		})
 	}
+
 	return &fivetransdk.Selection_WithSchema{
 		WithSchema: &fivetransdk.TablesWithSchema{
 			Schemas: []*fivetransdk.SchemaSelection{
 				{
 					SchemaName: schemaName,
 					Included:   true,
-					Tables: []*fivetransdk.TableSelection{
-						{
-							TableName: tableName,
-							Included:  true,
-							Columns:   selectedColumns,
-						},
-					},
+					Tables:     tableSelections,
 				},
 			},
 		},
@@ -839,6 +1210,11 @@ func integrationSelection(schemaName, tableName string, columns []string) *fivet
 
 type integrationSender struct {
 	responses []*fivetransdk.UpdateResponse
+}
+
+type integrationCompositeKey struct {
+	tenantID int64
+	itemID   int64
 }
 
 func (s *integrationSender) Send(response *fivetransdk.UpdateResponse) error {
@@ -957,6 +1333,54 @@ func applyIntegrationRecords(t *testing.T, rows map[int64]map[string]any, record
 	}
 }
 
+func applyIntegrationCompositeRecords(t *testing.T, rows map[integrationCompositeKey]map[string]any, records []*fivetransdk.Record) {
+	t.Helper()
+
+	for _, record := range records {
+		if record.Type == fivetransdk.RecordType_TRUNCATE {
+			for key := range rows {
+				delete(rows, key)
+			}
+			continue
+		}
+
+		key := integrationCompositeRecordKey(t, record)
+		if record.Type == fivetransdk.RecordType_DELETE {
+			delete(rows, key)
+			continue
+		}
+
+		if _, ok := rows[key]; !ok {
+			rows[key] = map[string]any{}
+		}
+		for column, value := range record.Data {
+			rows[key][column] = integrationValue(value)
+		}
+	}
+}
+
+func integrationCompositeRecordKey(t *testing.T, record *fivetransdk.Record) integrationCompositeKey {
+	t.Helper()
+
+	tenantValue, ok := record.Data["tenant_id"]
+	if !ok {
+		t.Fatalf("record missing tenant_id: %+v", record)
+	}
+	itemValue, ok := record.Data["item_id"]
+	if !ok {
+		t.Fatalf("record missing item_id: %+v", record)
+	}
+	tenantID, ok := integrationValue(tenantValue).(int64)
+	if !ok {
+		t.Fatalf("record tenant_id is not int64: %T %v", integrationValue(tenantValue), integrationValue(tenantValue))
+	}
+	itemID, ok := integrationValue(itemValue).(int64)
+	if !ok {
+		t.Fatalf("record item_id is not int64: %T %v", integrationValue(itemValue), integrationValue(itemValue))
+	}
+	return integrationCompositeKey{tenantID: tenantID, itemID: itemID}
+}
+
 func integrationValue(value *fivetransdk.ValueType) any {
 	switch inner := value.Inner.(type) {
 	case *fivetransdk.ValueType_Bool:
@@ -1054,11 +1478,31 @@ func assertIntegrationRowsExactly(t *testing.T, got, want map[int64]map[string]a
 	}
 }
 
+func assertIntegrationCompositeRows(t *testing.T, got, want map[integrationCompositeKey]map[string]any) {
+	t.Helper()
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected composite rows\nwant: %#v\ngot:  %#v", want, got)
+	}
+}
+
 func assertIntegrationStrings(t *testing.T, got, want []string) {
 	t.Helper()
 
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected strings\nwant: %#v\ngot:  %#v", want, got)
+	}
+}
+
+func assertIntegrationRecordsExcludeColumns(t *testing.T, records []*fivetransdk.Record, columns ...string) {
+	t.Helper()
+
+	for _, record := range records {
+		for _, column := range columns {
+			if _, ok := record.Data[column]; ok {
+				t.Fatalf("record unexpectedly included column %s: type=%s data=%s", column, record.Type, integrationDebugData(record.Data))
+			}
+		}
 	}
 }
 
@@ -1181,22 +1625,52 @@ func integrationStateHasLastKnownPK(t *testing.T, state *lib.SyncState, keyspace
 func integrationLastKnownPKID(t *testing.T, state *lib.SyncState, keyspaceName, tableName string) int64 {
 	t.Helper()
 
+	shard, result := integrationLastKnownPKResult(t, state, keyspaceName, tableName)
+	if len(result.Rows) != 1 || len(result.Rows[0]) != 1 {
+		t.Fatalf("unexpected LastKnownPk shape for shard %s in table %s: %+v", shard, tableName, result)
+	}
+	id, err := result.Rows[0][0].ToInt64()
+	if err != nil {
+		t.Fatalf("parse LastKnownPk id for shard %s in table %s: %v", shard, tableName, err)
+	}
+	return id
+}
+
+func integrationLastKnownPKCompositeKey(t *testing.T, state *lib.SyncState, keyspaceName, tableName string) integrationCompositeKey {
+	t.Helper()
+
+	shard, result := integrationLastKnownPKResult(t, state, keyspaceName, tableName)
+	if len(result.Fields) != 2 {
+		t.Fatalf("unexpected composite LastKnownPk field count for shard %s in table %s: %+v", shard, tableName, result.Fields)
+	}
+	if result.Fields[0].Name != "tenant_id" || result.Fields[1].Name != "item_id" {
+		t.Fatalf("unexpected composite LastKnownPk fields for shard %s in table %s: %s, %s", shard, tableName, result.Fields[0].Name, result.Fields[1].Name)
+	}
+	if len(result.Rows) != 1 || len(result.Rows[0]) != 2 {
+		t.Fatalf("unexpected composite LastKnownPk row shape for shard %s in table %s: %+v", shard, tableName, result)
+	}
+	tenantID, err := result.Rows[0][0].ToInt64()
+	if err != nil {
+		t.Fatalf("parse LastKnownPk tenant_id for shard %s in table %s: %v", shard, tableName, err)
+	}
+	itemID, err := result.Rows[0][1].ToInt64()
+	if err != nil {
+		t.Fatalf("parse LastKnownPk item_id for shard %s in table %s: %v", shard, tableName, err)
+	}
+	return integrationCompositeKey{tenantID: tenantID, itemID: itemID}
+}
+
+func integrationLastKnownPKResult(t *testing.T, state *lib.SyncState, keyspaceName, tableName string) (string, *sqltypes.Result) {
+	t.Helper()
+
 	for shard, cursor := range integrationStateTableCursors(t, state, keyspaceName, tableName) {
 		if cursor.LastKnownPk == nil {
 			continue
 		}
-		result := sqltypes.Proto3ToResult(cursor.LastKnownPk)
-		if len(result.Rows) != 1 || len(result.Rows[0]) != 1 {
-			t.Fatalf("unexpected LastKnownPk shape for shard %s in table %s: %+v", shard, tableName, cursor.LastKnownPk)
-		}
-		id, err := result.Rows[0][0].ToInt64()
-		if err != nil {
-			t.Fatalf("parse LastKnownPk id for shard %s in table %s: %v", shard, tableName, err)
-		}
-		return id
+		return shard, sqltypes.Proto3ToResult(cursor.LastKnownPk)
 	}
 	t.Fatalf("state missing LastKnownPk for table %s", tableName)
-	return 0
+	return "", nil
 }
 
 func integrationStateTableCursors(t *testing.T, state *lib.SyncState, keyspaceName, tableName string) map[string]*psdbconnect.TableCursor {
@@ -1301,6 +1775,58 @@ func insertIntegrationResumeRows(t *testing.T, ctx context.Context, db *sql.DB, 
 	}
 }
 
+func insertIntegrationCompositeResumeRows(t *testing.T, ctx context.Context, db *sql.DB, tableName string, tenantCount, itemsPerTenant int64, version int, rows map[integrationCompositeKey]map[string]any) {
+	t.Helper()
+
+	const batchSize = int64(40)
+	type compositeRow struct {
+		key integrationCompositeKey
+	}
+	pending := make([]compositeRow, 0, batchSize)
+	flush := func() {
+		t.Helper()
+
+		if len(pending) == 0 {
+			return
+		}
+		placeholders := make([]string, 0, len(pending))
+		args := make([]any, 0, len(pending)*6)
+		for _, row := range pending {
+			label := integrationCompositeLabel(row.key)
+			payload := integrationCompositeResumePayload(version, row.key)
+			active := (row.key.tenantID+row.key.itemID)%2 == 0
+
+			placeholders = append(placeholders, "(?, ?, ?, ?, ?, ?)")
+			args = append(args, label, row.key.tenantID, row.key.itemID, version, payload, integrationBoolInt(active))
+			rows[row.key] = map[string]any{
+				"label":     label,
+				"tenant_id": row.key.tenantID,
+				"item_id":   row.key.itemID,
+				"version":   int64(version),
+				"payload":   payload,
+				"active":    active,
+			}
+		}
+
+		mustExec(t, ctx, db, fmt.Sprintf(
+			"insert into %s (label, tenant_id, item_id, version, payload, active) values %s",
+			quoteIdent(tableName),
+			strings.Join(placeholders, ", "),
+		), args...)
+		pending = pending[:0]
+	}
+
+	for tenantID := int64(1); tenantID <= tenantCount; tenantID++ {
+		for itemID := int64(1); itemID <= itemsPerTenant; itemID++ {
+			pending = append(pending, compositeRow{key: integrationCompositeKey{tenantID: tenantID, itemID: itemID}})
+			if int64(len(pending)) == batchSize {
+				flush()
+			}
+		}
+	}
+	flush()
+}
+
 func updateIntegrationLoadRow(t *testing.T, ctx context.Context, db *sql.DB, tableName string, id int64, version int, active bool, rows map[int64]map[string]any) {
 	t.Helper()
 
@@ -1332,6 +1858,26 @@ func updateIntegrationResumeRow(t *testing.T, ctx context.Context, db *sql.DB, t
 		"version": int64(version),
 		"payload": payload,
 		"active":  active,
+	}
+}
+
+func updateIntegrationCompositeResumeRow(t *testing.T, ctx context.Context, db *sql.DB, tableName string, key integrationCompositeKey, version int, active bool, rows map[integrationCompositeKey]map[string]any) {
+	t.Helper()
+
+	label := integrationCompositeLabel(key)
+	payload := integrationCompositeResumePayload(version, key)
+	mustExec(t, ctx, db, fmt.Sprintf(
+		"update %s set version = ?, payload = ?, active = ? where tenant_id = ? and item_id = ?",
+		quoteIdent(tableName),
+	), version, payload, integrationBoolInt(active), key.tenantID, key.itemID)
+
+	rows[key] = map[string]any{
+		"label":     label,
+		"tenant_id": key.tenantID,
+		"item_id":   key.itemID,
+		"version":   int64(version),
+		"payload":   payload,
+		"active":    active,
 	}
 }
 
@@ -1375,6 +1921,14 @@ func integrationPayload(version int, id int64) string {
 
 func integrationResumePayload(version int, id int64) string {
 	return strings.Repeat(fmt.Sprintf("resume-payload-%03d-%06d-", version, id), 64)
+}
+
+func integrationCompositeLabel(key integrationCompositeKey) string {
+	return fmt.Sprintf("tenant-%03d-item-%03d", key.tenantID, key.itemID)
+}
+
+func integrationCompositeResumePayload(version int, key integrationCompositeKey) string {
+	return strings.Repeat(fmt.Sprintf("composite-resume-payload-%03d-%06d-%06d-", version, key.tenantID, key.itemID), 32)
 }
 
 func integrationBoolInt(value bool) int {
