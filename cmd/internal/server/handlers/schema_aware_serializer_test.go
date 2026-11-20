@@ -7,6 +7,8 @@ import (
 
 	"github.com/planetscale/fivetran-source/lib"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	fivetransdk "github.com/planetscale/fivetran-source/fivetran_sdk.v2"
@@ -855,5 +857,96 @@ func BenchmarkRecordSerialization_Serializer(b *testing.B) {
 		if err != nil {
 			b.Fatalf("failed with %v", err.Error())
 		}
+	}
+}
+
+func TestRecordReturnsRowSerializationError(t *testing.T) {
+	s := &fivetransdk.Schema{
+		Name: "prod_main",
+		Tables: []*fivetransdk.Table{{
+			Name: "events",
+			Columns: []*fivetransdk.Column{
+				{Name: "id", Type: fivetransdk.DataType_LONG, PrimaryKey: true},
+				{Name: "happened_on", Type: fivetransdk.DataType_NAIVE_DATE},
+			},
+		}},
+	}
+	row := &sqltypes.Result{
+		Fields: []*querypb.Field{
+			{Name: "id", Type: querypb.Type_INT64},
+			{Name: "happened_on", Type: querypb.Type_DATE, ColumnType: "date"},
+		},
+		Rows: [][]sqltypes.Value{{sqltypes.NewInt64(42), sqltypes.MakeTrusted(querypb.Type_DATE, []byte("2024-13-45"))}},
+	}
+	l := NewSchemaAwareSerializer(&testLogSender{}, "", false, &fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{s}}, map[string]map[string]map[string]ValueMap{})
+	err := l.Record(row,
+		&fivetransdk.SchemaSelection{Included: true, SchemaName: "prod_main"},
+		&fivetransdk.TableSelection{Included: true, TableName: "events", Columns: map[string]bool{"id": true, "happened_on": true}},
+		lib.OpType_Insert)
+	var rse *RowSerializationError
+	require.ErrorAs(t, err, &rse)
+	assert.Equal(t, "happened_on", rse.Column)
+	assert.Equal(t, "date", rse.ColumnType)
+	assert.Equal(t, "id=42", rse.PrimaryKey)
+	assert.Equal(t, codes.Internal, status.Code(err))
+	// Neither the value nor the primary key value is in the error text, which
+	// ends up in sync errors and connector logs.
+	assert.NotContains(t, err.Error(), "2024-13-45")
+	assert.NotContains(t, err.Error(), "42")
+}
+
+// Without a zero-date conversion, zero and partial-zero DATE/DATETIME values
+// are not converted (no destination value changes); they raise a
+// RowSerializationError, which the sync handler turns into the value Task.
+func TestZeroDatesRaiseRowSerializationError(t *testing.T) {
+	for _, tc := range []struct {
+		name, colType string
+		fivetranType  fivetransdk.DataType
+		vitessType    querypb.Type
+		value         string
+	}{
+		{"zero date", "date", fivetransdk.DataType_NAIVE_DATE, querypb.Type_DATE, "0000-00-00"},
+		{"partial zero date", "date", fivetransdk.DataType_NAIVE_DATE, querypb.Type_DATE, "2024-00-15"},
+		{"zero datetime", "datetime", fivetransdk.DataType_NAIVE_DATETIME, querypb.Type_DATETIME, "0000-00-00 00:00:00"},
+		{"partial zero datetime", "datetime", fivetransdk.DataType_NAIVE_DATETIME, querypb.Type_DATETIME, "2024-05-00 10:00:00"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &fivetransdk.Schema{
+				Name: "prod_main",
+				Tables: []*fivetransdk.Table{{
+					Name: "events",
+					Columns: []*fivetransdk.Column{
+						{Name: "id", Type: fivetransdk.DataType_LONG, PrimaryKey: true},
+						{Name: "happened", Type: tc.fivetranType},
+					},
+				}},
+			}
+			row := &sqltypes.Result{
+				Fields: []*querypb.Field{
+					{Name: "id", Type: querypb.Type_INT64},
+					{Name: "happened", Type: tc.vitessType, ColumnType: tc.colType},
+				},
+				Rows: [][]sqltypes.Value{{sqltypes.NewInt64(4242), sqltypes.MakeTrusted(tc.vitessType, []byte(tc.value))}},
+			}
+			sender := &testLogSender{}
+			l := NewSchemaAwareSerializer(sender, "", false, &fivetransdk.SchemaList{Schemas: []*fivetransdk.Schema{s}}, map[string]map[string]map[string]ValueMap{})
+			err := l.Record(row,
+				&fivetransdk.SchemaSelection{Included: true, SchemaName: "prod_main"},
+				&fivetransdk.TableSelection{Included: true, TableName: "events", Columns: map[string]bool{"id": true, "happened": true}},
+				lib.OpType_Insert)
+			var rse *RowSerializationError
+			require.ErrorAs(t, err, &rse)
+			assert.Equal(t, "happened", rse.Column)
+			assert.Equal(t, tc.colType, rse.ColumnType)
+			assert.Equal(t, "id=4242", rse.PrimaryKey)
+			assert.NotContains(t, err.Error(), tc.value)
+			assert.NotContains(t, err.Error(), "4242")
+
+			task := serializationTaskMessage(err, "prod_main", "events", false)
+			assert.Equal(t, `Sync stopped: column "happened" (MySQL type `+tc.colType+`) of table "events" in PlanetScale keyspace "prod_main" `+
+				`has a value that can't be converted for Fivetran. Find values that are incompatible with the datatype.`, task)
+			assert.NotContains(t, task, tc.value)
+			assert.NotContains(t, task, "4242")
+		})
 	}
 }

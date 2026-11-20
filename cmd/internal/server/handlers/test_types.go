@@ -25,6 +25,7 @@ type testLogger struct {
 	tasks          []string
 	warnings       []string
 	events         []string // order of alerts sent: "warning" / "task"
+	severes        []string
 	binlogExpired  binlogExpirationSet
 }
 
@@ -64,6 +65,7 @@ func (tl *testLogger) SendTask(s string) error {
 }
 
 func (t *testLogger) Severe(s string) error {
+	t.severes = append(t.severes, s)
 	return nil
 }
 

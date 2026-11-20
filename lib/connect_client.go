@@ -744,14 +744,14 @@ func handleVStreamRows(tableName string, rowEvent *binlogdatapb.RowEvent, fields
 		case change.After != nil && change.Before == nil:
 			if onResult != nil {
 				if err := onResult(vstreamRowResult(fields, change.After), OpType_Insert); err != nil {
-					return records, status.Error(codes.Internal, "unable to serialize row")
+					return records, rowCallbackError("unable to serialize row", err)
 				}
 			}
 			records++
 		case change.After == nil && change.Before != nil:
 			if onResult != nil {
 				if err := onResult(vstreamRowResult(fields, change.Before), OpType_Delete); err != nil {
-					return records, status.Error(codes.Internal, "unable to serialize row")
+					return records, rowCallbackError("unable to serialize row", err)
 				}
 			}
 			records++
@@ -761,13 +761,25 @@ func handleVStreamRows(tableName string, rowEvent *binlogdatapb.RowEvent, fields
 					Before: vstreamRowResult(fields, change.Before),
 					After:  vstreamRowResult(fields, change.After),
 				}); err != nil {
-					return records, status.Error(codes.Internal, "unable to serialize update")
+					return records, rowCallbackError("unable to serialize update", err)
 				}
 			}
 			records++
 		}
 	}
 	return records, nil
+}
+
+// rowCallbackError keeps the cause of a row callback failure. Errors that carry
+// a gRPC status (for example a failed Send to Fivetran, or a typed serialization
+// error from the handlers package) are wrapped so their code and type survive;
+// anything else becomes codes.Internal, as before.
+func rowCallbackError(message string, err error) error {
+	var grpcErr interface{ GRPCStatus() *status.Status }
+	if errors.As(err, &grpcErr) {
+		return fmt.Errorf("%s: %w", message, err)
+	}
+	return status.Error(codes.Internal, fmt.Sprintf("%s: %v", message, err))
 }
 
 func vstreamRowResult(fields []*query.Field, row *query.Row) *sqltypes.Result {

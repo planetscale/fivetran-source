@@ -1620,3 +1620,26 @@ func TestRead_TabletNotFoundDuringPeekIsNotSuspectedBinlogExpiration(t *testing.
 	var suspected *SuspectedBinlogExpirationError
 	assert.False(t, errors.As(err, &suspected))
 }
+
+type testGRPCError struct{ code codes.Code }
+
+func (e *testGRPCError) Error() string              { return "typed failure" }
+func (e *testGRPCError) GRPCStatus() *status.Status { return status.New(e.code, e.Error()) }
+
+func TestRowCallbackErrorKeepsCause(t *testing.T) {
+	typed := &testGRPCError{code: codes.Internal}
+	err := rowCallbackError("unable to serialize row", typed)
+	var got *testGRPCError
+	assert.True(t, errors.As(err, &got))
+	assert.Equal(t, codes.Internal, status.Code(err))
+	assert.Contains(t, err.Error(), "unable to serialize row: typed failure")
+
+	// A failed Send to Fivetran keeps its own (retryable) status code.
+	sendErr := status.Error(codes.Unavailable, "transport is closing")
+	assert.Equal(t, codes.Unavailable, status.Code(rowCallbackError("unable to serialize row", sendErr)))
+
+	// Plain errors stay codes.Internal, as before, but now include the cause.
+	plain := rowCallbackError("unable to serialize row", errors.New("boom"))
+	assert.Equal(t, codes.Internal, status.Code(plain))
+	assert.Contains(t, plain.Error(), "unable to serialize row: boom")
+}
