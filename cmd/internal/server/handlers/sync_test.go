@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -574,4 +575,114 @@ func stateLogContainsLastKnownPK(t *testing.T, states []lib.SyncState, keyspace 
 		}
 	}
 	return false
+}
+
+// syncOneTable runs Sync.Handle for keyspace "prod_main", table "states", shard "-".
+func syncOneTable(t *testing.T, psc *lib.PlanetScaleSource, tl *testLogger, state *lib.SyncState, readFn lib.ReadFunc) error {
+	t.Helper()
+	schema := fivetransdk.SchemaSelection{
+		SchemaName: "prod_main",
+		Included:   true,
+		Tables:     []*fivetransdk.TableSelection{{Included: true, TableName: "states"}},
+	}
+	schemaSelection := &fivetransdk.Selection_WithSchema{
+		WithSchema: &fivetransdk.TablesWithSchema{Schemas: []*fivetransdk.SchemaSelection{&schema}},
+	}
+	db := lib.NewTestConnectClient(readFn)
+	return (&Sync{}).Handle(context.Background(), psc, &db, tl, state, schemaSelection)
+}
+
+func syncStateWithCursor(t *testing.T, position string) *lib.SyncState {
+	t.Helper()
+	sc, err := lib.TableCursorToSerializedCursor(&psdbconnect.TableCursor{Keyspace: "prod_main", Shard: "-", Position: position})
+	assert.NoError(t, err)
+	return &lib.SyncState{Keyspaces: map[string]lib.KeyspaceState{
+		"prod_main": {Streams: map[string]lib.ShardStates{"prod_main:states": {Shards: map[string]*lib.SerializedCursor{"-": sc}}}},
+	}}
+}
+
+func suspectedBinlogExpiration(tc *psdbconnect.TableCursor, table string) error {
+	return &lib.SuspectedBinlogExpirationError{
+		Keyspace: tc.Keyspace, Shard: tc.Shard, Table: table,
+		Err: status.Error(codes.Canceled, "failed to find a REPLICA tablet for VStream in prod_main/- within the planetscale_operator_default cell(s): context has expired"),
+	}
+}
+
+// The exact Task text for prod_main.states shard "-". It must not depend on the
+// error text, so Fivetran's content-based de-duplication works across retries.
+const binlogExpiredTaskForStates = `Re-sync required: the PlanetScale binary logs needed to resume table "states" in keyspace "prod_main" (shard "-") have expired, ` +
+	`so incremental replication cannot continue from the saved position. ` +
+	`To fix this, go to the connection's Settings tab in Fivetran and click "Resync all data".`
+
+func TestSuspectedBinlogExpirationFailsOnceThenRaisesTask(t *testing.T) {
+	psc := &lib.PlanetScaleSource{UseReplica: true}
+	state := syncStateWithCursor(t, "OLD_GTID")
+	reads := 0
+	readFn := func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string,
+		tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
+	) (*lib.SerializedCursor, error) {
+		reads++
+		assert.Equal(t, "OLD_GTID", tc.Position, "the cursor must never be reset")
+		return nil, suspectedBinlogExpiration(tc, tableName)
+	}
+
+	// First sync: a plain error, the cursor is kept and marked.
+	tl := &testLogger{}
+	err := syncOneTable(t, psc, tl, state, readFn)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "a re-sync Task is raised")
+	assert.Empty(t, tl.tasks)
+	assert.Empty(t, tl.warnings)
+	marked := state.Keyspaces["prod_main"].Streams["prod_main:states"].Shards["-"]
+	assert.True(t, marked.HasSuspectedBinlogExpiration())
+	assert.Nil(t, marked.ErrorCode, "the #73 error_code field must not be used for the mark")
+	assert.Nil(t, marked.ErrorMessage)
+	if assert.NotEmpty(t, tl.states) {
+		stateJSON, err := json.Marshal(tl.states[len(tl.states)-1])
+		assert.NoError(t, err)
+		assert.Contains(t, string(stateJSON), `"suspected_binlog_expiration":true`)
+		assert.NotContains(t, string(stateJSON), "error_code")
+	}
+
+	// Second and third consecutive syncs: the same Task, byte for byte.
+	for i := 0; i < 2; i++ {
+		tl = &testLogger{}
+		assert.NoError(t, syncOneTable(t, psc, tl, state, readFn))
+		if assert.Len(t, tl.tasks, 1) {
+			assert.Equal(t, binlogExpiredTaskForStates, tl.tasks[0])
+		}
+		assert.Empty(t, tl.warnings)
+	}
+	assert.Equal(t, 3, reads)
+	tc, err := state.Keyspaces["prod_main"].Streams["prod_main:states"].Shards["-"].SerializedCursorToTableCursor()
+	assert.NoError(t, err)
+	assert.Equal(t, "OLD_GTID", tc.Position)
+}
+
+func TestSuspectedBinlogExpirationMarkClearedBySuccessfulSync(t *testing.T) {
+	state := syncStateWithCursor(t, "OLD_GTID")
+	state.Keyspaces["prod_main"].Streams["prod_main:states"].Shards["-"].SetSuspectedBinlogExpiration()
+	readFn := func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string,
+		tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
+	) (*lib.SerializedCursor, error) {
+		return nil, nil
+	}
+	tl := &testLogger{}
+	assert.NoError(t, syncOneTable(t, &lib.PlanetScaleSource{}, tl, state, readFn))
+	assert.False(t, state.Keyspaces["prod_main"].Streams["prod_main:states"].Shards["-"].HasSuspectedBinlogExpiration())
+	assert.Empty(t, tl.warnings)
+}
+
+func TestColumnCountMismatchRaisesResyncTask(t *testing.T) {
+	readFn := func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string,
+		tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
+	) (*lib.SerializedCursor, error) {
+		return nil, status.Error(codes.Unknown, "stream (at source tablet) error @ abc:1-10: cannot determine table columns for states: event has [3 15 15], schema has [name:\"id\"]")
+	}
+	tl := &testLogger{}
+	assert.NoError(t, syncOneTable(t, &lib.PlanetScaleSource{}, tl, syncStateWithCursor(t, "OLD_GTID"), readFn))
+	if assert.Len(t, tl.tasks, 1) {
+		assert.Contains(t, tl.tasks[0], "Re-sync required")
+		assert.Contains(t, tl.tasks[0], `table "states"`)
+	}
 }

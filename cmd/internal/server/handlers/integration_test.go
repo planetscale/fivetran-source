@@ -560,6 +560,44 @@ func TestIntegrationMidTableDDLRaisesResyncTask(t *testing.T) {
 	}
 }
 
+// A cursor that is behind an ADD COLUMN at the end of the table, with the new
+// column selected, fails in vstreamer with "column ... not found in table" while
+// replaying the pre-DDL events. This is what stalled production connections.
+func TestIntegrationAddColumnBehindCursorRaisesResyncTask(t *testing.T) {
+	psc := loadIntegrationSource(t)
+	ctx := context.Background()
+	tableName := integrationTableName(t)
+
+	db := openIntegrationSQL(t, psc)
+	t.Cleanup(func() {
+		if _, err := db.ExecContext(context.Background(), "drop table if exists "+quoteIdent(tableName)); err != nil {
+			t.Logf("drop integration table %s: %v", tableName, err)
+		}
+		_ = db.Close()
+	})
+
+	mustExec(t, ctx, db, fmt.Sprintf(`create table %s (id bigint primary key, before_col varchar(64) not null)`, quoteIdent(tableName)))
+	_, state := runIntegrationSync(t, psc, tableName, []string{"id", "before_col"}, nil)
+
+	mustExec(t, ctx, db, fmt.Sprintf("insert into %s (id, before_col) values (1, 'old')", quoteIdent(tableName)))
+	mustExec(t, ctx, db, fmt.Sprintf("alter table %s add column added_col varchar(64) null", quoteIdent(tableName)))
+	mustExec(t, ctx, db, fmt.Sprintf("insert into %s (id, before_col, added_col) values (2, 'new', 'new')", quoteIdent(tableName)))
+
+	sender, _, err := runIntegrationSyncWithError(t, psc, tableName, []string{"id", "before_col", "added_col"}, state)
+	if err != nil {
+		t.Fatalf("expected ADD COLUMN behind the cursor to raise a Fivetran Task and return nil, got %s: %v", status.Code(err), err)
+	}
+	tasks := sender.tasks()
+	if len(tasks) != 1 {
+		t.Fatalf("expected exactly one Task, got %d: %q", len(tasks), tasks)
+	}
+	for _, want := range []string{"Re-sync required", tableName, "Resync all data"} {
+		if !strings.Contains(tasks[0], want) {
+			t.Fatalf("expected Task to contain %q, got %q", want, tasks[0])
+		}
+	}
+}
+
 func TestIntegrationStressBurstLoad(t *testing.T) {
 	if !integrationStressEnabled() {
 		t.Skip("set INTEGRATION_STRESS=1 to run stress integration tests")
