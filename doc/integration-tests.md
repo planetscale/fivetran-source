@@ -109,6 +109,7 @@ The default suite exercises:
 - repeated mutation bursts across several checkpointed syncs
 - sibling keyspace shard discovery where one keyspace name is a prefix of another
 - sharded-keyspace syncs with temporary VSchema entries, rows on both shards, and checkpoint state for every shard
+- mid-table DDL and an `ADD COLUMN` behind the saved cursor, both raising a re-sync Task
 
 The stress suite repeats the burst pattern with configurable row counts and
 cycles. Add future scenarios as additional `TestIntegration...` tests in the

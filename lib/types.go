@@ -66,12 +66,40 @@ type SerializedCursor struct {
 	Cursor       string  `json:"cursor"`
 	ErrorMessage *string `json:"error_message,omitempty"`
 	ErrorCode    *string `json:"error_code,omitempty"`
+	// SuspectedBinlogExpiration is set when the last sync of this shard cursor
+	// failed with the masked "failed to find a <TYPE> tablet" form of a
+	// purged-binlog error (see SuspectedBinlogExpirationError). If the next sync
+	// fails the same way, a "Re-sync required" Task is raised; the cursor itself
+	// is never reset. It is independent of ErrorCode/ErrorMessage, which are only
+	// used by the explicit binlog-expiration reset (SetBinlogExpirationError).
+	// Old state without the field parses as false, and older connector versions
+	// ignore it.
+	SuspectedBinlogExpiration bool `json:"suspected_binlog_expiration,omitempty"`
 }
 
 // SetBinlogExpirationError sets a binlog expiration error on the cursor
 func (sc *SerializedCursor) SetBinlogExpirationError(errorMessage string) {
 	sc.ErrorCode = stringPtr("BINLOG_EXPIRATION_ERROR")
 	sc.ErrorMessage = &errorMessage
+}
+
+// SetSuspectedBinlogExpiration marks the cursor as having failed once with a
+// suspected binlog expiration. It only touches SuspectedBinlogExpiration.
+func (sc *SerializedCursor) SetSuspectedBinlogExpiration() {
+	sc.SuspectedBinlogExpiration = true
+}
+
+// HasSuspectedBinlogExpiration reports whether the previous sync of this cursor
+// failed with a suspected binlog expiration. It only reads
+// SuspectedBinlogExpiration.
+func (sc *SerializedCursor) HasSuspectedBinlogExpiration() bool {
+	return sc != nil && sc.SuspectedBinlogExpiration
+}
+
+// ClearSuspectedBinlogExpiration removes the mark. It only touches
+// SuspectedBinlogExpiration.
+func (sc *SerializedCursor) ClearSuspectedBinlogExpiration() {
+	sc.SuspectedBinlogExpiration = false
 }
 
 func stringPtr(s string) *string {

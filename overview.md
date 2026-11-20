@@ -151,10 +151,18 @@ We don't delete columns from your destination. When a column is deleted from the
 
 ### Adding and dropping columns
 
-When you add or drop a column, we attempt to migrate your destination schema to the new table structure automatically. In some cases, we won't be able to do this and instead perform an automatic re-sync of the changed table.
+When you add or drop a column, we attempt to migrate your destination schema to the new table structure automatically.
+
+In some cases, PlanetScale can't replay the changes recorded before the schema change, for example when a column is added in the middle of the table, a column is renamed or dropped, or a column is added while Fivetran's saved position is still before that change. We don't re-sync automatically in these cases. Instead, the sync stops and we raise a Task in your Fivetran dashboard that names the table and keyspace. To fix it, go to the connection's **Settings** tab and click **Resync all data**.
 
 In the following scenarios, Fivetran will re-sync your table instead of automatically migrating it:
 
 - Changing column order
 - Changing primary keys
 - Modifying ENUM or SET columns
+
+### Expired binary logs
+
+PlanetScale keeps binary logs for a limited time. If Fivetran's saved position for a table is older than that and PlanetScale reports that the binary logs were purged, we automatically start a historical re-sync of that table and send a Warning listing the affected tables. No action is needed.
+
+PlanetScale doesn't always report expired binary logs directly. If a table's sync fails because no tablet can serve its saved position, even though the tablets are otherwise healthy, we retry on the next sync. If the next sync fails the same way, the sync stops and we raise a Task in your Fivetran dashboard that names the table, keyspace, and shard. To fix it, go to the connection's **Settings** tab and click **Resync all data**.

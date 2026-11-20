@@ -6,6 +6,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -201,6 +202,18 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 
 						// Continue with historical sync instead of returning error
 						continue
+					}
+
+					// The position check above just succeeded on this tablet type, so the
+					// tablets are healthy and the saved position is the likely problem.
+					if !madeProgress && IsVStreamTabletNotFoundError(err, tabletType) {
+						logger.Warning(fmt.Sprintf("%sVStream could not find a usable tablet for the saved position although the position check succeeded; suspecting expired binlogs", preamble))
+						return currentSerializedCursor, &SuspectedBinlogExpirationError{
+							Keyspace: currentPosition.Keyspace,
+							Shard:    currentPosition.Shard,
+							Table:    tableName,
+							Err:      err,
+						}
 					}
 
 					if IsVStreamSchemaIncompatibilityError(err) {
@@ -950,6 +963,41 @@ func IsBinlogsExpirationError(err error) bool {
 	return strings.Contains(err.Error(), "Cannot replicate because the source purged required binary logs")
 }
 
+// tabletNotFoundForVStream matches vtgate's tablet picker giving up, e.g.
+//
+//	failed to find a REPLICA tablet for VStream in releaf/- within the planetscale_operator_default cell(s): context has expired
+var tabletNotFoundForVStream = regexp.MustCompile(`failed to find a ([A-Z]+) tablet for VStream in \S+/\S+ within the .* cell\(s\).*context has expired`)
+
+// IsVStreamTabletNotFoundError reports whether vtgate (Vitess v24+) gave up
+// picking a tablet of the requested type for VStream. Vitess ignores a tablet
+// that fails with MySQL error 1236/1789 (purged binary logs) or a GTID set
+// mismatch; once every tablet is ignored the picker times out with this error
+// and the original "purged required binary logs" text is lost. It is only a
+// signal of an unusable saved position when a position check against the same
+// tablet type succeeded just before, which connectClient.Read guarantees.
+func IsVStreamTabletNotFoundError(err error, tabletType psdbconnect.TabletType) bool {
+	if err == nil {
+		return false
+	}
+	m := tabletNotFoundForVStream.FindStringSubmatch(err.Error())
+	return m != nil && m[1] == toVStreamTabletType(tabletType).String()
+}
+
+// SuspectedBinlogExpirationError is returned by Read when VStream cannot find a
+// tablet for the saved position although the position check on the same tablet
+// type succeeded and no progress was made. The most likely cause is that the
+// binlogs for the saved position were purged on every tablet.
+type SuspectedBinlogExpirationError struct {
+	Keyspace, Shard, Table string
+	Err                    error
+}
+
+func (e *SuspectedBinlogExpirationError) Error() string {
+	return fmt.Sprintf("suspected binlog expiration for %s.%s (shard %s): %v", e.Keyspace, e.Table, e.Shard, e.Err)
+}
+
+func (e *SuspectedBinlogExpirationError) Unwrap() error { return e.Err }
+
 // IsShardNotFoundInVGTIDError reports whether VStream refused to start because a
 // shard stored in the Fivetran cursor no longer exists in the keyspace, e.g.
 // after a reshard, or because older connector versions stored a bogus shard
@@ -975,6 +1023,11 @@ func IsVStreamSchemaIncompatibilityError(err error) bool {
 	}
 
 	message := err.Error()
+	// The binlog event has more columns than the table schema vstreamer has, e.g.
+	// events written before a column was dropped (vstreamer.go buildTablePlan).
+	if strings.Contains(message, "cannot determine table columns for ") && strings.Contains(message, ": event has ") {
+		return true
+	}
 	if !strings.Contains(message, "Code: FAILED_PRECONDITION") {
 		return false
 	}

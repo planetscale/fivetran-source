@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/pkg/errors"
+
 	"github.com/planetscale/fivetran-source/lib"
 
 	psdbconnect "github.com/planetscale/airbyte-source/proto/psdbconnect/v1alpha1"
@@ -97,6 +99,24 @@ func (s *Sync) handle(ctx context.Context, psc *lib.PlanetScaleSource, db *lib.C
 
 				columns := includedColumns(table)
 				sc, err := (*db).Read(ctx, logger, *psc, table.TableName, columns, tc, onRow, onCursor, onUpdate)
+				var suspected *lib.SuspectedBinlogExpirationError
+				if errors.As(err, &suspected) && !shardState.HasSuspectedBinlogExpiration() {
+					// Seen once: a tablet that is briefly unavailable (for example during
+					// a reparent) can look the same. Remember it on the cursor (Fivetran
+					// returns the last checkpoint on the next sync, even after a failed
+					// one) and fail this sync normally so Fivetran retries. If the next
+					// sync fails the same way, resyncTaskMessage raises the Task.
+					// The mark is its own field: it never touches error_code /
+					// error_message, which belong to the explicit-expiry reset in lib.Read.
+					// It goes on the shard's current cursor, which onCursor may have
+					// replaced during this Read.
+					state.Keyspaces[ks.SchemaName].Streams[stateKey].Shards[shardName].SetSuspectedBinlogExpiration()
+					if sErr := logger.State(*state); sErr != nil {
+						return status.Error(codes.Internal, sErr.Error())
+					}
+					return status.Error(codes.Internal, fmt.Sprintf("failed to download rows for table : %s , error : %s "+
+						"(if the next sync fails the same way, a re-sync Task is raised)", table.TableName, err.Error()))
+				}
 				if err != nil {
 					if task := resyncTaskMessage(err, ks.SchemaName, table.TableName, shardName); task != "" {
 						// Checkpoint whatever progress the other shards/tables made, then
@@ -121,6 +141,10 @@ func (s *Sync) handle(ctx context.Context, psc *lib.PlanetScaleSource, db *lib.C
 					// otherwise, the older state is round-tripped back to Fivetran.
 					state.Keyspaces[ks.SchemaName].Streams[stateKey].Shards[shardName] = sc
 					logger.State(*state) // Checkpoint after every shard
+				} else if shardState.HasSuspectedBinlogExpiration() {
+					// The shard synced fine, so the earlier failure was transient.
+					shardState.ClearSuspectedBinlogExpiration()
+					logger.State(*state)
 				}
 			}
 		}
@@ -131,8 +155,22 @@ func (s *Sync) handle(ctx context.Context, psc *lib.PlanetScaleSource, db *lib.C
 // resyncTaskMessage returns the customer-facing Fivetran Task text for read
 // errors that cannot be recovered without a historical re-sync, or "" if the
 // error should keep the existing retry/error behaviour.
+//
+// Fivetran de-duplicates Tasks and Warnings by message content, so messages
+// must only contain values that are stable between retries (no error text,
+// GTIDs or timestamps).
 func resyncTaskMessage(err error, keyspace, table, shard string) string {
+	var suspected *lib.SuspectedBinlogExpirationError
 	switch {
+	// The masked vtgate form of purged binlogs, seen on a second consecutive
+	// sync (the first one only marks the cursor, see handle). The cursor is
+	// kept: "Resync all data" truncates and re-copies. The explicit purged-binlog
+	// error never gets here: lib.Read resets that table's cursor (#69/#73).
+	case errors.As(err, &suspected):
+		return fmt.Sprintf("Re-sync required: the PlanetScale binary logs needed to resume table %q in keyspace %q (shard %q) have expired, "+
+			"so incremental replication cannot continue from the saved position. "+
+			"To fix this, go to the connection's Settings tab in Fivetran and click \"Resync all data\".",
+			table, keyspace, shard)
 	// The PlanetScale connector only supports connection-level re-syncs in the
 	// Fivetran dashboard (https://fivetran.com/docs/connectors/databases/planetscale),
 	// so every Task points the customer at "Resync all data".

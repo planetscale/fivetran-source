@@ -1512,3 +1512,111 @@ const vstreamColumnNotFoundErrorMessage = "error starting stream from shard GTID
 	"column after_col not found in table customers\n\n" +
 	"failed to build table replication plan for table customers\n" +
 	"failed to parse transaction payload's internal event"
+
+const vstreamReplicaNotFoundErrorMessage = `error starting stream from shard GTID keyspace:"connect-test" shard:"-" gtid:"MySQL56/abc:1-10": ` +
+	`failed to find a REPLICA tablet for VStream in connect-test/- within the planetscale_operator_default cell(s): context has expired`
+
+func TestIsVStreamTabletNotFoundError(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		tabletType psdbconnect.TabletType
+		want       bool
+	}{
+		{"replica picker gave up", status.Error(codes.Canceled, vstreamReplicaNotFoundErrorMessage), psdbconnect.TabletType_replica, true},
+		{
+			"primary picker gave up",
+			status.Error(codes.Canceled, `failed to find a PRIMARY tablet for VStream in ks/-80 within the planetscale_operator_default cell(s): context has expired`),
+			psdbconnect.TabletType_primary, true,
+		},
+		{"different tablet type than requested", status.Error(codes.Canceled, vstreamReplicaNotFoundErrorMessage), psdbconnect.TabletType_primary, false},
+		{
+			"picker error that is not a timeout",
+			status.Error(codes.Unknown, `failed to find a REPLICA tablet for VStream in ks/- within the zone1 cell(s): no tablets available`),
+			psdbconnect.TabletType_replica, false,
+		},
+		{"unrelated error", errors.New("connection reset by peer"), psdbconnect.TabletType_replica, false},
+		{"nil", nil, psdbconnect.TabletType_replica, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, IsVStreamTabletNotFoundError(tt.err, tt.tabletType))
+		})
+	}
+}
+
+func TestIsVStreamSchemaIncompatibilityError_ColumnCountMismatch(t *testing.T) {
+	err := status.Error(codes.Unknown, "vttablet: rpc error: code = Unknown desc = stream (at source tablet) error @ (including the GTID we failed to process) abc:1-10: "+
+		"cannot determine table columns for user: event has [15 3 15], schema has [name:\"id\" type:INT64]")
+	assert.True(t, IsVStreamSchemaIncompatibilityError(err))
+}
+
+// readWithPeekAndSync runs Read with a peek ("current") handler and a sync handler.
+func readWithPeekAndSync(t *testing.T, ps PlanetScaleSource, peek, sync func(in *psdbconnect.SyncRequest) (psdbconnect.Connect_SyncClient, error)) (*SerializedCursor, *clientConnectionMock, error) {
+	t.Helper()
+	ped := connectClient{}
+	mysqlClient := NewTestMysqlClient(func(ctx context.Context, keyspaceName string, tableName string) ([]MysqlColumn, error) {
+		return []MysqlColumn{{Name: "id", Type: "bigint", IsPrimaryKey: true}}, nil
+	})
+	ped.Mysql = &mysqlClient
+	cc := &clientConnectionMock{
+		syncFn: func(ctx context.Context, in *psdbconnect.SyncRequest, opts ...grpc.CallOption) (psdbconnect.Connect_SyncClient, error) {
+			if in.Cursor.Position == "current" {
+				return peek(in)
+			}
+			return sync(in)
+		},
+	}
+	ped.clientFn = func(ctx context.Context, ps PlanetScaleSource) (psdbconnect.ConnectClient, error) {
+		return cc, nil
+	}
+	tc := &psdbconnect.TableCursor{Shard: "-", Keyspace: "connect-test", Position: "OLD_GTID"}
+	sc, err := ped.Read(context.Background(), &dbLogger{}, ps, "customers", []string{"id"}, tc, nil, nil, nil)
+	return sc, cc, err
+}
+
+func peekReturns(position string) func(*psdbconnect.SyncRequest) (psdbconnect.Connect_SyncClient, error) {
+	return func(*psdbconnect.SyncRequest) (psdbconnect.Connect_SyncClient, error) {
+		return &connectSyncClientMock{syncResponses: []*psdbconnect.SyncResponse{{
+			Cursor: &psdbconnect.TableCursor{Shard: "-", Keyspace: "connect-test", Position: position},
+		}}}, nil
+	}
+}
+
+func TestRead_TabletNotFoundAfterSuccessfulPeekIsSuspectedBinlogExpiration(t *testing.T) {
+	sc, cc, err := readWithPeekAndSync(t, PlanetScaleSource{Database: "connect-test", UseReplica: true},
+		peekReturns("NEW_GTID"),
+		func(*psdbconnect.SyncRequest) (psdbconnect.Connect_SyncClient, error) {
+			return &connectSyncClientMock{recvFn: func() (*psdbconnect.SyncResponse, error) {
+				return nil, status.Error(codes.Canceled, vstreamReplicaNotFoundErrorMessage)
+			}}, nil
+		})
+	var suspected *SuspectedBinlogExpirationError
+	if assert.True(t, errors.As(err, &suspected), "got %v", err) {
+		assert.Equal(t, "connect-test", suspected.Keyspace)
+		assert.Equal(t, "-", suspected.Shard)
+		assert.Equal(t, "customers", suspected.Table)
+	}
+	// The masked form never takes the explicit-expiry reset path (#69/#73): no
+	// restart from an empty position and no BINLOG_EXPIRATION_ERROR marker.
+	assert.False(t, IsBinlogsExpirationError(err))
+	assert.Equal(t, 2, cc.syncFnInvokedCount, "one position check and one sync")
+	if sc != nil {
+		assert.Nil(t, sc.ErrorCode)
+		assert.Nil(t, sc.ErrorMessage)
+	}
+}
+
+func TestRead_TabletNotFoundDuringPeekIsNotSuspectedBinlogExpiration(t *testing.T) {
+	_, _, err := readWithPeekAndSync(t, PlanetScaleSource{Database: "connect-test", UseReplica: true},
+		func(*psdbconnect.SyncRequest) (psdbconnect.Connect_SyncClient, error) {
+			return nil, status.Error(codes.Canceled, vstreamReplicaNotFoundErrorMessage)
+		},
+		func(*psdbconnect.SyncRequest) (psdbconnect.Connect_SyncClient, error) {
+			t.Fatal("sync must not run when the peek fails")
+			return nil, nil
+		})
+	assert.ErrorContains(t, err, "Unable to get latest cursor position")
+	var suspected *SuspectedBinlogExpirationError
+	assert.False(t, errors.As(err, &suspected))
+}
