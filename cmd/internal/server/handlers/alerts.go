@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/pkg/errors"
 )
 
 // maxAlertItems caps how many tables/shards are listed in one alert message.
@@ -78,4 +80,36 @@ func joinLimited(items []string) string {
 		return strings.Join(items, ", ")
 	}
 	return strings.Join(items[:maxAlertItems], ", ") + fmt.Sprintf(" and %d more", len(items)-maxAlertItems)
+}
+
+// serializationTaskMessage returns the Task text for a source value that can't
+// be converted for Fivetran, or "" if err is not a *RowSerializationError.
+// Neither the value nor the primary key values appear in it (possible PII);
+// the primary key goes to the connector log instead (serializationLogMessage).
+// It only depends on the schema, so Fivetran's de-duplication works.
+func serializationTaskMessage(err error, keyspace, table string, treatTinyIntAsBoolean bool) string {
+	var rse *RowSerializationError
+	if !errors.As(err, &rse) {
+		return ""
+	}
+	msg := fmt.Sprintf("Sync stopped: column %q (MySQL type %s) of table %q in PlanetScale keyspace %q has a value that can't be converted for Fivetran. "+
+		"Find values that are incompatible with the datatype.",
+		rse.Column, rse.ColumnType, table, keyspace)
+	if treatTinyIntAsBoolean && strings.HasPrefix(strings.ToLower(rse.ColumnType), "tinyint(1)") {
+		msg += " If this TINYINT(1) column intentionally stores values other than 0 and 1, turn off \"Treat tinyint(1) as boolean\" " +
+			"in the connection setup instead, then click \"Resync all data\" on the connection's Settings tab."
+	}
+	return msg
+}
+
+// serializationLogMessage is the connector log line for a value that can't be
+// converted. It includes the primary key column=value pairs so Fivetran support
+// can point the customer at the row, but never the offending value.
+func serializationLogMessage(rse *RowSerializationError, keyspace, table string) string {
+	pk := rse.PrimaryKey
+	if pk == "" {
+		pk = "none (table has no primary key)"
+	}
+	return fmt.Sprintf("value that can't be converted for Fivetran: keyspace %q, table %q, column %q (MySQL type %s), primary key [%s]; the value itself is not logged",
+		keyspace, table, rse.Column, rse.ColumnType, pk)
 }

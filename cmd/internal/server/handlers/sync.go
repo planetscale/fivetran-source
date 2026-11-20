@@ -118,7 +118,16 @@ func (s *Sync) handle(ctx context.Context, psc *lib.PlanetScaleSource, db *lib.C
 						"(if the next sync fails the same way, a re-sync Task is raised)", table.TableName, err.Error()))
 				}
 				if err != nil {
-					if task := resyncTaskMessage(err, ks.SchemaName, table.TableName, shardName); task != "" {
+					task := resyncTaskMessage(err, ks.SchemaName, table.TableName, shardName)
+					if task == "" {
+						task = serializationTaskMessage(err, ks.SchemaName, table.TableName, psc.TreatTinyIntAsBoolean)
+						var rse *RowSerializationError
+						if task != "" && errors.As(err, &rse) {
+							// The primary key goes to the connector log only, not the Task.
+							logger.Severe(serializationLogMessage(rse, ks.SchemaName, table.TableName))
+						}
+					}
+					if task != "" {
 						// Checkpoint whatever progress the other shards/tables made, then
 						// raise a single Task. Fivetran stops the sync on a Task.
 						if sErr := logger.State(*state); sErr != nil {

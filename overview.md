@@ -121,6 +121,8 @@ When we encounter [an unparsable value](/docs/connectors/databases/mysql#unparsa
 
 Although we may be able to read some values outside the supported DATE, DATETIME, and TIMESTAMP ranges as defined by [MySQL's documentation](https://dev.mysql.com/doc/refman/8.0/en/datetime.html), there is no guarantee. Additionally, the special zero value 0000-00-00 00:00:00 is subject to this rule.
 
+If we encounter a value that we can't convert, the sync stops and we raise a Task in your Fivetran dashboard. The Task names the schema, table, column, and MySQL column type, but not the value or the row's primary key. Find and correct the values that are incompatible with the column's data type in PlanetScale, and the next sync resumes where it stopped. If the column is a `tinyint(1)` that stores values other than 0 and 1, you can instead turn off **Treat tinyint(1) as boolean** and re-sync.
+
 ### Excluding source data
 
 If you don’t want to sync all the data from your primary database, you can exclude schemas, tables, or columns from your syncs on your Fivetran dashboard. To do so, go to your connection details page and uncheck the objects you want to omit from syncing. 

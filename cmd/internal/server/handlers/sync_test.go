@@ -686,3 +686,75 @@ func TestColumnCountMismatchRaisesResyncTask(t *testing.T) {
 		assert.Contains(t, tl.tasks[0], `table "states"`)
 	}
 }
+
+func TestRowSerializationErrorRaisesTaskWithoutValueOrPrimaryKey(t *testing.T) {
+	for _, tinyIntAsBool := range []bool{false, true} {
+		readFn := func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string,
+			tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
+		) (*lib.SerializedCursor, error) {
+			// As returned by lib.handleVStreamRows for a failing Record callback.
+			return nil, errors.Wrap(&RowSerializationError{
+				Column: "is_active", ColumnType: "tinyint(1)",
+				PrimaryKey: "org_id=SECRET_ORG, user_id=98765",
+				Err:        errors.New(`failed to serialize DataType_BOOLEAN: "SECRET_VALUE"`),
+			}, "unable to serialize row")
+		}
+		tl := &testLogger{}
+		err := syncOneTable(t, &lib.PlanetScaleSource{TreatTinyIntAsBoolean: tinyIntAsBool}, tl, syncStateWithCursor(t, "OLD_GTID"), readFn)
+		assert.NoError(t, err)
+		if assert.Len(t, tl.tasks, 1) {
+			task := tl.tasks[0]
+			want := `Sync stopped: column "is_active" (MySQL type tinyint(1)) of table "states" in PlanetScale keyspace "prod_main" ` +
+				`has a value that can't be converted for Fivetran. Find values that are incompatible with the datatype.`
+			if tinyIntAsBool {
+				want += ` If this TINYINT(1) column intentionally stores values other than 0 and 1, turn off "Treat tinyint(1) as boolean" ` +
+					`in the connection setup instead, then click "Resync all data" on the connection's Settings tab.`
+			}
+			assert.Equal(t, want, task)
+			for _, secret := range []string{"SECRET_VALUE", "SECRET_ORG", "98765"} {
+				assert.NotContains(t, task, secret)
+			}
+			assert.Equal(t, tinyIntAsBool, strings.Contains(task, "Treat tinyint(1) as boolean"))
+		}
+		// The primary key values go to the connector log, the value itself nowhere.
+		var logged []string
+		for _, l := range tl.severes {
+			if strings.Contains(l, "can't be converted for Fivetran") {
+				logged = append(logged, l)
+			}
+		}
+		if assert.Len(t, logged, 1) {
+			assert.Equal(t, `value that can't be converted for Fivetran: keyspace "prod_main", table "states", column "is_active" (MySQL type tinyint(1)), `+
+				`primary key [org_id=SECRET_ORG, user_id=98765]; the value itself is not logged`, logged[0])
+		}
+		for _, l := range tl.severes {
+			assert.NotContains(t, l, "SECRET_VALUE")
+		}
+	}
+}
+
+func TestSerializationTaskMessageExactText(t *testing.T) {
+	rse := &RowSerializationError{Column: "happened_on", ColumnType: "date", PrimaryKey: "id=42"}
+	assert.Equal(t,
+		`Sync stopped: column "happened_on" (MySQL type date) of table "events" in PlanetScale keyspace "prod_main" has a value that can't be converted for Fivetran. `+
+			`Find values that are incompatible with the datatype.`,
+		serializationTaskMessage(rse, "prod_main", "events", false))
+	// The tinyint(1) hint is only for tinyint(1) columns with the setting on.
+	assert.NotContains(t, serializationTaskMessage(rse, "prod_main", "events", true), "TINYINT(1)")
+	// Deterministic: the primary key value of the failing row doesn't matter.
+	rse2 := *rse
+	rse2.PrimaryKey = "id=43"
+	assert.Equal(t, serializationTaskMessage(rse, "prod_main", "events", false), serializationTaskMessage(&rse2, "prod_main", "events", false))
+}
+
+func TestSendFailureDuringRowIsPlainError(t *testing.T) {
+	readFn := func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string,
+		tc *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
+	) (*lib.SerializedCursor, error) {
+		return nil, errors.Wrap(status.Error(codes.Unavailable, "transport is closing"), "unable to serialize row")
+	}
+	tl := &testLogger{}
+	err := syncOneTable(t, &lib.PlanetScaleSource{}, tl, syncStateWithCursor(t, "OLD_GTID"), readFn)
+	assert.Error(t, err)
+	assert.Empty(t, tl.tasks)
+}

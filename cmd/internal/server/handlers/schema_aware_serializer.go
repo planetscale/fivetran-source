@@ -3,6 +3,8 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -13,6 +15,7 @@ import (
 
 	fivetransdk "github.com/planetscale/fivetran-source/fivetran_sdk.v2"
 	"vitess.io/vitess/go/sqltypes"
+	querypb "vitess.io/vitess/go/vt/proto/query"
 )
 
 var fivetranOpMap = map[lib.Operation]fivetransdk.RecordType{
@@ -61,6 +64,52 @@ type schemaAwareRecordSerializer struct {
 	columnSelection map[string]bool
 	primaryKeys     map[string]bool
 	columnWriters   map[string]func(value sqltypes.Value) (*fivetransdk.ValueType, error)
+}
+
+// RowSerializationError reports a source value that can't be converted to a
+// Fivetran value. Error() names only the column and its type: neither the
+// offending value nor the primary key values (possible PII) appear in it, so it
+// is safe in Tasks, sync errors and logs. PrimaryKey is only written to the
+// connector log by the sync handler (see serializationLogMessage).
+type RowSerializationError struct {
+	Column     string // column name
+	ColumnType string // MySQL column type, e.g. "date" or "tinyint(1)"
+	PrimaryKey string // e.g. "id=42" (sorted by column); connector log only, never in a Task
+	Err        error  // converter error; may contain the value, never logged
+}
+
+func (e *RowSerializationError) Error() string {
+	return fmt.Sprintf("unable to serialize row: a value in column %q (%s) can't be converted", e.Column, e.ColumnType)
+}
+
+func (e *RowSerializationError) Unwrap() error { return e.Err }
+
+// GRPCStatus keeps the codes.Internal status this error had before it was typed.
+func (e *RowSerializationError) GRPCStatus() *status.Status {
+	return status.New(codes.Internal, e.Error())
+}
+
+func (s *schemaAwareRecordSerializer) newRowSerializationError(fields []*querypb.Field, row map[string]sqltypes.Value, colName string, err error) *RowSerializationError {
+	columnType := ""
+	for _, f := range fields {
+		if f.Name == colName {
+			columnType = f.ColumnType
+			if columnType == "" {
+				columnType = strings.ToLower(f.Type.String())
+			}
+			break
+		}
+	}
+	pkColumns := make([]string, 0, len(s.primaryKeys))
+	for pk := range s.primaryKeys {
+		pkColumns = append(pkColumns, pk)
+	}
+	sort.Strings(pkColumns)
+	pk := make([]string, 0, len(pkColumns))
+	for _, c := range pkColumns {
+		pk = append(pk, c+"="+row[c].ToString())
+	}
+	return &RowSerializationError{Column: colName, ColumnType: columnType, PrimaryKey: strings.Join(pk, ", "), Err: err}
 }
 
 func (s *schemaAwareRecordSerializer) Serialize(before *sqltypes.Result, after *sqltypes.Result, opType lib.Operation) ([]map[string]*fivetransdk.ValueType, error) {
@@ -131,7 +180,7 @@ func (s *schemaAwareRecordSerializer) Serialize(before *sqltypes.Result, after *
 			} else {
 				fVal, err = writer(val)
 				if err != nil {
-					return nil, errors.Wrap(err, "unable to serialize row")
+					return nil, s.newRowSerializationError(after.Fields, afterMap, colName, err)
 				}
 			}
 			record[colName] = fVal
@@ -293,6 +342,11 @@ func (l *schemaAwareSerializer) serializeResult(before *sqltypes.Result, after *
 		msg := fmt.Sprintf("record schema aware json serializer : %q", err)
 		if err := l.Severe(msg); err != nil {
 			return status.Error(codes.Internal, err.Error())
+		}
+		// Keep the typed error so the sync handler can raise a Task for it.
+		var rse *RowSerializationError
+		if errors.As(err, &rse) {
+			return rse
 		}
 		return status.Error(codes.Internal, msg)
 	}
