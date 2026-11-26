@@ -71,11 +71,14 @@ func (p mysqlClient) Close() error {
 	return p.db.Close()
 }
 
+// GetKeyspaceTableColumns returns the columns of a table in table order
+// (ordinal_position): the sync compares that order between syncs (see
+// ColumnOrderChange).
 func (p mysqlClient) GetKeyspaceTableColumns(ctx context.Context, keyspaceName string, tableName string) ([]MysqlColumn, error) {
 	var columns []MysqlColumn
 	columnNamesQR, err := p.db.QueryContext(
 		ctx,
-		"select column_name, column_type, column_key from information_schema.columns where table_name=? AND table_schema=?;",
+		"select column_name, column_type, column_key from information_schema.columns where table_name=? AND table_schema=? order by ordinal_position;",
 		tableName, keyspaceName,
 	)
 	if err != nil {

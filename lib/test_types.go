@@ -158,11 +158,13 @@ type (
 	ReadFunc       func(ctx context.Context, logger DatabaseLogger, ps PlanetScaleSource, tableName string, columns []string, tc *psdbconnect.TableCursor, onResult OnResult, onCursor OnCursor, onUpdate OnUpdate) (*SerializedCursor, error)
 	CanConnectFunc func(ctx context.Context, ps PlanetScaleSource) error
 	ListShardsFunc func(ctx context.Context, ps PlanetScaleSource) ([]string, error)
+	ScanSchemaFunc func(ctx context.Context, logger DatabaseLogger, ps PlanetScaleSource, tableName string, tc *psdbconnect.TableCursor) (SchemaHistory, error)
 
 	TestConnectClient struct {
-		ReadFn       ReadFunc
-		CanConnectFn CanConnectFunc
-		ListShardsFn ListShardsFunc
+		ReadFn              ReadFunc
+		CanConnectFn        CanConnectFunc
+		ListShardsFn        ListShardsFunc
+		ScanSchemaHistoryFn ScanSchemaFunc
 	}
 )
 
@@ -187,6 +189,15 @@ func (tcc *TestConnectClient) Read(ctx context.Context, logger DatabaseLogger, p
 	}
 
 	return nil, errors.New("Read is Unimplemented")
+}
+
+// ScanSchemaHistory implements SchemaHistoryScanner; without
+// ScanSchemaHistoryFn it reports ErrSchemaHistoryUnavailable.
+func (tcc *TestConnectClient) ScanSchemaHistory(ctx context.Context, logger DatabaseLogger, ps PlanetScaleSource, tableName string, tc *psdbconnect.TableCursor) (SchemaHistory, error) {
+	if tcc.ScanSchemaHistoryFn != nil {
+		return tcc.ScanSchemaHistoryFn(ctx, logger, ps, tableName, tc)
+	}
+	return SchemaHistory{}, ErrSchemaHistoryUnavailable
 }
 
 func NewTestConnectClient(r ReadFunc) ConnectClient {

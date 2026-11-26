@@ -3,6 +3,8 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/pkg/errors"
 
@@ -42,6 +44,13 @@ func (s *Sync) handle(ctx context.Context, psc *lib.PlanetScaleSource, db *lib.C
 	if db == nil {
 		return status.Error(codes.Internal, "database accessor has not been initialized")
 	}
+	// A table that fails must not hold up the other tables in the connection:
+	// remember the first error/Task, keep syncing the remaining tables, and
+	// report it after their progress has been checkpointed.
+	var (
+		firstErr    error
+		pendingTask string
+	)
 	for _, ks := range includedKeyspaces(schema) {
 		for _, table := range includedTables(ks) {
 			stateKey := ks.SchemaName + ":" + table.TableName
@@ -72,6 +81,34 @@ func (s *Sync) handle(ctx context.Context, psc *lib.PlanetScaleSource, db *lib.C
 				if tc.Position != "" || tc.LastKnownPk != nil {
 					allShardsHaveNoProgress = false
 					break // No need to check remaining shards
+				}
+			}
+
+			// A column added in the middle of the table, or columns reordered,
+			// since the saved cursors: without the vttablet schema historian the
+			// older binlog events would be decoded by position into the wrong
+			// columns. Stream the table only if the schema tracker recorded the
+			// change (or the cursors are already past it); otherwise raise the
+			// re-sync Task instead of streaming the table.
+			if orderErr := checkColumnOrder(logger, state, ks.SchemaName, table.TableName, hasShards && !allShardsHaveNoProgress); orderErr != nil {
+				tracked, hErr := verifySchemaHistory(ctx, db, logger, psc, streamState, orderErr)
+				if hErr == nil {
+					why := "the saved cursors are already past the schema change"
+					if tracked {
+						why = "the schema tracker recorded the schema change, so the older binlog events are decoded with the schema they were written with"
+					}
+					logger.Info(fmt.Sprintf("table %s: column order changed (%s); %s, syncing as usual", stateKey, orderErr.Reason, why))
+					recordColumnOrder(state, ks.SchemaName, table.TableName, orderErr.Current)
+				} else {
+					summary := logSkippedTable(logger, stateKey, hErr)
+					if task := resyncTaskMessage(hErr, ks.SchemaName, table.TableName, ""); task != "" {
+						if pendingTask == "" {
+							pendingTask = task
+						}
+					} else if firstErr == nil {
+						firstErr = status.Error(codes.Internal, fmt.Sprintf("failed to download rows for table : %s , error : %s", table.TableName, summary))
+					}
+					continue
 				}
 			}
 
@@ -114,8 +151,12 @@ func (s *Sync) handle(ctx context.Context, psc *lib.PlanetScaleSource, db *lib.C
 					if sErr := logger.State(*state); sErr != nil {
 						return status.Error(codes.Internal, sErr.Error())
 					}
-					return status.Error(codes.Internal, fmt.Sprintf("failed to download rows for table : %s , error : %s "+
-						"(if the next sync fails the same way, a re-sync Task is raised)", table.TableName, err.Error()))
+					summary := logSkippedTable(logger, stateKey, err)
+					if firstErr == nil {
+						firstErr = status.Error(codes.Internal, fmt.Sprintf("failed to download rows for table : %s , error : %s "+
+							"(if the next sync fails the same way, a re-sync Task is raised)", table.TableName, summary))
+					}
+					break
 				}
 				if err != nil {
 					task := resyncTaskMessage(err, ks.SchemaName, table.TableName, shardName)
@@ -127,23 +168,15 @@ func (s *Sync) handle(ctx context.Context, psc *lib.PlanetScaleSource, db *lib.C
 							logger.Severe(serializationLogMessage(rse, ks.SchemaName, table.TableName))
 						}
 					}
+					summary := logSkippedTable(logger, stateKey, err)
 					if task != "" {
-						// Checkpoint whatever progress the other shards/tables made, then
-						// raise a single Task. Fivetran stops the sync on a Task.
-						if sErr := logger.State(*state); sErr != nil {
-							return status.Error(codes.Internal, sErr.Error())
+						if pendingTask == "" {
+							pendingTask = task
 						}
-						logger.Severe(fmt.Sprintf("raising re-sync task for %s: %v", stateKey, err))
-						// Warnings must go out before the Task: Fivetran stops the sync on a Task.
-						if fErr := logger.FlushBinlogExpirationWarning(); fErr != nil {
-							logger.Severe(fmt.Sprintf("failed to send binlog expiration warning: %v", fErr))
-						}
-						if tErr := logger.SendTask(task); tErr != nil {
-							return status.Error(codes.FailedPrecondition, task)
-						}
-						return nil
+					} else if firstErr == nil {
+						firstErr = status.Error(codes.Internal, fmt.Sprintf("failed to download rows for table : %s , error : %s", table.TableName, summary))
 					}
-					return status.Error(codes.Internal, fmt.Sprintf("failed to download rows for table : %s , error : %s", table.TableName, err.Error()))
+					break
 				}
 				if sc != nil {
 					// if we get any new state, we assign it here.
@@ -158,7 +191,158 @@ func (s *Sync) handle(ctx context.Context, psc *lib.PlanetScaleSource, db *lib.C
 			}
 		}
 	}
-	return logger.State(*state)
+	if sErr := logger.State(*state); sErr != nil {
+		return status.Error(codes.Internal, sErr.Error())
+	}
+	if pendingTask != "" {
+		// Fivetran stops the sync on a Task, so it goes out last, after every
+		// other table was synced and checkpointed, and after any Warnings.
+		if fErr := logger.FlushBinlogExpirationWarning(); fErr != nil {
+			logger.Severe(fmt.Sprintf("failed to send binlog expiration warning: %v", fErr))
+		}
+		if tErr := logger.SendTask(pendingTask); tErr != nil {
+			return status.Error(codes.FailedPrecondition, pendingTask)
+		}
+		return nil
+	}
+	return firstErr
+}
+
+// logSkippedTable logs why a table is skipped for the rest of the sync and
+// returns the short form of err used in the sync error. Fivetran cuts long
+// messages, and a VStream error leads with the GTID set of the saved position
+// (kilobytes on a long-lived database), so the short line leads with the table
+// and vttablet's reason (lib.VStreamErrorReason) and the full error, GTIDs
+// included, goes in a line of its own.
+func logSkippedTable(logger Serializer, stateKey string, err error) string {
+	summary := lib.VStreamErrorReason(err)
+	if summary == "" {
+		summary = err.Error()
+	}
+	logger.Severe(fmt.Sprintf("skipping table %s for the rest of this sync: %s", stateKey, summary))
+	if summary != err.Error() {
+		logger.Severe(fmt.Sprintf("full error for table %s: %v", stateKey, err))
+	}
+	return summary
+}
+
+// ColumnOrderChangedError reports that a table's columns are no longer in the
+// order saved with its cursors (see lib.ColumnOrderChange). It is only logged;
+// the Task text comes from resyncTaskMessage and has no column names.
+type ColumnOrderChangedError struct {
+	Keyspace string
+	Table    string
+	Reason   string   // from lib.ColumnOrderChange
+	Saved    []string // column order saved with the cursors
+	Current  []string // live column order
+	// Untracked is set when a shard's binlog has the schema change but no
+	// schema version after it (lib.SchemaHistoryUntracked): the keyspace does
+	// not run vttablet's schema tracker. Shard and DDL are from that shard.
+	Untracked bool
+	Shard     string
+	DDL       string
+}
+
+func (e *ColumnOrderChangedError) Error() string {
+	msg := fmt.Sprintf("column order of table %s changed since the last sync (%s), so binlog events from before the change "+
+		"would be decoded into the wrong columns; saved order: %s; current order: %s",
+		e.Table, e.Reason, strings.Join(e.Saved, ","), strings.Join(e.Current, ","))
+	if e.Untracked {
+		msg += fmt.Sprintf("; shard %s has the schema change %q with no schema version after it (track_schema_versions is off)", e.Shard, e.DDL)
+	}
+	return msg
+}
+
+// checkColumnOrder compares the column order saved in the table's state with
+// the live order from the source schema, if the Serializer knows it (see
+// SourceColumnOrderer). It returns a *ColumnOrderChangedError, leaving the
+// saved order as it was so every sync raises the Task until the connection is
+// re-synced (or verifySchemaHistory clears it). Otherwise it records the live
+// order in state (saved with the next checkpoint).
+//
+// compare is false when no shard of the table has durable progress (initial
+// sync, "Resync all data", or a cursor reset after binlog expiration): the
+// table is copied from scratch, so only the order is recorded.
+func checkColumnOrder(logger Serializer, state *lib.SyncState, keyspace, table string, compare bool) *ColumnOrderChangedError {
+	orderer, ok := logger.(SourceColumnOrderer)
+	if !ok {
+		return nil
+	}
+	current, ok := orderer.SourceColumnOrder(keyspace, table)
+	if !ok {
+		return nil
+	}
+	stateKey := keyspace + ":" + table
+	streamState := state.Keyspaces[keyspace].Streams[stateKey]
+	if compare {
+		if reason := lib.ColumnOrderChange(streamState.ColumnOrder, current); reason != "" {
+			return &ColumnOrderChangedError{
+				Keyspace: keyspace,
+				Table:    table,
+				Reason:   reason,
+				Saved:    slices.Clone(streamState.ColumnOrder),
+				Current:  slices.Clone(current),
+			}
+		}
+	}
+	recordColumnOrder(state, keyspace, table, current)
+	return nil
+}
+
+func recordColumnOrder(state *lib.SyncState, keyspace, table string, current []string) {
+	stateKey := keyspace + ":" + table
+	streamState := state.Keyspaces[keyspace].Streams[stateKey]
+	if !slices.Equal(streamState.ColumnOrder, current) {
+		streamState.ColumnOrder = slices.Clone(current)
+		state.Keyspaces[keyspace].Streams[stateKey] = streamState
+	}
+}
+
+// verifySchemaHistory decides what to do about a column order change: it scans
+// every shard with a saved binlog position (lib.SchemaHistoryScanner, in shard
+// order) and returns a nil error when each shard either has no schema change on
+// the table since its cursor or has one followed by a schema version, so the
+// historian decodes the older events correctly (tracked reports whether any
+// shard had one). Otherwise it returns:
+//
+//   - orderErr with Untracked set for the first shard whose schema change has
+//     no schema version after it (Task: enable the tracker, then re-sync);
+//   - orderErr unchanged when the client cannot scan (Task: re-sync);
+//   - the scan error, e.g. lib.ErrSchemaHistoryInconclusive (a plain error, so
+//     Fivetran retries and the next sync scans again).
+func verifySchemaHistory(ctx context.Context, db *lib.ConnectClient, logger Serializer, psc *lib.PlanetScaleSource, streamState lib.ShardStates, orderErr *ColumnOrderChangedError) (tracked bool, err error) {
+	scanner, ok := (*db).(lib.SchemaHistoryScanner)
+	if !ok {
+		return false, orderErr
+	}
+	shards := make([]string, 0, len(streamState.Shards))
+	for shard := range streamState.Shards {
+		shards = append(shards, shard)
+	}
+	slices.Sort(shards)
+	for _, shard := range shards {
+		tc, err := streamState.Shards[shard].SerializedCursorToTableCursor()
+		if err != nil {
+			return false, status.Error(codes.Internal, fmt.Sprintf("invalid cursor for stream %v:%v, failed with [%v]", orderErr.Keyspace, orderErr.Table, err))
+		}
+		if tc.Position == "" {
+			continue
+		}
+		history, err := scanner.ScanSchemaHistory(ctx, logger, *psc, orderErr.Table, tc)
+		if errors.Is(err, lib.ErrSchemaHistoryUnavailable) {
+			return false, orderErr
+		}
+		if err != nil {
+			return false, errors.Wrapf(err, "checking the schema history of table %s on shard %s after its column order changed (%s)", orderErr.Table, shard, orderErr.Reason)
+		}
+		if history.Verdict == lib.SchemaHistoryUntracked {
+			orderErr.Untracked, orderErr.Shard, orderErr.DDL = true, shard, history.DDL
+			return false, orderErr
+		}
+		tracked = tracked || history.Verdict == lib.SchemaHistoryTracked
+		logger.Info(fmt.Sprintf("table %s:%s shard %s: %s", orderErr.Keyspace, orderErr.Table, shard, history.Verdict))
+	}
+	return tracked, nil
 }
 
 // resyncTaskMessage returns the customer-facing Fivetran Task text for read
@@ -169,7 +353,10 @@ func (s *Sync) handle(ctx context.Context, psc *lib.PlanetScaleSource, db *lib.C
 // must only contain values that are stable between retries (no error text,
 // GTIDs or timestamps).
 func resyncTaskMessage(err error, keyspace, table, shard string) string {
-	var suspected *lib.SuspectedBinlogExpirationError
+	var (
+		suspected  *lib.SuspectedBinlogExpirationError
+		orderError *ColumnOrderChangedError
+	)
 	switch {
 	// The masked vtgate form of purged binlogs, seen on a second consecutive
 	// sync (the first one only marks the cursor, see handle). The cursor is
@@ -190,7 +377,21 @@ func resyncTaskMessage(err error, keyspace, table, shard string) string {
 			"so incremental replication cannot resume for the tables in this keyspace. "+
 			"To fix this, go to the connection's Settings tab in Fivetran and click \"Resync all data\".",
 			shard, keyspace)
-	case lib.IsVStreamSchemaIncompatibilityError(err):
+	// A column order change without the schema tracker: the older events can
+	// only be decoded correctly once the tracker records schema versions, and
+	// those recorded from now on do not cover the events already written, so
+	// a re-sync is needed after turning it on.
+	case errors.As(err, &orderError) && orderError.Untracked:
+		return fmt.Sprintf("Re-sync required: a schema change on table %q in PlanetScale keyspace %q changed the order of its columns "+
+			"(a column added in the middle of the table, columns reordered, or columns dropped and added), and the keyspace does not track "+
+			"schema versions, so changes made before the schema change cannot be read with the right column names. "+
+			"To fix this, enable the VTTablet parameter track_schema_versions for keyspace %q in PlanetScale (with schema-version-max-age-seconds "+
+			"set to 0 or at least as long as the binary log retention), then go to the connection's Settings tab in Fivetran and click \"Resync all data\".",
+			table, keyspace, keyspace)
+	// Any other column order change (the client could not check the schema
+	// history) gets the same text: it is the same kind of schema change, and
+	// the text must not name columns.
+	case lib.IsVStreamSchemaIncompatibilityError(err), errors.As(err, &orderError):
 		return fmt.Sprintf("Re-sync required: a schema change on table %q in PlanetScale keyspace %q (for example a column added in the middle "+
 			"of the table, or a dropped or renamed column) prevents incremental replication from continuing. "+
 			"To fix this, go to the connection's Settings tab in Fivetran and click \"Resync all data\".",

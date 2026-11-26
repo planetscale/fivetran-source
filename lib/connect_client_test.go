@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"testing"
 	"time"
+	vtschema "vitess.io/vitess/go/vt/schema"
 
 	binlogdatapb "vitess.io/vitess/go/vt/proto/binlogdata"
 	"vitess.io/vitess/go/vt/proto/query"
@@ -345,16 +347,14 @@ func TestRead_ReturnsVStreamSchemaIncompatibilityErrors(t *testing.T) {
 		Keyspace: "connect-test",
 	}
 
-	getCurrentVGtidClient := &connectSyncClientMock{
-		syncResponses: []*psdbconnect.SyncResponse{
-			{Cursor: stopCursor},
-		},
-	}
-
 	cc := clientConnectionMock{
 		syncFn: func(ctx context.Context, in *psdbconnect.SyncRequest, opts ...grpc.CallOption) (psdbconnect.Connect_SyncClient, error) {
 			if in.Cursor.Position == "current" {
-				return getCurrentVGtidClient, nil
+				return &connectSyncClientMock{
+					syncResponses: []*psdbconnect.SyncResponse{
+						{Cursor: stopCursor},
+					},
+				}, nil
 			}
 			return nil, status.Error(codes.Unknown, vstreamColumnNotFoundErrorMessage)
 		},
@@ -379,7 +379,8 @@ func TestRead_ReturnsVStreamSchemaIncompatibilityErrors(t *testing.T) {
 	esc, err := TableCursorToSerializedCursor(tc)
 	assert.NoError(t, err)
 	assert.Equal(t, esc, sc)
-	assert.Equal(t, 2, cc.syncFnInvokedCount)
+	// peek, stream, peek, stream without after_col (still not found), give up.
+	assert.Equal(t, 4, cc.syncFnInvokedCount)
 }
 
 func TestRead_ReturnsGenericNonTimeoutErrors(t *testing.T) {
@@ -1190,7 +1191,7 @@ func TestSync_DirectVStreamHandlesRawEventsAndCopyCompleted(t *testing.T) {
 
 	records := 0
 	checkpoints := []*psdbconnect.TableCursor{}
-	returnedCursor, err := ped.sync(context.Background(), dbl, "customers", []string{"id", "name"}, startCursor, "STOP_GTID", PlanetScaleSource{Database: "connect-test"}, psdbconnect.TabletType_primary, time.Second, func(*sqltypes.Result, Operation) error {
+	returnedCursor, err := ped.sync(context.Background(), dbl, "customers", []string{"id", "name"}, false, startCursor, "STOP_GTID", PlanetScaleSource{Database: "connect-test"}, psdbconnect.TabletType_primary, time.Second, func(*sqltypes.Result, Operation) error {
 		records++
 		return nil
 	}, func(cursor *psdbconnect.TableCursor) error {
@@ -1242,7 +1243,7 @@ func TestSync_DirectVStreamRejectsFieldlessLastKnownPK(t *testing.T) {
 		return vc, nil
 	}
 
-	returnedCursor, err := ped.sync(context.Background(), dbl, "customers", []string{"id", "name"}, startCursor, "STOP_GTID", PlanetScaleSource{Database: "connect-test"}, psdbconnect.TabletType_primary, time.Second, nil, nil, nil)
+	returnedCursor, err := ped.sync(context.Background(), dbl, "customers", []string{"id", "name"}, false, startCursor, "STOP_GTID", PlanetScaleSource{Database: "connect-test"}, psdbconnect.TabletType_primary, time.Second, nil, nil, nil)
 
 	assert.Error(t, err)
 	assert.Equal(t, codes.Internal, status.Code(err))
@@ -1317,7 +1318,7 @@ func TestSync_CheckpointsHistoricalCopyProgress(t *testing.T) {
 		return nil
 	}
 
-	returnedCursor, err := ped.sync(context.Background(), dbl, "customers", []string{"id", "name"}, startCursor, stopCursor.Position, PlanetScaleSource{Database: "connect-test"}, psdbconnect.TabletType_primary, time.Second, onResult, onCursor, nil)
+	returnedCursor, err := ped.sync(context.Background(), dbl, "customers", []string{"id", "name"}, false, startCursor, stopCursor.Position, PlanetScaleSource{Database: "connect-test"}, psdbconnect.TabletType_primary, time.Second, onResult, onCursor, nil)
 	assert.True(t, errors.Is(err, io.EOF))
 	assert.True(t, proto.Equal(afterStopCursor, returnedCursor))
 	assert.Equal(t, 2, rows)
@@ -1388,7 +1389,7 @@ func TestSync_DoesNotPeriodicallyCheckpointVGTIDProgress(t *testing.T) {
 		return nil
 	}
 
-	returnedCursor, err := ped.sync(context.Background(), dbl, "customers", []string{"id", "name"}, startCursor, stopCursor.Position, PlanetScaleSource{Database: "connect-test"}, psdbconnect.TabletType_primary, time.Second, func(*sqltypes.Result, Operation) error {
+	returnedCursor, err := ped.sync(context.Background(), dbl, "customers", []string{"id", "name"}, false, startCursor, stopCursor.Position, PlanetScaleSource{Database: "connect-test"}, psdbconnect.TabletType_primary, time.Second, func(*sqltypes.Result, Operation) error {
 		return nil
 	}, onCursor, nil)
 	assert.True(t, errors.Is(err, io.EOF))
@@ -1420,7 +1421,7 @@ func TestSync_ResumesHistoricalCopyWithLastKnownPKOnly(t *testing.T) {
 		return &cc, nil
 	}
 
-	_, err := ped.sync(context.Background(), dbl, "customers", []string{"id"}, resumeCursor, "STOP_GTID", PlanetScaleSource{Database: "connect-test"}, psdbconnect.TabletType_primary, time.Second, nil, nil, nil)
+	_, err := ped.sync(context.Background(), dbl, "customers", []string{"id"}, false, resumeCursor, "STOP_GTID", PlanetScaleSource{Database: "connect-test"}, psdbconnect.TabletType_primary, time.Second, nil, nil, nil)
 	assert.True(t, errors.Is(err, io.EOF))
 	assert.True(t, requestChecked)
 }
@@ -1448,7 +1449,7 @@ func TestSync_ResumesHistoricalCopyWithPositionAndLastKnownPK(t *testing.T) {
 		return &cc, nil
 	}
 
-	_, err := ped.sync(context.Background(), dbl, "customers", []string{"id"}, resumeCursor, "STOP_GTID", PlanetScaleSource{Database: "connect-test"}, psdbconnect.TabletType_primary, time.Second, nil, nil, nil)
+	_, err := ped.sync(context.Background(), dbl, "customers", []string{"id"}, false, resumeCursor, "STOP_GTID", PlanetScaleSource{Database: "connect-test"}, psdbconnect.TabletType_primary, time.Second, nil, nil, nil)
 	assert.True(t, errors.Is(err, io.EOF))
 	assert.True(t, requestChecked)
 }
@@ -1469,6 +1470,14 @@ func TestIsVStreamSchemaIncompatibilityError(t *testing.T) {
 			err: status.Error(codes.Unknown, "stream error: Code: FAILED_PRECONDITION\n"+
 				"cannot use column names in vstream filter as the current table schema for table customers is not compatible with the current event for this table in the stream\n\n"+
 				"failed to build table replication plan for table customers"),
+			want: true,
+		},
+		{
+			name: "column not found rewrapped by vtgate after retries",
+			err: status.Error(codes.Unknown, `error starting stream from shard GTID keyspace:"ks" shard:"-" gtid:"MySQL56/abc:1-10": `+
+				`persistent error in vstream for ks/- on tablet zone1-0000000101; giving up: target: ks.-.replica: vttablet: `+
+				`rpc error: code = FailedPrecondition desc = stream (at source tablet) error @ (including the GTID we failed to process) MySQL56/abc:1-11: `+
+				`failed to build table replication plan for table customers: column after_col not found in table customers`),
 			want: true,
 		},
 		{
@@ -1642,4 +1651,427 @@ func TestRowCallbackErrorKeepsCause(t *testing.T) {
 	plain := rowCallbackError("unable to serialize row", errors.New("boom"))
 	assert.Equal(t, codes.Internal, status.Code(plain))
 	assert.Contains(t, plain.Error(), "unable to serialize row: boom")
+}
+
+func TestVStreamMissingFilterColumn(t *testing.T) {
+	tests := []struct {
+		name   string
+		err    error
+		column string
+		ok     bool
+	}{
+		{
+			name:   "vttablet error",
+			err:    status.Error(codes.Unknown, vstreamColumnNotFoundErrorMessage),
+			column: "after_col",
+			ok:     true,
+		},
+		{
+			name: "rewrapped by vtgate after retries",
+			err: status.Error(codes.FailedPrecondition, `error starting stream from shard GTID keyspace:"ks" shard:"-" gtid:"MySQL56/abc:1-10": `+
+				`persistent error in vstream for ks/- on tablet zone1-0000000101; giving up: target: ks.-.primary: vttablet: `+
+				`rpc error: code = FailedPrecondition desc = stream (at source tablet) error @ (including the GTID we failed to process) MySQL56/abc:1-11: `+
+				`failed to build table replication plan for table orders: column added_col not found in table orders`),
+			column: "added_col",
+			ok:     true,
+		},
+		{
+			name:   "quoted column name",
+			err:    errors.New("failed to build table replication plan for table t1: column `select` not found in table t1"),
+			column: "select",
+			ok:     true,
+		},
+		{
+			name: "positional fields are not a missing column",
+			err: errors.New("failed to build table replication plan for table t1: cannot use column names in vstream filter as the current " +
+				"table schema for table t1 is not compatible with the current event for this table in the stream"),
+		},
+		{
+			name: "dropped column is not a missing column",
+			err:  errors.New("failed to build table replication plan for table t1: cannot determine table columns for t1: event has [8 15 15], schema has [id]"),
+		},
+		{
+			name: "unrelated error",
+			err:  errors.New("column x not found in table t1"),
+		},
+		{name: "nil"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			column, ok := VStreamMissingFilterColumn(tt.err)
+			assert.Equal(t, tt.ok, ok)
+			assert.Equal(t, tt.column, column)
+		})
+	}
+}
+
+// A column added by an Online DDL after the saved position: the first stream
+// fails on t's pre-cut-over events, the retry leaves the column out and stops
+// at the cut-over RENAME, and the stream then restarts there with every column.
+func TestRead_StepsOverColumnAddedAfterCursor(t *testing.T) {
+	dbl := &dbLogger{}
+	ped := connectClient{}
+	// Names as Vitess v0.24 Online DDL generates them (schema.GenerateInternalTableName
+	// with the "vrp" hint, and schema.GenerateGCTableName for the "hld" sentry table).
+	shadowTable := "_vt_vrp_0a1b2c3d4e5f60718293a4b5c6d7e8f9_20261123210400_"
+	sentryTable := "_vt_hld_f9e8d7c6b5a4938271605f4e3d2c1b0a_20261126210557_"
+	assert.True(t, vtschema.IsInternalOperationTableName(shadowTable))
+	assert.True(t, vtschema.IsInternalOperationTableName(sentryTable))
+	cutOver := fmt.Sprintf("RENAME TABLE `customers` TO `%s`, `%s` TO `customers`, `%s` TO `%s`", sentryTable, shadowTable, sentryTable, shadowTable)
+	cursorAt := func(position string) *psdbconnect.TableCursor {
+		return &psdbconnect.TableCursor{Shard: "-", Keyspace: "connect-test", Position: position}
+	}
+	startCursor := cursorAt("BEFORE_DDL")
+	ddlCursor := cursorAt("CUT_OVER")
+	stopCursor := cursorAt("STOP")
+	nextCursor := cursorAt("AFTER_STOP")
+
+	oldFields := sqltypes.MakeTestFields("id|name", "int64|varbinary")
+	newFields := sqltypes.MakeTestFields("id|name|added_col", "int64|varbinary|varbinary")
+	oldRows := sqltypes.ResultToProto3(sqltypes.MakeTestResult(oldFields, "1|first")).Rows
+	newRows := sqltypes.ResultToProto3(sqltypes.MakeTestResult(newFields, "2|second|new")).Rows
+
+	missingColumnErr := status.Error(codes.FailedPrecondition, `persistent error in vstream for connect-test/- on tablet zone1-0000000101; giving up: `+
+		`vttablet: rpc error: code = FailedPrecondition desc = failed to build table replication plan for table customers: `+
+		`column added_col not found in table customers`)
+
+	var filters, startPositions []string
+	vc := &vstreamConnectionMock{
+		vstreamFn: func(ctx context.Context, in *vtgatepb.VStreamRequest, opts ...grpc.CallOption) (vtgateservicepb.Vitess_VStreamClient, error) {
+			gtid := in.Vgtid.ShardGtids[0].Gtid
+			if gtid == "current" {
+				return &vstreamClientMock{responses: []*vtgatepb.VStreamResponse{{
+					Events: []*binlogdatapb.VEvent{vstreamVGtidEventFromCursor("customers", stopCursor)},
+				}}}, nil
+			}
+			filters = append(filters, in.Filter.Rules[0].Filter)
+			startPositions = append(startPositions, gtid)
+			switch len(filters) {
+			case 1:
+				return &vstreamClientMock{recvFn: func() (*vtgatepb.VStreamResponse, error) { return nil, missingColumnErr }}, nil
+			case 2:
+				// What vtgate forwards for an Online DDL (vitess strategy) between
+				// the saved position and the cut-over, with the reduced filter:
+				return &vstreamClientMock{responses: []*vtgatepb.VStreamResponse{
+					// An application write to t, still in the old layout.
+					{Events: []*binlogdatapb.VEvent{
+						{Type: binlogdatapb.VEventType_BEGIN},
+						{Type: binlogdatapb.VEventType_FIELD, FieldEvent: &binlogdatapb.FieldEvent{TableName: "connect-test.customers", Fields: oldFields}},
+						{Type: binlogdatapb.VEventType_ROW, RowEvent: &binlogdatapb.RowEvent{TableName: "connect-test.customers", RowChanges: []*binlogdatapb.RowChange{{After: oldRows[0]}}}},
+						vstreamVGtidEventFromCursor("customers", cursorAt("APP_WRITE")),
+						{Type: binlogdatapb.VEventType_COMMIT},
+					}},
+					// CREATE and ALTER of the shadow table, and the sentry table: they
+					// don't name t, so vttablet sends OTHER instead of DDL.
+					{Events: []*binlogdatapb.VEvent{
+						vstreamVGtidEventFromCursor("customers", cursorAt("SHADOW_CREATE")),
+						{Type: binlogdatapb.VEventType_OTHER},
+						vstreamVGtidEventFromCursor("customers", cursorAt("SHADOW_ALTER")),
+						{Type: binlogdatapb.VEventType_OTHER},
+					}},
+					// VReplication backfill into the shadow table. vttablet never sends
+					// these (internal table, and no rule matches); if one got through,
+					// it is for another table and must be ignored.
+					{Events: []*binlogdatapb.VEvent{
+						{Type: binlogdatapb.VEventType_BEGIN},
+						{Type: binlogdatapb.VEventType_ROW, RowEvent: &binlogdatapb.RowEvent{TableName: "connect-test." + shadowTable, RowChanges: []*binlogdatapb.RowChange{{After: newRows[0]}}}},
+						vstreamVGtidEventFromCursor("customers", cursorAt("BACKFILL")),
+						{Type: binlogdatapb.VEventType_COMMIT},
+					}},
+					{Events: []*binlogdatapb.VEvent{
+						vstreamVGtidEventFromCursor("customers", cursorAt("SENTRY_CREATE")),
+						{Type: binlogdatapb.VEventType_OTHER},
+					}},
+					// The cut-over: the only statement that names t.
+					{Events: []*binlogdatapb.VEvent{
+						vstreamVGtidEventFromCursor("customers", ddlCursor),
+						{Type: binlogdatapb.VEventType_DDL, Statement: cutOver},
+					}},
+					// Must not be read: writes to the new t, in the new layout.
+					{Events: []*binlogdatapb.VEvent{
+						{Type: binlogdatapb.VEventType_ROW, RowEvent: &binlogdatapb.RowEvent{TableName: "connect-test.customers", RowChanges: []*binlogdatapb.RowChange{{After: newRows[0]}}}},
+					}},
+				}}, nil
+			default:
+				return &vstreamClientMock{responses: []*vtgatepb.VStreamResponse{
+					{Events: []*binlogdatapb.VEvent{
+						{Type: binlogdatapb.VEventType_FIELD, FieldEvent: &binlogdatapb.FieldEvent{TableName: "connect-test.customers", Fields: newFields}},
+						{Type: binlogdatapb.VEventType_ROW, RowEvent: &binlogdatapb.RowEvent{TableName: "connect-test.customers", RowChanges: []*binlogdatapb.RowChange{{After: newRows[0]}}}},
+						vstreamVGtidEventFromCursor("customers", stopCursor),
+					}},
+					{Events: []*binlogdatapb.VEvent{vstreamVGtidEventFromCursor("customers", nextCursor)}},
+				}}, nil
+			}
+		},
+	}
+	ped.vstreamClientFn = func(ctx context.Context, ps PlanetScaleSource) (vstreamClient, error) {
+		return vc, nil
+	}
+	mysqlClient := NewTestMysqlClient(func(ctx context.Context, keyspaceName string, tableName string) ([]MysqlColumn, error) {
+		return []MysqlColumn{
+			{Name: "id", Type: "bigint", IsPrimaryKey: true},
+			{Name: "name", Type: "varchar(64)"},
+			{Name: "added_col", Type: "varchar(64)"},
+		}, nil
+	})
+	ped.Mysql = &mysqlClient
+
+	var rows []*sqltypes.Result
+	var checkpoints []string
+	sc, err := ped.Read(context.Background(), dbl, PlanetScaleSource{Database: "connect-test"}, "customers", []string{"id", "name", "added_col"}, startCursor,
+		func(res *sqltypes.Result, _ Operation) error {
+			rows = append(rows, res)
+			return nil
+		},
+		func(cursor *psdbconnect.TableCursor) error {
+			checkpoints = append(checkpoints, cursor.Position)
+			return nil
+		}, nil)
+
+	assert.NoError(t, err)
+	assert.Equal(t, []string{
+		"SELECT `id`,`name`,`added_col` FROM `customers`",
+		"SELECT `id`,`name` FROM `customers`",
+		"SELECT `id`,`name`,`added_col` FROM `customers`",
+	}, filters)
+	assert.Equal(t, []string{"BEFORE_DDL", "BEFORE_DDL", "CUT_OVER"}, startPositions)
+	if assert.Len(t, rows, 2) {
+		assert.Equal(t, []string{"id", "name"}, fieldNames(rows[0].Fields))
+		assert.Equal(t, []string{"id", "name", "added_col"}, fieldNames(rows[1].Fields))
+	}
+	assert.Contains(t, checkpoints, "CUT_OVER")
+	tc, err := sc.SerializedCursorToTableCursor()
+	assert.NoError(t, err)
+	assert.Equal(t, "AFTER_STOP", tc.Position)
+}
+
+// A missing column that the filter does not ask for (or one that is still
+// missing after it was left out) is not retried: it keeps raising the
+// re-sync error.
+func TestRead_MissingColumnNotInFilterIsNotRetried(t *testing.T) {
+	dbl := &dbLogger{}
+	ped := connectClient{}
+	startCursor := &psdbconnect.TableCursor{Shard: "-", Keyspace: "connect-test", Position: "BEFORE_DDL"}
+	stopCursor := &psdbconnect.TableCursor{Shard: "-", Keyspace: "connect-test", Position: "STOP"}
+	streams := 0
+	vc := &vstreamConnectionMock{
+		vstreamFn: func(ctx context.Context, in *vtgatepb.VStreamRequest, opts ...grpc.CallOption) (vtgateservicepb.Vitess_VStreamClient, error) {
+			if in.Vgtid.ShardGtids[0].Gtid == "current" {
+				return &vstreamClientMock{responses: []*vtgatepb.VStreamResponse{{
+					Events: []*binlogdatapb.VEvent{vstreamVGtidEventFromCursor("customers", stopCursor)},
+				}}}, nil
+			}
+			streams++
+			return &vstreamClientMock{recvFn: func() (*vtgatepb.VStreamResponse, error) {
+				return nil, status.Error(codes.FailedPrecondition, "vttablet: rpc error: code = FailedPrecondition desc = "+
+					"failed to build table replication plan for table customers: column other_col not found in table customers")
+			}}, nil
+		},
+	}
+	ped.vstreamClientFn = func(ctx context.Context, ps PlanetScaleSource) (vstreamClient, error) {
+		return vc, nil
+	}
+	mysqlClient := NewTestMysqlClient(func(ctx context.Context, keyspaceName string, tableName string) ([]MysqlColumn, error) {
+		return []MysqlColumn{{Name: "id", Type: "bigint", IsPrimaryKey: true}, {Name: "name", Type: "varchar(64)"}}, nil
+	})
+	ped.Mysql = &mysqlClient
+
+	_, err := ped.Read(context.Background(), dbl, PlanetScaleSource{Database: "connect-test"}, "customers", []string{"id", "name"}, startCursor, nil, nil, nil)
+	assert.Error(t, err)
+	assert.True(t, IsVStreamSchemaIncompatibilityError(err))
+	assert.Equal(t, 1, streams)
+}
+
+func TestHandleVStreamRows_PositionalFieldsAreSchemaIncompatibility(t *testing.T) {
+	fields := sqltypes.MakeTestFields("@1|@2", "int64|varbinary")
+	rows := sqltypes.ResultToProto3(sqltypes.MakeTestResult(fields, "1|first")).Rows
+	fieldsByTable := map[string][]*query.Field{}
+	cacheVStreamFields(fieldsByTable, "customers", fields)
+	called := false
+	_, err := handleVStreamRows("customers", &binlogdatapb.RowEvent{
+		TableName:  "customers",
+		RowChanges: []*binlogdatapb.RowChange{{After: rows[0]}},
+	}, fieldsByTable, func(*sqltypes.Result, Operation) error {
+		called = true
+		return nil
+	}, nil)
+	assert.Error(t, err)
+	assert.True(t, IsVStreamSchemaIncompatibilityError(err))
+	assert.False(t, called)
+}
+
+func fieldNames(fields []*query.Field) []string {
+	names := make([]string, 0, len(fields))
+	for _, f := range fields {
+		names = append(names, f.Name)
+	}
+	return names
+}
+
+// With every column in the filter the stream doesn't stop at a cut-over.
+func TestSync_RenameDoesNotStopFullColumnStream(t *testing.T) {
+	dbl := &dbLogger{}
+	ped := connectClient{}
+	fields := sqltypes.MakeTestFields("id|name", "int64|varbinary")
+	rows := sqltypes.ResultToProto3(sqltypes.MakeTestResult(fields, "1|first")).Rows
+	cursorAt := func(position string) *psdbconnect.TableCursor {
+		return &psdbconnect.TableCursor{Shard: "-", Keyspace: "connect-test", Position: position}
+	}
+	vc := &vstreamConnectionMock{
+		vstreamFn: func(ctx context.Context, in *vtgatepb.VStreamRequest, opts ...grpc.CallOption) (vtgateservicepb.Vitess_VStreamClient, error) {
+			return &vstreamClientMock{responses: []*vtgatepb.VStreamResponse{
+				{Events: []*binlogdatapb.VEvent{
+					vstreamVGtidEventFromCursor("customers", cursorAt("CUT_OVER")),
+					{Type: binlogdatapb.VEventType_DDL, Statement: "RENAME TABLE `customers` TO `_vt_hld_f9e8d7c6b5a4938271605f4e3d2c1b0a_20261126210557_`, " +
+						"`_vt_vrp_0a1b2c3d4e5f60718293a4b5c6d7e8f9_20261123210400_` TO `customers`, " +
+						"`_vt_hld_f9e8d7c6b5a4938271605f4e3d2c1b0a_20261126210557_` TO `_vt_vrp_0a1b2c3d4e5f60718293a4b5c6d7e8f9_20261123210400_`"},
+				}},
+				{Events: []*binlogdatapb.VEvent{
+					{Type: binlogdatapb.VEventType_FIELD, FieldEvent: &binlogdatapb.FieldEvent{TableName: "connect-test.customers", Fields: fields}},
+					{Type: binlogdatapb.VEventType_ROW, RowEvent: &binlogdatapb.RowEvent{TableName: "connect-test.customers", RowChanges: []*binlogdatapb.RowChange{{After: rows[0]}}}},
+					vstreamVGtidEventFromCursor("customers", cursorAt("STOP")),
+				}},
+				{Events: []*binlogdatapb.VEvent{vstreamVGtidEventFromCursor("customers", cursorAt("AFTER_STOP"))}},
+			}}, nil
+		},
+	}
+	ped.vstreamClientFn = func(ctx context.Context, ps PlanetScaleSource) (vstreamClient, error) {
+		return vc, nil
+	}
+	records := 0
+	tc, err := ped.sync(context.Background(), dbl, "customers", []string{"id", "name"}, false, cursorAt("BEFORE_DDL"), "STOP", PlanetScaleSource{Database: "connect-test"},
+		psdbconnect.TabletType_primary, time.Second, func(*sqltypes.Result, Operation) error {
+			records++
+			return nil
+		}, nil, nil)
+	assert.True(t, errors.Is(err, io.EOF))
+	assert.Equal(t, 1, records)
+	assert.Equal(t, "AFTER_STOP", tc.Position)
+}
+
+// An incompatible column type change (e2e case type_incompatible) makes Read
+// return the schema-incompatibility error straight away, in either form, so
+// the handler can raise the Task and move on to the next table.
+func TestRead_TypeIncompatibleFailsWithoutRetry(t *testing.T) {
+	positionalFields := sqltypes.MakeTestFields("@1|@2", "int64|int64")
+	positionalRows := sqltypes.ResultToProto3(sqltypes.MakeTestResult(positionalFields, "1|2100")).Rows
+	for _, tc := range []struct {
+		name   string
+		stream func() *vstreamClientMock
+	}{
+		{
+			name: "vttablet cannot use column names",
+			stream: func() *vstreamClientMock {
+				return &vstreamClientMock{recvFn: func() (*vtgatepb.VStreamResponse, error) {
+					return nil, status.Error(codes.Unknown, `persistent error in vstream for connect-test/- on tablet zone1-0000000101; giving up: `+
+						`target: connect-test.-.primary: vttablet: rpc error: code = Unknown desc = stream (at source tablet) error @ MySQL56/abc:1-11: `+
+						"Code: FAILED_PRECONDITION\ncannot use column names in vstream filter as the current table schema for table customers "+
+						"is not compatible with the current event for this table in the stream\n\nfailed to build table replication plan for table customers")
+				}}
+			},
+		},
+		{
+			name: "positional fields",
+			stream: func() *vstreamClientMock {
+				return &vstreamClientMock{responses: []*vtgatepb.VStreamResponse{{Events: []*binlogdatapb.VEvent{
+					{Type: binlogdatapb.VEventType_FIELD, FieldEvent: &binlogdatapb.FieldEvent{TableName: "connect-test.customers", Fields: positionalFields}},
+					{Type: binlogdatapb.VEventType_ROW, RowEvent: &binlogdatapb.RowEvent{TableName: "connect-test.customers", RowChanges: []*binlogdatapb.RowChange{{After: positionalRows[0]}}}},
+				}}}}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dbl := &dbLogger{}
+			ped := connectClient{}
+			startCursor := &psdbconnect.TableCursor{Shard: "-", Keyspace: "connect-test", Position: "BEFORE_DDL"}
+			stopCursor := &psdbconnect.TableCursor{Shard: "-", Keyspace: "connect-test", Position: "STOP"}
+			streams := 0
+			vc := &vstreamConnectionMock{
+				vstreamFn: func(ctx context.Context, in *vtgatepb.VStreamRequest, opts ...grpc.CallOption) (vtgateservicepb.Vitess_VStreamClient, error) {
+					if in.Vgtid.ShardGtids[0].Gtid == "current" {
+						return &vstreamClientMock{responses: []*vtgatepb.VStreamResponse{{
+							Events: []*binlogdatapb.VEvent{vstreamVGtidEventFromCursor("customers", stopCursor)},
+						}}}, nil
+					}
+					streams++
+					return tc.stream(), nil
+				},
+			}
+			ped.vstreamClientFn = func(ctx context.Context, ps PlanetScaleSource) (vstreamClient, error) {
+				return vc, nil
+			}
+			mysqlClient := NewTestMysqlClient(func(ctx context.Context, keyspaceName string, tableName string) ([]MysqlColumn, error) {
+				return []MysqlColumn{{Name: "id", Type: "bigint", IsPrimaryKey: true}, {Name: "a", Type: "varchar(50)"}}, nil
+			})
+			ped.Mysql = &mysqlClient
+			records := 0
+			_, err := ped.Read(context.Background(), dbl, PlanetScaleSource{Database: "connect-test"}, "customers", []string{"id", "a"}, startCursor,
+				func(*sqltypes.Result, Operation) error { records++; return nil }, nil, nil)
+			assert.Error(t, err)
+			assert.True(t, IsVStreamSchemaIncompatibilityError(err))
+			assert.Equal(t, 1, streams)
+			assert.Equal(t, 0, records)
+		})
+	}
+}
+
+func TestVStreamErrorReason(t *testing.T) {
+	var gtids strings.Builder
+	gtids.WriteString("MySQL56/")
+	for i := 0; i < 90; i++ {
+		if i > 0 {
+			gtids.WriteString(",")
+		}
+		gtids.WriteString(fmt.Sprintf("%08x-1111-2222-3333-444455556666:1-%d", i, 1000000+i))
+	}
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{
+			name: "vtgate gave up, vterrors rendering",
+			err: status.Error(codes.Unknown, `error starting stream from shard GTID keyspace:"ks" shard:"-" gtid:"`+gtids.String()+`": `+
+				`persistent error in vstream for ks/- on tablet zone1-0000000101; giving up: target: ks.-.replica: vttablet: `+
+				`rpc error: code = Unknown desc = stream (at source tablet) error @ (including the GTID we failed to process) `+gtids.String()+`: `+
+				"Code: FAILED_PRECONDITION\ncolumn newcol not found in table t1\n\nfailed to build table replication plan for table t1\n"+
+				"failed to parse transaction payload's internal event"),
+			want: "Code: FAILED_PRECONDITION column newcol not found in table t1; failed to build table replication plan for table t1; " +
+				"failed to parse transaction payload's internal event",
+		},
+		{
+			name: "connector wrapped the error",
+			err: errors.Wrap(status.Error(codes.Unknown, "stream error @ MySQL56/abc:1-11: Code: FAILED_PRECONDITION\ncolumn newcol not found in table t1"),
+				"PlanetScale VStream cannot continue incremental replication for table t1 after a schema change"),
+			want: "Code: FAILED_PRECONDITION column newcol not found in table t1",
+		},
+		{
+			name: "grpc rendering after vttablet",
+			err: status.Error(codes.FailedPrecondition, `persistent error in vstream; giving up: target: ks.-.primary: vttablet: `+
+				`rpc error: code = FailedPrecondition desc = stream (at source tablet) error @ MySQL56/abc:1-11,def:1-5: `+
+				`failed to build table replication plan for table t1: column c not found in table t1`),
+			want: "rpc error: code = FailedPrecondition desc = stream (at source tablet) error @ MySQL56/…: " +
+				"failed to build table replication plan for table t1: column c not found in table t1",
+		},
+		{
+			name: "no vttablet part",
+			err:  errors.New("cannot determine table columns for t1: event has positional column names only (@1)"),
+			want: "",
+		},
+		{
+			name: "nil",
+			want: "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := VStreamErrorReason(tt.err)
+			assert.Equal(t, tt.want, got)
+			assert.NotContains(t, got, "1111-2222")
+		})
+	}
+
+	long := VStreamErrorReason(errors.New("vttablet: " + strings.Repeat("x", 1000)))
+	assert.Equal(t, maxVStreamErrorReasonLength+1, len([]rune(long)))
+	assert.True(t, strings.HasSuffix(long, "…"))
 }

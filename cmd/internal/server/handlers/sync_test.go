@@ -3,6 +3,8 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -757,4 +759,674 @@ func TestSendFailureDuringRowIsPlainError(t *testing.T) {
 	err := syncOneTable(t, &lib.PlanetScaleSource{}, tl, syncStateWithCursor(t, "OLD_GTID"), readFn)
 	assert.Error(t, err)
 	assert.Empty(t, tl.tasks)
+}
+
+func TestFailingTableDoesNotBlockOtherTables(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		err      error
+		wantTask bool
+	}{
+		{"plain error", status.Error(codes.Unknown, "persistent error in vstream; giving up"), false},
+		{"resync task", status.Error(codes.Unknown, "Code: FAILED_PRECONDITION\n"+
+			"column after_col not found in table a_broken\n\n"+
+			"failed to build table replication plan for table a_broken"), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			psc := &lib.PlanetScaleSource{}
+			tl := &testLogger{}
+			schemaSelection := &fivetransdk.Selection_WithSchema{
+				WithSchema: &fivetransdk.TablesWithSchema{
+					Schemas: []*fivetransdk.SchemaSelection{{
+						SchemaName: "SalesDB",
+						Included:   true,
+						Tables: []*fivetransdk.TableSelection{
+							{Included: true, TableName: "a_broken"},
+							{Included: true, TableName: "b_healthy"},
+						},
+					}},
+				},
+			}
+			var readTables []string
+			readFn := func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string,
+				cur *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
+			) (*lib.SerializedCursor, error) {
+				readTables = append(readTables, tableName)
+				if tableName == "a_broken" {
+					return nil, tc.err
+				}
+				return nil, nil
+			}
+			stateA, err := psc.GetInitialState("SalesDB", []string{"-"})
+			assert.NoError(t, err)
+			stateB, err := psc.GetInitialState("SalesDB", []string{"-"})
+			assert.NoError(t, err)
+			db := lib.NewTestConnectClient(readFn)
+			err = (&Sync{}).Handle(context.Background(), psc, &db, tl, &lib.SyncState{
+				Keyspaces: map[string]lib.KeyspaceState{
+					"SalesDB": {Streams: map[string]lib.ShardStates{
+						"SalesDB:a_broken":  stateA,
+						"SalesDB:b_healthy": stateB,
+					}},
+				},
+			}, schemaSelection)
+			assert.Equal(t, []string{"a_broken", "b_healthy"}, readTables)
+			if tc.wantTask {
+				assert.NoError(t, err)
+				assert.Len(t, tl.tasks, 1)
+				assert.Contains(t, tl.tasks[0], "a_broken")
+			} else {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), "failed to download rows for table : a_broken")
+				assert.Empty(t, tl.tasks)
+			}
+		})
+	}
+}
+
+// longGTIDSet stands in for the GTID set of a long-lived production database
+// (one UUID per primary it ever had), which vtgate puts in front of the reason.
+func longGTIDSet() string {
+	var b strings.Builder
+	b.WriteString("MySQL56/")
+	for i := 0; i < 90; i++ {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		b.WriteString(fmt.Sprintf("%08x-1111-2222-3333-444455556666:1-%d", i, 1000000+i))
+	}
+	return b.String()
+}
+
+// The e2e case type_incompatible (MODIFY a INT to VARCHAR): vttablet can only
+// name the pre-cut-over columns by position, so the table fails and raises the
+// re-sync Task. The other table in the sync must still be read and
+// checkpointed before the Task goes out, whichever form the failure takes.
+func TestTypeIncompatibleTableDoesNotBlockOtherTables(t *testing.T) {
+	gtids := longGTIDSet()
+	for _, tc := range []struct {
+		name       string
+		err        error
+		wantReason string
+	}{
+		{
+			name: "vttablet cannot use column names, rewrapped by vtgate",
+			err: errors.Wrap(status.Error(codes.Unknown, `error starting stream from shard GTID keyspace:"ks" shard:"-" gtid:"`+gtids+`": `+
+				`persistent error in vstream for ks/- on tablet zone1-0000000101; giving up: target: ks.-.primary: vttablet: `+
+				`rpc error: code = Unknown desc = stream (at source tablet) error @ (including the GTID we failed to process) `+gtids+`: `+
+				"Code: FAILED_PRECONDITION\ncannot use column names in vstream filter as the current table schema for table a_type_changed "+
+				"is not compatible with the current event for this table in the stream\n\nfailed to build table replication plan for table a_type_changed"),
+				"PlanetScale VStream cannot continue incremental replication for table a_type_changed after a schema change; run a Fivetran historical re-sync for this connection to recover"),
+			wantReason: "Code: FAILED_PRECONDITION cannot use column names in vstream filter as the current table schema for table a_type_changed",
+		},
+		{
+			name: "positional fields reached the connector",
+			err:  errors.New("cannot determine table columns for a_type_changed: event has positional column names only (@1)"),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			psc := &lib.PlanetScaleSource{}
+			tl := &testLogger{}
+			schemaSelection := &fivetransdk.Selection_WithSchema{
+				WithSchema: &fivetransdk.TablesWithSchema{
+					Schemas: []*fivetransdk.SchemaSelection{{
+						SchemaName: "SalesDB",
+						Included:   true,
+						Tables: []*fivetransdk.TableSelection{
+							{Included: true, TableName: "a_type_changed", Columns: map[string]bool{"id": true, "a": true}},
+							{Included: true, TableName: "b_bystander", Columns: map[string]bool{"id": true, "label": true}},
+						},
+					}},
+				},
+			}
+			var readTables []string
+			readFn := func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string,
+				cur *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
+			) (*lib.SerializedCursor, error) {
+				readTables = append(readTables, tableName)
+				if tableName == "a_type_changed" {
+					return nil, tc.err
+				}
+				return lib.TableCursorToSerializedCursor(&psdbconnect.TableCursor{Keyspace: cur.Keyspace, Shard: cur.Shard, Position: "MySQL56/bystander:1-20"})
+			}
+			stateA, err := psc.GetInitialState("SalesDB", []string{"-"})
+			assert.NoError(t, err)
+			stateB, err := psc.GetInitialState("SalesDB", []string{"-"})
+			assert.NoError(t, err)
+			db := lib.NewTestConnectClient(readFn)
+			err = (&Sync{}).Handle(context.Background(), psc, &db, tl, &lib.SyncState{
+				Keyspaces: map[string]lib.KeyspaceState{
+					"SalesDB": {Streams: map[string]lib.ShardStates{
+						"SalesDB:a_type_changed": stateA,
+						"SalesDB:b_bystander":    stateB,
+					}},
+				},
+			}, schemaSelection)
+			assert.NoError(t, err)
+			assert.Equal(t, []string{"a_type_changed", "b_bystander"}, readTables)
+
+			// The bystander's progress is checkpointed before the Task.
+			if assert.NotEmpty(t, tl.states) {
+				last := tl.states[len(tl.states)-1]
+				bc, err := last.Keyspaces["SalesDB"].Streams["SalesDB:b_bystander"].Shards["-"].SerializedCursorToTableCursor()
+				assert.NoError(t, err)
+				assert.Equal(t, "MySQL56/bystander:1-20", bc.Position)
+			}
+			if assert.Len(t, tl.tasks, 1) {
+				assert.Equal(t, resyncTaskMessage(tc.err, "SalesDB", "a_type_changed", "-"), tl.tasks[0])
+				assert.NotContains(t, tl.tasks[0], "MySQL56/")
+			}
+			assert.Equal(t, []string{"task"}, tl.events)
+
+			// The first log line leads with the table and the reason; the raw
+			// error (GTIDs and all) gets a line of its own.
+			if assert.NotEmpty(t, tl.severes) {
+				assert.True(t, strings.HasPrefix(tl.severes[0], "skipping table SalesDB:a_type_changed for the rest of this sync: "), tl.severes[0])
+				assert.NotContains(t, tl.severes[0], "MySQL56/0000")
+				if tc.wantReason != "" {
+					assert.Contains(t, tl.severes[0], tc.wantReason)
+					assert.Len(t, tl.severes, 2)
+					assert.Equal(t, "full error for table SalesDB:a_type_changed: "+tc.err.Error(), tl.severes[1])
+				} else {
+					assert.Equal(t, []string{"skipping table SalesDB:a_type_changed for the rest of this sync: " + tc.err.Error()}, tl.severes)
+				}
+			}
+		})
+	}
+}
+
+// A sync error must survive Fivetran cutting long messages: it leads with the
+// table and vttablet's reason, not the GTID set in front of it.
+func TestSyncErrorLeadsWithVttabletReason(t *testing.T) {
+	gtids := longGTIDSet()
+	raw := status.Error(codes.Unknown, `error starting stream from shard GTID keyspace:"ks" shard:"-" gtid:"`+gtids+`": `+
+		`persistent error in vstream for ks/- on tablet zone1-0000000101; giving up: target: ks.-.replica: vttablet: `+
+		`rpc error: code = Unknown desc = stream (at source tablet) error @ (including the GTID we failed to process) `+gtids+`: `+
+		"Code: RESOURCE_EXHAUSTED\ntoo many concurrent streams")
+	psc := &lib.PlanetScaleSource{}
+	tl := &testLogger{}
+	schemaSelection := &fivetransdk.Selection_WithSchema{
+		WithSchema: &fivetransdk.TablesWithSchema{
+			Schemas: []*fivetransdk.SchemaSelection{{
+				SchemaName: "SalesDB",
+				Included:   true,
+				Tables:     []*fivetransdk.TableSelection{{Included: true, TableName: "customers"}},
+			}},
+		},
+	}
+	readFn := func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string,
+		cur *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
+	) (*lib.SerializedCursor, error) {
+		return nil, raw
+	}
+	state, err := psc.GetInitialState("SalesDB", []string{"-"})
+	assert.NoError(t, err)
+	db := lib.NewTestConnectClient(readFn)
+	err = (&Sync{}).Handle(context.Background(), psc, &db, tl, &lib.SyncState{
+		Keyspaces: map[string]lib.KeyspaceState{"SalesDB": {Streams: map[string]lib.ShardStates{"SalesDB:customers": state}}},
+	}, schemaSelection)
+	assert.Error(t, err)
+	assert.Empty(t, tl.tasks)
+	assert.Equal(t, "rpc error: code = Internal desc = failed to download rows for table : customers , error : Code: RESOURCE_EXHAUSTED too many concurrent streams", err.Error())
+	assert.Equal(t, []string{
+		"skipping table SalesDB:customers for the rest of this sync: Code: RESOURCE_EXHAUSTED too many concurrent streams",
+		"full error for table SalesDB:customers: " + raw.Error(),
+	}, tl.severes)
+}
+
+// orderedTestLogger is a testLogger that knows the live column order of the
+// source tables, like schemaAwareSerializer does.
+type orderedTestLogger struct {
+	*testLogger
+	columns map[string][]string // "keyspace:table" -> live column order
+	infos   []string
+}
+
+func (l *orderedTestLogger) Info(s string) error {
+	l.infos = append(l.infos, s)
+	return nil
+}
+
+func (l *orderedTestLogger) SourceColumnOrder(keyspace, table string) ([]string, bool) {
+	c, ok := l.columns[keyspace+":"+table]
+	return c, ok
+}
+
+var _ SourceColumnOrderer = (*orderedTestLogger)(nil)
+
+const columnOrderTaskForAddAfter = `Re-sync required: a schema change on table "a_add_after" in PlanetScale keyspace "SalesDB" (for example a column added in the middle ` +
+	`of the table, or a dropped or renamed column) prevents incremental replication from continuing. ` +
+	`To fix this, go to the connection's Settings tab in Fivetran and click "Resync all data".`
+
+func columnOrderSelection(tables ...string) *fivetransdk.Selection_WithSchema {
+	var ts []*fivetransdk.TableSelection
+	for _, t := range tables {
+		// Only some columns are selected in Fivetran; the check uses the full
+		// table order regardless.
+		ts = append(ts, &fivetransdk.TableSelection{Included: true, TableName: t, Columns: map[string]bool{"id": true, "b": true}})
+	}
+	return &fivetransdk.Selection_WithSchema{
+		WithSchema: &fivetransdk.TablesWithSchema{
+			Schemas: []*fivetransdk.SchemaSelection{{SchemaName: "SalesDB", Included: true, Tables: ts}},
+		},
+	}
+}
+
+// streamWithProgress returns the state of one table with a saved cursor on
+// every given shard and the given saved column order.
+func streamWithProgress(t *testing.T, order []string, positions map[string]string) lib.ShardStates {
+	t.Helper()
+	ss := lib.ShardStates{Shards: map[string]*lib.SerializedCursor{}, ColumnOrder: order}
+	for shard, pos := range positions {
+		sc, err := lib.TableCursorToSerializedCursor(&psdbconnect.TableCursor{Keyspace: "SalesDB", Shard: shard, Position: pos})
+		assert.NoError(t, err)
+		ss.Shards[shard] = sc
+	}
+	return ss
+}
+
+func recordingReadFn(readTables *[]string) lib.ReadFunc {
+	return func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string,
+		cur *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
+	) (*lib.SerializedCursor, error) {
+		*readTables = append(*readTables, tableName+"/"+cur.Shard)
+		return lib.TableCursorToSerializedCursor(&psdbconnect.TableCursor{Keyspace: cur.Keyspace, Shard: cur.Shard, Position: "MySQL56/" + tableName + ":1-20"})
+	}
+}
+
+func lastPosition(t *testing.T, states []lib.SyncState, stream, shard string) string {
+	t.Helper()
+	if !assert.NotEmpty(t, states) {
+		return ""
+	}
+	tc, err := states[len(states)-1].Keyspaces["SalesDB"].Streams[stream].Shards[shard].SerializedCursorToTableCursor()
+	assert.NoError(t, err)
+	return tc.Position
+}
+
+// The e2e case add_after: ALTER TABLE ... ADD COLUMN newcol AFTER a after the
+// saved cursor. The table must not be streamed (its pre-cut-over values would
+// land under the wrong columns): exactly one Task, while the other table is
+// still read and checkpointed before the Task goes out. The saved order is
+// kept, so the next sync raises the same Task until the connection is
+// re-synced; after "Resync all data" (empty state) the order is recorded again
+// and no Task is raised.
+func TestColumnAddedMidTableRaisesOneTaskAndOtherTableSyncs(t *testing.T) {
+	psc := &lib.PlanetScaleSource{}
+	saved := []string{"id", "a", "b", "c"}
+	live := []string{"id", "a", "newcol", "b", "c"}
+	newLogger := func() *orderedTestLogger {
+		return &orderedTestLogger{testLogger: &testLogger{}, columns: map[string][]string{
+			"SalesDB:a_add_after": live,
+			"SalesDB:b_bystander": {"id", "b"},
+		}}
+	}
+	state := &lib.SyncState{Keyspaces: map[string]lib.KeyspaceState{
+		"SalesDB": {Streams: map[string]lib.ShardStates{
+			"SalesDB:a_add_after": streamWithProgress(t, saved, map[string]string{"-": "MySQL56/old:1-10"}),
+			"SalesDB:b_bystander": streamWithProgress(t, []string{"id", "b"}, map[string]string{"-": "MySQL56/old:1-10"}),
+		}},
+	}}
+
+	for sync := 1; sync <= 2; sync++ {
+		tl := newLogger()
+		var readTables []string
+		db := lib.NewTestConnectClient(recordingReadFn(&readTables))
+		err := (&Sync{}).Handle(context.Background(), psc, &db, tl, state, columnOrderSelection("a_add_after", "b_bystander"))
+		assert.NoError(t, err)
+		assert.Equal(t, []string{"b_bystander/-"}, readTables, "sync %d: the changed table must not be streamed", sync)
+		if assert.Len(t, tl.tasks, 1, "sync %d", sync) {
+			assert.Equal(t, columnOrderTaskForAddAfter, tl.tasks[0])
+		}
+		assert.Equal(t, []string{"task"}, tl.events)
+		assert.False(t, tl.truncateCalled)
+		assert.Equal(t, "MySQL56/b_bystander:1-20", lastPosition(t, tl.states, "SalesDB:b_bystander", "-"))
+		assert.Equal(t, "MySQL56/old:1-10", lastPosition(t, tl.states, "SalesDB:a_add_after", "-"), "the changed table's cursor is kept")
+		last := tl.states[len(tl.states)-1]
+		assert.Equal(t, saved, last.Keyspaces["SalesDB"].Streams["SalesDB:a_add_after"].ColumnOrder, "the saved order is kept until a re-sync")
+		if assert.Len(t, tl.severes, 1) {
+			assert.Equal(t, "skipping table SalesDB:a_add_after for the rest of this sync: column order of table a_add_after changed since the last sync "+
+				"(new column newcol was added before existing column b), so binlog events from before the change would be decoded into the wrong columns; "+
+				"saved order: id,a,b,c; current order: id,a,newcol,b,c", tl.severes[0])
+		}
+	}
+
+	// "Resync all data": Fivetran sends no state, so StateFromRequest starts
+	// every table from GetInitialState (no cursor, no saved order).
+	initial, err := psc.GetInitialState("SalesDB", []string{"-"})
+	assert.NoError(t, err)
+	bystander, err := psc.GetInitialState("SalesDB", []string{"-"})
+	assert.NoError(t, err)
+	state = &lib.SyncState{Keyspaces: map[string]lib.KeyspaceState{
+		"SalesDB": {Streams: map[string]lib.ShardStates{"SalesDB:a_add_after": initial, "SalesDB:b_bystander": bystander}},
+	}}
+	tl := newLogger()
+	var readTables []string
+	db := lib.NewTestConnectClient(recordingReadFn(&readTables))
+	assert.NoError(t, (&Sync{}).Handle(context.Background(), psc, &db, tl, state, columnOrderSelection("a_add_after", "b_bystander")))
+	assert.Empty(t, tl.tasks)
+	assert.Equal(t, []string{"a_add_after/-", "b_bystander/-"}, readTables)
+	stateJSON, err := json.Marshal(tl.states[len(tl.states)-1])
+	assert.NoError(t, err)
+	assert.Contains(t, string(stateJSON), `"column_order":["id","a","newcol","b","c"]`)
+
+	// The next incremental sync compares against the refreshed order.
+	tl = newLogger()
+	readTables = nil
+	assert.NoError(t, (&Sync{}).Handle(context.Background(), psc, &db, tl, state, columnOrderSelection("a_add_after", "b_bystander")))
+	assert.Empty(t, tl.tasks)
+	assert.Equal(t, []string{"a_add_after/-", "b_bystander/-"}, readTables)
+}
+
+func TestColumnOrderCheck(t *testing.T) {
+	saved := []string{"id", "a", "b", "c"}
+	for _, tc := range []struct {
+		name      string
+		saved     []string
+		live      []string
+		progress  bool
+		wantTask  bool
+		wantOrder []string // saved order after the sync
+	}{
+		{name: "identical", saved: saved, live: saved, progress: true, wantOrder: saved},
+		{name: "appended at end", saved: saved, live: []string{"id", "a", "b", "c", "d"}, progress: true, wantOrder: []string{"id", "a", "b", "c", "d"}},
+		{name: "state without saved order", saved: nil, live: []string{"id", "newcol", "a", "b", "c"}, progress: true, wantOrder: []string{"id", "newcol", "a", "b", "c"}},
+		{name: "drop only is left to the existing paths", saved: saved, live: []string{"id", "a", "c"}, progress: true, wantOrder: []string{"id", "a", "c"}},
+		{name: "reordered", saved: saved, live: []string{"id", "a", "c", "b"}, progress: true, wantTask: true, wantOrder: saved},
+		{name: "added first", saved: saved, live: []string{"x", "id", "a", "b", "c"}, progress: true, wantTask: true, wantOrder: saved},
+		{name: "no progress: copied from scratch, order recorded", saved: saved, live: []string{"id", "a", "c", "b"}, progress: false, wantOrder: []string{"id", "a", "c", "b"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			psc := &lib.PlanetScaleSource{}
+			pos := ""
+			if tc.progress {
+				pos = "MySQL56/old:1-10"
+			}
+			state := &lib.SyncState{Keyspaces: map[string]lib.KeyspaceState{
+				"SalesDB": {Streams: map[string]lib.ShardStates{"SalesDB:t": streamWithProgress(t, tc.saved, map[string]string{"-": pos})}},
+			}}
+			tl := &orderedTestLogger{testLogger: &testLogger{}, columns: map[string][]string{"SalesDB:t": tc.live}}
+			var readTables []string
+			db := lib.NewTestConnectClient(recordingReadFn(&readTables))
+			assert.NoError(t, (&Sync{}).Handle(context.Background(), psc, &db, tl, state, columnOrderSelection("t")))
+			if tc.wantTask {
+				assert.Len(t, tl.tasks, 1)
+				assert.Empty(t, readTables)
+			} else {
+				assert.Empty(t, tl.tasks)
+				assert.Equal(t, []string{"t/-"}, readTables)
+			}
+			assert.Equal(t, !tc.progress, tl.truncateCalled)
+			if assert.NotEmpty(t, tl.states) {
+				assert.Equal(t, tc.wantOrder, tl.states[len(tl.states)-1].Keyspaces["SalesDB"].Streams["SalesDB:t"].ColumnOrder)
+			}
+		})
+	}
+}
+
+// The order is saved per table, not per shard: a sharded table raises one Task
+// (its text names no shard) and none of its shards is streamed, even if only
+// some shards have a cursor.
+func TestColumnOrderChangeOnShardedTableRaisesOneTask(t *testing.T) {
+	psc := &lib.PlanetScaleSource{}
+	state := &lib.SyncState{Keyspaces: map[string]lib.KeyspaceState{
+		"SalesDB": {Streams: map[string]lib.ShardStates{
+			"SalesDB:a_add_after": streamWithProgress(t, []string{"id", "a", "b"}, map[string]string{"-80": "MySQL56/old:1-10", "80-": ""}),
+		}},
+	}}
+	tl := &orderedTestLogger{testLogger: &testLogger{}, columns: map[string][]string{"SalesDB:a_add_after": {"id", "newcol", "a", "b"}}}
+	var readTables []string
+	db := lib.NewTestConnectClient(recordingReadFn(&readTables))
+	assert.NoError(t, (&Sync{}).Handle(context.Background(), psc, &db, tl, state, columnOrderSelection("a_add_after")))
+	assert.Empty(t, readTables)
+	if assert.Len(t, tl.tasks, 1) {
+		assert.Equal(t, columnOrderTaskForAddAfter, tl.tasks[0])
+		assert.NotContains(t, tl.tasks[0], "shard")
+	}
+}
+
+// A Serializer that doesn't know the source schema (or a table missing from
+// it) skips the check and leaves the saved order alone.
+func TestColumnOrderCheckSkippedWithoutSourceSchema(t *testing.T) {
+	psc := &lib.PlanetScaleSource{}
+	saved := []string{"id", "a", "b"}
+	state := &lib.SyncState{Keyspaces: map[string]lib.KeyspaceState{
+		"SalesDB": {Streams: map[string]lib.ShardStates{"SalesDB:t": streamWithProgress(t, saved, map[string]string{"-": "MySQL56/old:1-10"})}},
+	}}
+	for _, logger := range []Serializer{
+		&testLogger{},
+		&orderedTestLogger{testLogger: &testLogger{}, columns: map[string][]string{}},
+	} {
+		var readTables []string
+		db := lib.NewTestConnectClient(recordingReadFn(&readTables))
+		assert.NoError(t, (&Sync{}).Handle(context.Background(), psc, &db, logger, state, columnOrderSelection("t")))
+		assert.Equal(t, []string{"t/-"}, readTables)
+		assert.Equal(t, saved, state.Keyspaces["SalesDB"].Streams["SalesDB:t"].ColumnOrder)
+	}
+}
+
+func TestSchemaAwareSerializerSourceColumnOrder(t *testing.T) {
+	sb := NewSchemaBuilder(false)
+	sb.OnKeyspace("SalesDB")
+	sb.OnTable("SalesDB", "customers")
+	sb.OnColumns("SalesDB", "customers", []lib.MysqlColumn{
+		{Name: "id", Type: "bigint", IsPrimaryKey: true},
+		{Name: "newcol", Type: "int"},
+		{Name: "email", Type: "varchar(255)"},
+	})
+	schema, err := sb.(*FiveTranSchemaBuilder).BuildUpdateResponse()
+	assert.NoError(t, err)
+	s := NewSchemaAwareSerializer(&testLogSender{}, "", false, schema.SchemaList, schema.EnumsAndSets)
+	orderer, ok := s.(SourceColumnOrderer)
+	if !assert.True(t, ok) {
+		return
+	}
+	columns, ok := orderer.SourceColumnOrder("SalesDB", "customers")
+	assert.True(t, ok)
+	assert.Equal(t, []string{"id", "newcol", "email"}, columns)
+	_, ok = orderer.SourceColumnOrder("SalesDB", "missing")
+	assert.False(t, ok)
+	_, ok = orderer.SourceColumnOrder("OtherDB", "customers")
+	assert.False(t, ok)
+}
+
+func TestColumnOrderChangedErrorTaskHasNoColumnNames(t *testing.T) {
+	err := &ColumnOrderChangedError{
+		Keyspace: "SalesDB", Table: "a_add_after", Reason: "new column newcol was added before existing column b",
+		Saved: []string{"id", "a", "b"}, Current: []string{"id", "newcol", "a", "b"},
+	}
+	task := resyncTaskMessage(err, "SalesDB", "a_add_after", "")
+	assert.Equal(t, columnOrderTaskForAddAfter, task)
+	assert.False(t, strings.Contains(task, "newcol"))
+}
+
+const columnOrderTrackerTaskForAddAfter = `Re-sync required: a schema change on table "a_add_after" in PlanetScale keyspace "SalesDB" changed the order of its columns ` +
+	`(a column added in the middle of the table, columns reordered, or columns dropped and added), and the keyspace does not track ` +
+	`schema versions, so changes made before the schema change cannot be read with the right column names. ` +
+	`To fix this, enable the VTTablet parameter track_schema_versions for keyspace "SalesDB" in PlanetScale (with schema-version-max-age-seconds ` +
+	`set to 0 or at least as long as the binary log retention), then go to the connection's Settings tab in Fivetran and click "Resync all data".`
+
+// scanByShard answers ScanSchemaHistory per shard and records the cursors it
+// was asked about.
+func scanByShard(verdicts map[string]lib.SchemaHistory, errs map[string]error, scanned *[]string) lib.ScanSchemaFunc {
+	return func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, tc *psdbconnect.TableCursor) (lib.SchemaHistory, error) {
+		*scanned = append(*scanned, tableName+"/"+tc.Shard+"@"+tc.Position)
+		if err := errs[tc.Shard]; err != nil {
+			return lib.SchemaHistory{}, err
+		}
+		return verdicts[tc.Shard], nil
+	}
+}
+
+func historianTestState(t *testing.T, saved []string, positions map[string]string) *lib.SyncState {
+	return &lib.SyncState{Keyspaces: map[string]lib.KeyspaceState{
+		"SalesDB": {Streams: map[string]lib.ShardStates{
+			"SalesDB:a_add_after": streamWithProgress(t, saved, positions),
+			"SalesDB:b_bystander": streamWithProgress(t, []string{"id", "b"}, map[string]string{"-": "MySQL56/old:1-10"}),
+		}},
+	}}
+}
+
+func historianTestLogger(live []string) *orderedTestLogger {
+	return &orderedTestLogger{testLogger: &testLogger{}, columns: map[string][]string{
+		"SalesDB:a_add_after": live,
+		"SalesDB:b_bystander": {"id", "b"},
+	}}
+}
+
+var (
+	historianSaved = []string{"id", "a", "b", "c"}
+	historianLive  = []string{"id", "a", "newcol", "b", "c"}
+	trackedDDL     = lib.SchemaHistory{Verdict: lib.SchemaHistoryTracked, DDL: "RENAME TABLE ..."}
+	untrackedDDL   = lib.SchemaHistory{Verdict: lib.SchemaHistoryUntracked, DDL: "RENAME TABLE `a_add_after` TO ..."}
+	noDDL          = lib.SchemaHistory{Verdict: lib.SchemaHistoryNoDDL}
+)
+
+// Historian on: the column order changed, but the binlog has the schema change
+// followed by a VERSION event, so the table is streamed as usual (no Task) and
+// the new order is recorded, so the next sync does not scan again.
+func TestColumnOrderChangeWithSchemaVersionSyncs(t *testing.T) {
+	for name, verdict := range map[string]lib.SchemaHistory{"tracked": trackedDDL, "cursor past the change": noDDL} {
+		t.Run(name, func(t *testing.T) {
+			psc := &lib.PlanetScaleSource{}
+			state := historianTestState(t, historianSaved, map[string]string{"-": "MySQL56/old:1-10"})
+			tl := historianTestLogger(historianLive)
+			var readTables, scanned []string
+			db := lib.NewTestConnectClient(recordingReadFn(&readTables))
+			db.(*lib.TestConnectClient).ScanSchemaHistoryFn = scanByShard(map[string]lib.SchemaHistory{"-": verdict}, nil, &scanned)
+			assert.NoError(t, (&Sync{}).Handle(context.Background(), psc, &db, tl, state, columnOrderSelection("a_add_after", "b_bystander")))
+			assert.Empty(t, tl.tasks)
+			assert.Empty(t, tl.severes)
+			assert.Equal(t, []string{"a_add_after/-@MySQL56/old:1-10"}, scanned)
+			assert.Equal(t, []string{"a_add_after/-", "b_bystander/-"}, readTables)
+			assert.Equal(t, historianLive, tl.states[len(tl.states)-1].Keyspaces["SalesDB"].Streams["SalesDB:a_add_after"].ColumnOrder)
+			assert.Contains(t, tl.infos, "table SalesDB:a_add_after shard -: "+verdict.Verdict.String())
+
+			scanned, readTables = nil, nil
+			tl = historianTestLogger(historianLive)
+			assert.NoError(t, (&Sync{}).Handle(context.Background(), psc, &db, tl, state, columnOrderSelection("a_add_after", "b_bystander")))
+			assert.Empty(t, scanned, "the order was recorded, so the next sync does not scan")
+			assert.Empty(t, tl.tasks)
+		})
+	}
+}
+
+// Historian off: the schema change has no VERSION event after it. Exactly one
+// Task, telling the customer to enable track_schema_versions and re-sync; the
+// changed table is not streamed and keeps its cursor and saved order, the
+// other table syncs and is checkpointed before the Task.
+func TestColumnOrderChangeWithoutSchemaVersionRaisesTrackerTask(t *testing.T) {
+	psc := &lib.PlanetScaleSource{}
+	state := historianTestState(t, historianSaved, map[string]string{"-": "MySQL56/old:1-10"})
+	for sync := 1; sync <= 2; sync++ {
+		tl := historianTestLogger(historianLive)
+		var readTables, scanned []string
+		db := lib.NewTestConnectClient(recordingReadFn(&readTables))
+		db.(*lib.TestConnectClient).ScanSchemaHistoryFn = scanByShard(map[string]lib.SchemaHistory{"-": untrackedDDL}, nil, &scanned)
+		assert.NoError(t, (&Sync{}).Handle(context.Background(), psc, &db, tl, state, columnOrderSelection("a_add_after", "b_bystander")))
+		assert.Equal(t, []string{"b_bystander/-"}, readTables, "sync %d", sync)
+		if assert.Len(t, tl.tasks, 1) {
+			assert.Equal(t, columnOrderTrackerTaskForAddAfter, tl.tasks[0])
+			assert.NotContains(t, tl.tasks[0], "newcol")
+		}
+		assert.Equal(t, "MySQL56/b_bystander:1-20", lastPosition(t, tl.states, "SalesDB:b_bystander", "-"))
+		assert.Equal(t, "MySQL56/old:1-10", lastPosition(t, tl.states, "SalesDB:a_add_after", "-"))
+		assert.Equal(t, historianSaved, tl.states[len(tl.states)-1].Keyspaces["SalesDB"].Streams["SalesDB:a_add_after"].ColumnOrder)
+		if assert.Len(t, tl.severes, 1) {
+			assert.Contains(t, tl.severes[0], "skipping table SalesDB:a_add_after for the rest of this sync: column order of table a_add_after changed")
+			assert.Contains(t, tl.severes[0], "shard - has the schema change \"RENAME TABLE `a_add_after` TO ...\" with no schema version after it (track_schema_versions is off)")
+		}
+	}
+}
+
+// Sharded: every shard with a saved position is scanned in shard order (a
+// shard without one is skipped). One untracked shard is enough for the Task
+// (one Task, no shard in its text) and no shard of the table is streamed;
+// when every shard is tracked, every shard is streamed.
+func TestColumnOrderChangeSchemaHistoryMultiShard(t *testing.T) {
+	positions := map[string]string{"-40": "MySQL56/s1:1-10", "40-80": "", "80-": "MySQL56/s3:1-10"}
+	for _, tc := range []struct {
+		name        string
+		verdicts    map[string]lib.SchemaHistory
+		wantTask    bool
+		wantScanned []string
+		wantRead    []string
+	}{
+		{
+			name:        "every shard tracked",
+			verdicts:    map[string]lib.SchemaHistory{"-40": trackedDDL, "80-": trackedDDL},
+			wantScanned: []string{"a_add_after/-40@MySQL56/s1:1-10", "a_add_after/80-@MySQL56/s3:1-10"},
+			wantRead:    []string{"a_add_after/-40", "a_add_after/40-80", "a_add_after/80-"},
+		},
+		{
+			name:        "one shard past the change, one tracked",
+			verdicts:    map[string]lib.SchemaHistory{"-40": noDDL, "80-": trackedDDL},
+			wantScanned: []string{"a_add_after/-40@MySQL56/s1:1-10", "a_add_after/80-@MySQL56/s3:1-10"},
+			wantRead:    []string{"a_add_after/-40", "a_add_after/40-80", "a_add_after/80-"},
+		},
+		{
+			name:        "last shard untracked",
+			verdicts:    map[string]lib.SchemaHistory{"-40": trackedDDL, "80-": untrackedDDL},
+			wantTask:    true,
+			wantScanned: []string{"a_add_after/-40@MySQL56/s1:1-10", "a_add_after/80-@MySQL56/s3:1-10"},
+		},
+		{
+			name:        "first shard untracked stops the scan",
+			verdicts:    map[string]lib.SchemaHistory{"-40": untrackedDDL, "80-": trackedDDL},
+			wantTask:    true,
+			wantScanned: []string{"a_add_after/-40@MySQL56/s1:1-10"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			psc := &lib.PlanetScaleSource{}
+			state := &lib.SyncState{Keyspaces: map[string]lib.KeyspaceState{
+				"SalesDB": {Streams: map[string]lib.ShardStates{"SalesDB:a_add_after": streamWithProgress(t, historianSaved, positions)}},
+			}}
+			tl := historianTestLogger(historianLive)
+			var readTables, scanned []string
+			db := lib.NewTestConnectClient(recordingReadFn(&readTables))
+			db.(*lib.TestConnectClient).ScanSchemaHistoryFn = scanByShard(tc.verdicts, nil, &scanned)
+			assert.NoError(t, (&Sync{}).Handle(context.Background(), psc, &db, tl, state, columnOrderSelection("a_add_after")))
+			assert.Equal(t, tc.wantScanned, scanned)
+			slices.Sort(readTables)
+			if tc.wantTask {
+				assert.Empty(t, readTables)
+				if assert.Len(t, tl.tasks, 1) {
+					assert.Equal(t, columnOrderTrackerTaskForAddAfter, tl.tasks[0])
+					assert.NotContains(t, tl.tasks[0], "shard")
+				}
+			} else {
+				assert.Empty(t, tl.tasks)
+				assert.Equal(t, tc.wantRead, readTables)
+			}
+		})
+	}
+}
+
+// The scan could not tell yet (a schema change at the current position the
+// tracker has not recorded yet) or failed: a plain sync error, no Task, so
+// Fivetran retries and the next sync scans again. The other table still syncs.
+func TestColumnOrderChangeSchemaHistoryInconclusiveIsPlainError(t *testing.T) {
+	psc := &lib.PlanetScaleSource{}
+	state := historianTestState(t, historianSaved, map[string]string{"-": "MySQL56/old:1-10"})
+	tl := historianTestLogger(historianLive)
+	var readTables, scanned []string
+	db := lib.NewTestConnectClient(recordingReadFn(&readTables))
+	db.(*lib.TestConnectClient).ScanSchemaHistoryFn = scanByShard(nil, map[string]error{"-": lib.ErrSchemaHistoryInconclusive}, &scanned)
+	err := (&Sync{}).Handle(context.Background(), psc, &db, tl, state, columnOrderSelection("a_add_after", "b_bystander"))
+	if assert.Error(t, err) {
+		assert.Contains(t, err.Error(), "failed to download rows for table : a_add_after")
+		assert.Contains(t, err.Error(), lib.ErrSchemaHistoryInconclusive.Error())
+	}
+	assert.Empty(t, tl.tasks)
+	assert.Equal(t, []string{"b_bystander/-"}, readTables)
+	assert.Equal(t, historianSaved, tl.states[len(tl.states)-1].Keyspaces["SalesDB"].Streams["SalesDB:a_add_after"].ColumnOrder)
+}
+
+func TestColumnOrderTrackerTaskText(t *testing.T) {
+	err := &ColumnOrderChangedError{
+		Keyspace: "SalesDB", Table: "a_add_after", Reason: "new column newcol was added before existing column b",
+		Saved: historianSaved, Current: historianLive, Untracked: true, Shard: "-", DDL: "RENAME TABLE x",
+	}
+	assert.Equal(t, columnOrderTrackerTaskForAddAfter, resyncTaskMessage(err, "SalesDB", "a_add_after", "-"))
 }

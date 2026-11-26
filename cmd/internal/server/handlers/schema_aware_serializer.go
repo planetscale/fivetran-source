@@ -40,6 +40,15 @@ type Serializer interface {
 	FlushBinlogExpirationWarning() error
 }
 
+// SourceColumnOrderer is implemented by a Serializer that knows the source
+// schema read at the start of the sync. SourceColumnOrder returns every column
+// of the table in table order, and false if the table is not in the schema.
+// The sync handler uses it to detect column order changes (see
+// lib.ColumnOrderChange); a Serializer without it skips that check.
+type SourceColumnOrderer interface {
+	SourceColumnOrder(keyspace, table string) ([]string, bool)
+}
+
 type LogSender interface {
 	Send(*fivetransdk.UpdateResponse) error
 }
@@ -214,6 +223,34 @@ func NewSchemaAwareSerializer(sender LogSender, prefix string, serializeTinyIntA
 		enumsAndSets:           enumsAndSets,
 		serializers:            map[string]*recordSerializer{},
 	}
+}
+
+// SourceColumnOrder implements SourceColumnOrderer from the schema the
+// serializer was built with (BuildSchema at the start of the sync, columns in
+// ordinal_position order).
+func (l *schemaAwareSerializer) SourceColumnOrder(keyspace, table string) ([]string, bool) {
+	if l.schemaList == nil {
+		return nil, false
+	}
+	for _, schema := range l.schemaList.Schemas {
+		if schema.Name != keyspace {
+			continue
+		}
+		for _, t := range schema.Tables {
+			if t.Name != table {
+				continue
+			}
+			if len(t.Columns) == 0 {
+				return nil, false
+			}
+			columns := make([]string, 0, len(t.Columns))
+			for _, c := range t.Columns {
+				columns = append(columns, c.Name)
+			}
+			return columns, true
+		}
+	}
+	return nil, false
 }
 
 func (l *schemaAwareSerializer) Info(msg string) error {

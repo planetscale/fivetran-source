@@ -151,6 +151,25 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 	logger.Info(fmt.Sprintf("%sFiltering with columns %s", preamble, strings.Join(existingColumns, ",")))
 	logger.Info(fmt.Sprintf("%sUsing read timeout: %v", preamble, readDuration))
 
+	// streamColumns is what the VStream filter asks for. It is existingColumns,
+	// except while replaying binlog events written before a column was added.
+	// PlanetScale applies schema changes with Vitess Online DDL: the ALTER and
+	// the backfill run on a shadow table (_vt_vrp_<uuid>_<time>_) that never
+	// matches this table's filter, and the only statement that touches the
+	// table itself is the cut-over
+	//
+	//	RENAME TABLE `t` TO `_vt_hld_…_`, `_vt_vrp_…_` TO `t`, `_vt_hld_…_` TO `_vt_vrp_…_`
+	//
+	// Row events for t before the cut-over have the old layout, but vttablet
+	// resolves the filter's column names against the current schema cut down to
+	// the event's column count, so a column the cut-over added is "not found in
+	// table t". That column is then left out until the stream reaches the
+	// cut-over (a DDL event, see sync), and the stream restarts right after it
+	// with every column.
+	streamColumns := existingColumns
+	stopAtDDL := false
+	schemaChangeRetries := 0
+
 	for {
 		logger.Info(preamble + "peeking to see if there's any new rows")
 		latestCursorPosition, lcErr := p.getLatestCursorPosition(ctx, currentPosition.Shard, currentPosition.Keyspace, tableName, ps, tabletType)
@@ -169,7 +188,7 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 		logger.Info(fmt.Sprintf(preamble+"syncing rows with cursor [%v]", currentPosition))
 
 		previousPosition := cloneTableCursor(currentPosition)
-		currentPosition, err = p.sync(ctx, logger, tableName, existingColumns, currentPosition, latestCursorPosition, ps, tabletType, readDuration, onResult, onCursor, onUpdate)
+		currentPosition, err = p.sync(ctx, logger, tableName, streamColumns, stopAtDDL, currentPosition, latestCursorPosition, ps, tabletType, readDuration, onResult, onCursor, onUpdate)
 		madeProgress := tableCursorMadeProgress(previousPosition, currentPosition)
 		if tableCursorHasProgress(currentPosition) {
 			currentSerializedCursor, sErr = TableCursorToSerializedCursor(currentPosition)
@@ -177,6 +196,13 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 				// if we failed to serialize here, we should bail.
 				return currentSerializedCursor, errors.Wrap(sErr, "unable to serialize current position")
 			}
+		}
+		if errors.Is(err, errPassedSchemaChange) {
+			// The cursor is now past the DDL, so the table has every column again.
+			logger.Info(fmt.Sprintf("%spassed the schema change, resuming with columns %s", preamble, strings.Join(existingColumns, ",")))
+			streamColumns = existingColumns
+			stopAtDDL = false
+			continue
 		}
 		if err != nil {
 			if s, ok := status.FromError(err); ok {
@@ -213,6 +239,19 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 							Shard:    currentPosition.Shard,
 							Table:    tableName,
 							Err:      err,
+						}
+					}
+
+					// A column added by a schema change after the saved position: leave
+					// it out until the stream passes the cut-over (see streamColumns).
+					if missing, ok := VStreamMissingFilterColumn(err); ok && schemaChangeRetries < maxSchemaChangeRetries {
+						if reduced, removed := withoutColumn(streamColumns, missing); removed && len(reduced) > 0 {
+							schemaChangeRetries++
+							logger.Warning(fmt.Sprintf("%scolumn %s did not exist yet at the saved position (it was added by a later schema change); "+
+								"streaming without it until the stream passes the schema change (attempt %d/%d)", preamble, missing, schemaChangeRetries, maxSchemaChangeRetries))
+							streamColumns = reduced
+							stopAtDDL = true
+							continue
 						}
 					}
 
@@ -291,7 +330,7 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 	}
 }
 
-func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableName string, columns []string, tc *psdbconnect.TableCursor, stopPosition string, ps PlanetScaleSource, tabletType psdbconnect.TabletType, readDuration time.Duration, onResult OnResult, onCursor OnCursor, onUpdate OnUpdate) (*psdbconnect.TableCursor, error) {
+func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableName string, columns []string, stopAtDDL bool, tc *psdbconnect.TableCursor, stopPosition string, ps PlanetScaleSource, tabletType psdbconnect.TabletType, readDuration time.Duration, onResult OnResult, onCursor OnCursor, onUpdate OnUpdate) (*psdbconnect.TableCursor, error) {
 	ctx, cancel := context.WithTimeout(ctx, readDuration)
 	defer cancel()
 
@@ -341,6 +380,31 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 			}
 			recordsSinceCheckpoint += eventRecords
 			copyCompleted = copyCompleted || eventCopyCompleted
+			// Log only: a VERSION event is vttablet's insert into
+			// _vt.schema_version, which only happens with the schema tracker
+			// (track_schema_versions) on; a DDL event is a schema change on this
+			// table (for Online DDL, the cut-over RENAME).
+			switch event.Type {
+			case binlogdatapb.VEventType_VERSION:
+				logger.Info(preamble + "VERSION event: the vttablet schema tracker recorded a schema version")
+			case binlogdatapb.VEventType_DDL:
+				logger.Info(fmt.Sprintf("%sDDL event: %q", preamble, event.Statement))
+			}
+			if stopAtDDL && event.Type == binlogdatapb.VEventType_DDL {
+				// vttablet only sends DDL events for statements that name this table
+				// (mustSendDDL); for Online DDL that is the cut-over RENAME, since the
+				// shadow table's CREATE/ALTER arrive as OTHER events. The DDL's GTID
+				// arrives (as a VGTID) just before it, so tc already points past the
+				// RENAME: a stream restarted from tc only sees the new table, and a
+				// fresh vttablet stream has no table-map plans from before the swap.
+				logger.Info(fmt.Sprintf("%sstopping at schema change %q to restart with all selected columns", preamble, event.Statement))
+				if onCursor != nil {
+					if err := onCursor(tc); err != nil {
+						return tc, status.Error(codes.Internal, "unable to serialize cursor")
+					}
+				}
+				return tc, errPassedSchemaChange
+			}
 		}
 
 		// A single VGTID can appear in multiple ordered responses. Once we reach
@@ -737,6 +801,12 @@ func handleVStreamRows(tableName string, rowEvent *binlogdatapb.RowEvent, fields
 	if len(fields) == 0 {
 		return 0, status.Error(codes.Internal, fmt.Sprintf("missing VStream fields for table %s", rowEvent.TableName))
 	}
+	if vstreamFieldsArePositional(fields) {
+		// vttablet could not match the event to a table schema (for example after
+		// a column type change) and only knows positions (@1, @2, ...). Nothing
+		// would match the column selection, so fail instead of syncing empty rows.
+		return 0, fmt.Errorf("cannot determine table columns for %s: event has positional column names only (%s)", tableName, fields[0].Name)
+	}
 
 	records := 0
 	for _, change := range rowEvent.RowChanges {
@@ -1040,7 +1110,10 @@ func IsVStreamSchemaIncompatibilityError(err error) bool {
 	if strings.Contains(message, "cannot determine table columns for ") && strings.Contains(message, ": event has ") {
 		return true
 	}
-	if !strings.Contains(message, "Code: FAILED_PRECONDITION") {
+	// vtgate can rewrap the vttablet error ("persistent error in vstream ...;
+	// giving up: target: ...: vttablet: rpc error: code = FailedPrecondition"),
+	// so accept either rendering of the FAILED_PRECONDITION code.
+	if !strings.Contains(message, "Code: FAILED_PRECONDITION") && !strings.Contains(message, "code = FailedPrecondition") {
 		return false
 	}
 	if !strings.Contains(message, "failed to build table replication plan") {
@@ -1049,4 +1122,120 @@ func IsVStreamSchemaIncompatibilityError(err error) bool {
 
 	return strings.Contains(message, "cannot use column names in vstream filter") ||
 		(strings.Contains(message, "column ") && strings.Contains(message, " not found in table "))
+}
+
+// errPassedSchemaChange ends a sync that streamed with a reduced column list
+// once it passed a DDL for the table (the Online DDL cut-over RENAME); Read
+// then restarts with every column.
+var errPassedSchemaChange = errors.New("vstream passed a schema change for the table")
+
+// maxSchemaChangeRetries bounds how often one Read leaves a column out of the
+// VStream filter, i.e. how many column-adding cut-overs it can step over.
+var maxSchemaChangeRetries = 10
+
+var vstreamMissingColumnPattern = regexp.MustCompile("column (`(?:[^`]|``)+`|[^\\s`]+) not found in table ")
+
+// VStreamMissingFilterColumn returns the column that vttablet could not find
+// when it built the replication plan for an event, e.g.
+//
+//	failed to build table replication plan for table t: column c not found in table t
+//
+// This happens when the VStream filter names a column that was added after
+// the position the stream resumes from.
+func VStreamMissingFilterColumn(err error) (string, bool) {
+	if err == nil {
+		return "", false
+	}
+	message := err.Error()
+	if !strings.Contains(message, "failed to build table replication plan") {
+		return "", false
+	}
+	m := vstreamMissingColumnPattern.FindStringSubmatch(message)
+	if m == nil {
+		return "", false
+	}
+	column := m[1]
+	if strings.HasPrefix(column, "`") {
+		column = strings.ReplaceAll(column[1:len(column)-1], "``", "`")
+	}
+	return column, true
+}
+
+// withoutColumn returns columns without column (case-insensitive, like MySQL
+// column names) and whether it was there.
+func withoutColumn(columns []string, column string) ([]string, bool) {
+	reduced := make([]string, 0, len(columns))
+	removed := false
+	for _, c := range columns {
+		if strings.EqualFold(strings.TrimSpace(c), column) {
+			removed = true
+			continue
+		}
+		reduced = append(reduced, c)
+	}
+	return reduced, removed
+}
+
+func vstreamFieldsArePositional(fields []*query.Field) bool {
+	for _, f := range fields {
+		if !strings.HasPrefix(f.GetName(), "@") {
+			return false
+		}
+	}
+	return len(fields) > 0
+}
+
+// maxVStreamErrorReasonLength caps VStreamErrorReason; Fivetran cuts long
+// error messages, so the reason has to fit well inside what survives.
+const maxVStreamErrorReasonLength = 400
+
+var (
+	vterrorCodePattern = regexp.MustCompile(`Code: [A-Z_]+`)
+	gtidSetPattern     = regexp.MustCompile(`\b(MySQL56|MariaDB|FilePos)/(?:[0-9A-Za-z_.:,-]*[0-9A-Za-z])?`)
+)
+
+// VStreamErrorReason returns what vttablet said went wrong in a VStream error,
+// or "" if the error has no vttablet part. vtgate puts the whole GTID set of
+// the saved position in front of the reason ("error starting stream from shard
+// GTID ...: persistent error in vstream ...; giving up: target: ...: vttablet:
+// rpc error: ... Code: FAILED_PRECONDITION\ncolumn c not found in table t"),
+// and that set grows with every primary failover, so a log or error that
+// leads with the raw message loses the reason when it is cut. The reason is
+// taken from the last vterrors "Code: ..." (or else the last "vttablet: "),
+// with any GTID set in it replaced by "<flavor>/…" and its lines joined.
+func VStreamErrorReason(err error) string {
+	if err == nil {
+		return ""
+	}
+	message := err.Error()
+	var reason string
+	if locs := vterrorCodePattern.FindAllStringIndex(message, -1); len(locs) > 0 {
+		reason = message[locs[len(locs)-1][0]:]
+	} else if i := strings.LastIndex(message, "vttablet: "); i >= 0 {
+		reason = message[i+len("vttablet: "):]
+	} else {
+		return ""
+	}
+	reason = gtidSetPattern.ReplaceAllString(reason, "$1/…")
+	var lines []string
+	for _, line := range strings.Split(reason, "\n") {
+		if line = strings.Join(strings.Fields(line), " "); line != "" {
+			lines = append(lines, line)
+		}
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	reason = lines[0]
+	if len(lines) > 1 {
+		sep := "; "
+		if vterrorCodePattern.FindString(lines[0]) == lines[0] {
+			sep = " " // "Code: FAILED_PRECONDITION column c not found in table t; ..."
+		}
+		reason += sep + strings.Join(lines[1:], "; ")
+	}
+	if r := []rune(reason); len(r) > maxVStreamErrorReasonLength {
+		reason = string(r[:maxVStreamErrorReasonLength]) + "…"
+	}
+	return reason
 }

@@ -573,7 +573,8 @@ func TestUpdateReturnsErrors(t *testing.T) {
 		}
 		rows = append(rows, resp)
 	}
-	assert.Len(t, rows, 1)
+	// TRUNCATE plus the final checkpoint written after all tables ran.
+	assert.Len(t, rows, 2)
 	assert.NotNil(t, tErr)
 	assert.Equal(t, "rpc error: code = Internal desc = failed to download rows for table : customers , error : unable to serialize: DataType.BIG_INT", tErr.Error())
 }

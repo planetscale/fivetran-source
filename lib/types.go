@@ -108,6 +108,15 @@ func stringPtr(s string) *string {
 
 type ShardStates struct {
 	Shards map[string]*SerializedCursor `json:"shards"`
+	// ColumnOrder is every column of the source table (not only the columns
+	// selected in Fivetran), in table order, as of the last sync that read the
+	// table. The next sync compares it with the live order (ColumnOrderChange)
+	// to catch a column added in the middle of the table, or columns
+	// reordered, after the saved cursors. It is per table: every shard has the
+	// same schema. State without the field (older connector versions, or a
+	// "Resync all data", which starts from empty state) skips the comparison
+	// and records the order; older versions ignore the field.
+	ColumnOrder []string `json:"column_order,omitempty"`
 }
 
 type KeyspaceState struct {
