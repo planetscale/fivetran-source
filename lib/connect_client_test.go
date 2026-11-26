@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+
 	vtschema "vitess.io/vitess/go/vt/schema"
 
 	binlogdatapb "vitess.io/vitess/go/vt/proto/binlogdata"
