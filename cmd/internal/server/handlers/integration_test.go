@@ -511,15 +511,40 @@ func TestIntegrationMidTableDDLRaisesResyncTask(t *testing.T) {
 		"alter table %s add column middle_col varchar(64) null after before_col",
 		quoteIdent(tableName),
 	))
+	ddlAt := time.Now()
 	mustExec(t, ctx, db, fmt.Sprintf(
 		"insert into %s (id, before_col, middle_col, after_col) values (2, 'before-new', 'middle-new', 'after-new')",
 		quoteIdent(tableName),
 	))
 
-	// Snapshot the cursors before the failing sync; Sync.Handle mutates state in place.
+	// Snapshot the cursors before the failing syncs; Sync.Handle mutates state in place.
 	beforeCursors := integrationStateTableCursors(t, state, psc.Database, tableName)
 
+	// The integration keyspace does not track schema versions. Right after the
+	// schema change the connector cannot tell yet whether the schema tracker
+	// will record it, so it skips the table without a Task and checks again on
+	// the next sync.
 	sender, failedState, err := runIntegrationSyncWithError(t, psc, tableName, columns, state)
+	if err == nil || !strings.Contains(err.Error(), lib.ErrSchemaHistoryInconclusive.Error()) {
+		t.Fatalf("expected the first sync right after the schema change to be inconclusive, got %v", err)
+	}
+	if tasks := sender.tasks(); len(tasks) != 0 {
+		t.Fatalf("expected no Task while the schema history is inconclusive, got %q", tasks)
+	}
+	assertIntegrationRecordCount(t, sender.recordsForTable(tableName), 0)
+	for shard, before := range beforeCursors {
+		if after := integrationStateTableCursors(t, failedState, psc.Database, tableName)[shard]; !proto.Equal(before, after) {
+			t.Fatalf("inconclusive sync advanced cursor for shard %s: before %v, after %v", shard, before, after)
+		}
+	}
+
+	// Once the schema change is older than the grace the tracker gets to
+	// record it (lib.schemaVersionGrace, 2m), the next sync raises the Task.
+	if wait := integrationSchemaVersionGrace - time.Since(ddlAt); wait > 0 {
+		t.Logf("waiting %s for the schema change to pass the schema version grace", wait.Round(time.Second))
+		time.Sleep(wait)
+	}
+	sender, failedState, err = runIntegrationSyncWithError(t, psc, tableName, columns, failedState)
 	if err != nil {
 		t.Fatalf("expected mid-table DDL to raise a Fivetran Task and return nil, got %s: %v", status.Code(err), err)
 	}
@@ -563,7 +588,9 @@ func TestIntegrationMidTableDDLRaisesResyncTask(t *testing.T) {
 // A cursor that is behind an ADD COLUMN at the end of the table, with the new
 // column selected, fails in vstreamer with "column ... not found in table" while
 // replaying the pre-DDL events. This is what stalled production connections.
-func TestIntegrationAddColumnBehindCursorRaisesResyncTask(t *testing.T) {
+// The connector streams without the new column up to the schema change and
+// then resumes with all selected columns, so the sync continues without a Task.
+func TestIntegrationAddColumnBehindCursorSyncsThrough(t *testing.T) {
 	psc := loadIntegrationSource(t)
 	ctx := context.Background()
 	tableName := integrationTableName(t)
@@ -585,17 +612,24 @@ func TestIntegrationAddColumnBehindCursorRaisesResyncTask(t *testing.T) {
 
 	sender, _, err := runIntegrationSyncWithError(t, psc, tableName, []string{"id", "before_col", "added_col"}, state)
 	if err != nil {
-		t.Fatalf("expected ADD COLUMN behind the cursor to raise a Fivetran Task and return nil, got %s: %v", status.Code(err), err)
+		t.Fatalf("expected ADD COLUMN behind the cursor to sync through, got %s: %v", status.Code(err), err)
 	}
-	tasks := sender.tasks()
-	if len(tasks) != 1 {
-		t.Fatalf("expected exactly one Task, got %d: %q", len(tasks), tasks)
+	if tasks := sender.tasks(); len(tasks) != 0 {
+		t.Fatalf("expected no Task for a column added at the end of the table, got %q", tasks)
 	}
-	for _, want := range []string{"Re-sync required", tableName, "Resync all data"} {
-		if !strings.Contains(tasks[0], want) {
-			t.Fatalf("expected Task to contain %q, got %q", want, tasks[0])
-		}
+
+	model := map[int64]map[string]any{}
+	applyIntegrationRecords(t, model, sender.recordsForTable(tableName))
+	assertIntegrationRowCount(t, model, 2)
+	if got := model[1]["before_col"]; got != "old" {
+		t.Fatalf("row 1 (written before the schema change): expected before_col %q, got %v (row %v)", "old", got, model[1])
 	}
+	if got, ok := model[1]["added_col"]; ok && got != nil {
+		t.Fatalf("row 1 (written before the schema change): expected no added_col value, got %v", got)
+	}
+	assertIntegrationRowsContain(t, model, map[int64]map[string]any{
+		2: {"id": int64(2), "before_col": "new", "added_col": "new"},
+	}, []int64{2})
 }
 
 func TestIntegrationStressBurstLoad(t *testing.T) {
@@ -687,6 +721,10 @@ func TestIntegrationStressBurstLoad(t *testing.T) {
 		state = nextState
 	}
 }
+
+// integrationSchemaVersionGrace is lib.schemaVersionGrace (2m) plus a margin
+// for clock skew between the test runner and the database's binlog timestamps.
+const integrationSchemaVersionGrace = 2*time.Minute + 15*time.Second
 
 func loadIntegrationSource(t *testing.T) lib.PlanetScaleSource {
 	t.Helper()
