@@ -169,7 +169,12 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 	// with every column.
 	streamColumns := existingColumns
 	stopAtDDL := false
-	schemaChangeRetries := 0
+	// cutOversSteppedOver counts the column-adding cut-overs this Read
+	// stepped over. One cut-over can add several columns: vttablet reports
+	// them one at a time, and each is left out without counting another
+	// cut-over (stopAtDDL is still set), which is bounded by the number of
+	// columns since every retry leaves one out.
+	cutOversSteppedOver := 0
 
 	for {
 		logger.Info(preamble + "peeking to see if there's any new rows")
@@ -249,11 +254,13 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 					// schema tracker vttablet also reports the last column as "not found"
 					// after a column was added in the middle of the table, and leaving it
 					// out would shift the older values into the wrong columns.
-					if missing, ok := VStreamMissingFilterColumn(err); ok && AddedColumnRetryAllowed(ctx) && schemaChangeRetries < maxSchemaChangeRetries {
+					if missing, ok := VStreamMissingFilterColumn(err); ok && AddedColumnRetryAllowed(ctx) && (stopAtDDL || cutOversSteppedOver < maxSchemaChangeRetries) {
 						if reduced, removed := withoutColumn(streamColumns, missing); removed && len(reduced) > 0 {
-							schemaChangeRetries++
+							if !stopAtDDL {
+								cutOversSteppedOver++
+							}
 							logger.Warning(fmt.Sprintf("%scolumn %s did not exist yet at the saved position (it was added by a later schema change); "+
-								"streaming without it until the stream passes the schema change (attempt %d/%d)", preamble, missing, schemaChangeRetries, maxSchemaChangeRetries))
+								"streaming without it until the stream passes the schema change (schema change %d/%d)", preamble, missing, cutOversSteppedOver, maxSchemaChangeRetries))
 							streamColumns = reduced
 							stopAtDDL = true
 							continue
@@ -991,6 +998,39 @@ func (p connectClient) filterExistingColumns(ctx context.Context, ps PlanetScale
 	return existingColumns, err
 }
 
+// ColumnOrderReader is implemented by a ConnectClient that can read a table's
+// live column order (table order) when the sync gets to the table. The sync
+// handler compares and saves that order rather than the one in the schema
+// read at the start of the sync, which can be hours older on a large
+// connection: an order read before the table's binlog positions are read is
+// never ahead of the cursors, and one read just before is rarely behind them.
+type ColumnOrderReader interface {
+	ColumnOrder(ctx context.Context, keyspace, tableName string) ([]string, error)
+}
+
+var _ ColumnOrderReader = connectClient{}
+
+// ErrColumnOrderUnavailable: the client has no MySQL connection to read the
+// column order with.
+var ErrColumnOrderUnavailable = errors.New("column order is not available")
+
+// ColumnOrder returns every column of the table in table order
+// (information_schema ordinal_position), or ErrColumnOrderUnavailable.
+func (p connectClient) ColumnOrder(ctx context.Context, keyspace, tableName string) ([]string, error) {
+	if p.Mysql == nil || *p.Mysql == nil {
+		return nil, ErrColumnOrderUnavailable
+	}
+	columns, err := (*p.Mysql).GetKeyspaceTableColumns(ctx, keyspace, tableName)
+	if err != nil {
+		return nil, err
+	}
+	order := make([]string, 0, len(columns))
+	for _, c := range columns {
+		order = append(order, c.Name)
+	}
+	return order, nil
+}
+
 func (p connectClient) getLatestCursorPosition(ctx context.Context, shard, keyspace string, tableName string, ps PlanetScaleSource, tabletType psdbconnect.TabletType) (string, error) {
 	timeout := 45 * time.Second
 	ctx, cancel := context.WithTimeout(ctx, timeout)
@@ -1161,8 +1201,8 @@ func AddedColumnRetryAllowed(ctx context.Context) bool {
 	return allowed
 }
 
-// maxSchemaChangeRetries bounds how often one Read leaves a column out of the
-// VStream filter, i.e. how many column-adding cut-overs it can step over.
+// maxSchemaChangeRetries bounds how many column-adding cut-overs one Read can
+// step over (each may add any number of columns).
 var maxSchemaChangeRetries = 10
 
 var vstreamMissingColumnPattern = regexp.MustCompile("column (`(?:[^`]|``)+`|[^\\s`]+) not found in table ")

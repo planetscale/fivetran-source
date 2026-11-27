@@ -1641,6 +1641,7 @@ func TestIsConnectionWideError(t *testing.T) {
 	}{
 		{status.Error(codes.Unauthenticated, "invalid credentials"), true},
 		{errors.Wrap(status.Error(codes.PermissionDenied, "denied"), "Unable to get latest cursor position"), true},
+		{fmt.Errorf("%w: %w", lib.ErrSchemaHistoryPositionCheck, status.Error(codes.Unauthenticated, "invalid credentials")), true},
 		{status.Error(codes.Unavailable, `connection error: desc = "transport: Error while dialing: dial tcp: lookup aws.connect.psdb.cloud: no such host"`), true},
 		{status.Error(codes.Unavailable, "target: SalesDB.-.primary: vttablet: rpc error: code = Unavailable desc = connection error: desc = \"transport: ...\""), false},
 		{status.Error(codes.Unavailable, "no healthy tablet available for 'keyspace:\"SalesDB\" shard:\"-\" tablet_type:PRIMARY'"), false},
@@ -1649,4 +1650,180 @@ func TestIsConnectionWideError(t *testing.T) {
 	} {
 		assert.Equal(t, tc.want, isConnectionWideError(tc.err), "%v", tc.err)
 	}
+}
+
+// tabletNotFoundForTest is vtgate's tablet picker giving up, which Read and
+// the scan report as suspected binlog expiration when it follows a
+// successful position check.
+var tabletNotFoundForTest = errors.New("rpc error: code = Unknown desc = failed to find a PRIMARY tablet for VStream in SalesDB/- within the planetscale_operator_default cell(s): context has expired")
+
+// Second review, finding 3: once the sync's context is done, every remaining
+// table would fail the same way. The sync stops at once, and an error from the
+// cut-short Read is not classified (no suspected-expiry mark, no Task).
+func TestCancelledSyncStopsWithoutMarkingOrTask(t *testing.T) {
+	psc := &lib.PlanetScaleSource{}
+	state := historianTestState(t, historianSaved, map[string]string{"-": "MySQL56/old:1-10"})
+	tl := historianTestLogger(historianSaved)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var readTables []string
+	db := lib.NewTestConnectClient(func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string,
+		cur *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
+	) (*lib.SerializedCursor, error) {
+		readTables = append(readTables, tableName+"/"+cur.Shard)
+		cancel()
+		return nil, &lib.SuspectedBinlogExpirationError{Keyspace: cur.Keyspace, Shard: cur.Shard, Table: tableName, Err: tabletNotFoundForTest}
+	})
+	err := (&Sync{}).Handle(ctx, psc, &db, tl, state, columnOrderSelection("a_add_after", "b_bystander"))
+	assert.Equal(t, codes.Canceled, status.Code(err))
+	assert.Equal(t, []string{"a_add_after/-"}, readTables)
+	assert.Empty(t, tl.tasks)
+	assert.False(t, state.Keyspaces["SalesDB"].Streams["SalesDB:a_add_after"].Shards["-"].HasSuspectedBinlogExpiration())
+}
+
+// Second review, finding 3 (scan path): a schema history scan cut short by
+// the cancelled sync stops the sync too.
+func TestCancelledSyncDuringSchemaHistoryScanStops(t *testing.T) {
+	psc := &lib.PlanetScaleSource{}
+	state := historianTestState(t, historianSaved, map[string]string{"-": "MySQL56/old:1-10"})
+	tl := historianTestLogger(historianLive)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var readTables []string
+	db := lib.NewTestConnectClient(recordingReadFn(&readTables))
+	db.(*lib.TestConnectClient).ScanSchemaHistoryFn = func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, tc *psdbconnect.TableCursor) (lib.SchemaHistory, error) {
+		cancel()
+		return lib.SchemaHistory{}, errors.Wrap(lib.ErrSchemaHistoryInconclusive, context.Canceled.Error())
+	}
+	err := (&Sync{}).Handle(ctx, psc, &db, tl, state, columnOrderSelection("a_add_after", "b_bystander"))
+	assert.Equal(t, codes.Canceled, status.Code(err))
+	assert.Empty(t, readTables)
+	assert.Empty(t, tl.tasks)
+}
+
+// outputFailingLogger fails every record send the way schemaAwareSerializer
+// does when Fivetran's output stream is broken.
+type outputFailingLogger struct {
+	*orderedTestLogger
+}
+
+func (l *outputFailingLogger) Record(*sqltypes.Result, *fivetransdk.SchemaSelection, *fivetransdk.TableSelection, lib.Operation) error {
+	return &OutputStreamError{Err: status.Error(codes.Unavailable, "transport is closing")}
+}
+
+// Second review, finding 4: a failed send to Fivetran ends the sync; the
+// remaining tables are not streamed into a broken stream.
+func TestOutputStreamFailureEndsTheSync(t *testing.T) {
+	psc := &lib.PlanetScaleSource{}
+	state := historianTestState(t, historianSaved, map[string]string{"-": "MySQL56/old:1-10"})
+	tl := &outputFailingLogger{historianTestLogger(historianSaved)}
+	var readTables []string
+	db := lib.NewTestConnectClient(func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string,
+		cur *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
+	) (*lib.SerializedCursor, error) {
+		readTables = append(readTables, tableName+"/"+cur.Shard)
+		if err := onResult(sqltypes.MakeTestResult(sqltypes.MakeTestFields("id", "int64"), "1"), lib.OpType_Insert); err != nil {
+			// What lib.Read does with a callback error (rowCallbackError).
+			return nil, fmt.Errorf("unable to serialize row: %w", err)
+		}
+		return nil, nil
+	})
+	err := (&Sync{}).Handle(context.Background(), psc, &db, tl, state, columnOrderSelection("a_add_after", "b_bystander"))
+	var ose *OutputStreamError
+	assert.True(t, errors.As(err, &ose), "got %v", err)
+	assert.Equal(t, codes.Unavailable, status.Code(err))
+	assert.Equal(t, []string{"a_add_after/-"}, readTables)
+	assert.Empty(t, tl.tasks)
+}
+
+func TestSchemaAwareSerializerSendFailureIsOutputStreamError(t *testing.T) {
+	sender := &testLogSender{sendError: status.Error(codes.Unavailable, "transport is closing")}
+	l := NewSchemaAwareSerializer(sender, "test", false, nil, nil)
+	for name, err := range map[string]error{
+		"State":            l.State(lib.SyncState{}),
+		"SendTask":         l.SendTask("task"),
+		"SendWarningAlert": l.SendWarningAlert("warning"),
+		"Truncate":         l.Truncate(&fivetransdk.SchemaSelection{SchemaName: "ks"}, &fivetransdk.TableSelection{TableName: "t"}),
+	} {
+		var ose *OutputStreamError
+		assert.True(t, errors.As(err, &ose), "%s: got %v", name, err)
+		assert.Equal(t, codes.Unavailable, status.Code(err), name)
+	}
+}
+
+// Second review, finding 5: when the scan cannot even read the current
+// position (no tablet, e.g. during a long reparent), that says nothing about
+// the saved position: a plain error on every sync, never the expired-binlogs
+// Task.
+func TestColumnOrderChangeScanPositionCheckFailureIsNeverSuspectedExpiry(t *testing.T) {
+	psc := &lib.PlanetScaleSource{}
+	state := historianTestState(t, historianSaved, map[string]string{"-": "MySQL56/old:1-10"})
+	peekFailed := fmt.Errorf("%w: %w", lib.ErrSchemaHistoryPositionCheck, tabletNotFoundForTest)
+	for sync := 1; sync <= 3; sync++ {
+		tl := historianTestLogger(historianLive)
+		var readTables, scanned []string
+		db := lib.NewTestConnectClient(recordingReadFn(&readTables))
+		db.(*lib.TestConnectClient).ScanSchemaHistoryFn = scanByShard(nil, map[string]error{"-": peekFailed}, &scanned)
+		err := (&Sync{}).Handle(context.Background(), psc, &db, tl, state, columnOrderSelection("a_add_after", "b_bystander"))
+		assert.Error(t, err, "sync %d", sync)
+		assert.NotContains(t, err.Error(), "a re-sync Task is raised", "sync %d", sync)
+		assert.Empty(t, tl.tasks, "sync %d", sync)
+		assert.Equal(t, []string{"b_bystander/-"}, readTables, "sync %d", sync)
+		assert.False(t, state.Keyspaces["SalesDB"].Streams["SalesDB:a_add_after"].Shards["-"].HasSuspectedBinlogExpiration(), "sync %d", sync)
+	}
+}
+
+// Second review, finding 7: the live order is read again when the sync gets
+// to the table, not taken from the schema read at the start of the sync. A
+// schema change in between is checked (here: the column added in the middle
+// after the sync started), and the order saved is the fresh one.
+func TestColumnOrderReadAgainWhenTheSyncGetsToTheTable(t *testing.T) {
+	for name, tc := range map[string]struct {
+		verdict   lib.SchemaHistory
+		wantRead  bool
+		wantSaved []string
+	}{
+		"tracked":   {trackedDDL, true, historianLive},
+		"untracked": {untrackedDDL, false, historianSaved},
+	} {
+		t.Run(name, func(t *testing.T) {
+			psc := &lib.PlanetScaleSource{}
+			state := historianTestState(t, historianSaved, map[string]string{"-": "MySQL56/old:1-10"})
+			// The schema read at the start of the sync still has the saved order.
+			tl := historianTestLogger(historianSaved)
+			var readTables, scanned []string
+			db := lib.NewTestConnectClient(recordingReadFn(&readTables))
+			db.(*lib.TestConnectClient).ScanSchemaHistoryFn = scanByShard(map[string]lib.SchemaHistory{"-": tc.verdict}, nil, &scanned)
+			db.(*lib.TestConnectClient).ColumnOrderFn = func(ctx context.Context, keyspace, table string) ([]string, error) {
+				if table == "a_add_after" {
+					return historianLive, nil
+				}
+				return []string{"id", "b"}, nil
+			}
+			assert.NoError(t, (&Sync{}).Handle(context.Background(), psc, &db, tl, state, columnOrderSelection("a_add_after", "b_bystander")))
+			assert.Equal(t, []string{"a_add_after/-@MySQL56/old:1-10"}, scanned)
+			assert.Equal(t, tc.wantRead, slices.Contains(readTables, "a_add_after/-"))
+			assert.Equal(t, tc.wantSaved, state.Keyspaces["SalesDB"].Streams["SalesDB:a_add_after"].ColumnOrder)
+			if !tc.wantRead {
+				assert.Len(t, tl.tasks, 1)
+			}
+		})
+	}
+}
+
+// If the fresh read fails, the order from the start of the sync is used (it
+// is older, so never ahead of the cursors).
+func TestColumnOrderFallsBackToSourceSchemaWhenFreshReadFails(t *testing.T) {
+	psc := &lib.PlanetScaleSource{}
+	state := historianTestState(t, historianSaved, map[string]string{"-": "MySQL56/old:1-10"})
+	tl := historianTestLogger(historianSaved)
+	var readTables []string
+	db := lib.NewTestConnectClient(recordingReadFn(&readTables))
+	db.(*lib.TestConnectClient).ColumnOrderFn = func(ctx context.Context, keyspace, table string) ([]string, error) {
+		return nil, errors.New("information_schema unavailable")
+	}
+	assert.NoError(t, (&Sync{}).Handle(context.Background(), psc, &db, tl, state, columnOrderSelection("a_add_after", "b_bystander")))
+	assert.Equal(t, []string{"a_add_after/-", "b_bystander/-"}, readTables)
+	assert.Equal(t, historianSaved, state.Keyspaces["SalesDB"].Streams["SalesDB:a_add_after"].ColumnOrder)
+	assert.Contains(t, strings.Join(tl.infos, "\n"), "could not read the live column order")
 }

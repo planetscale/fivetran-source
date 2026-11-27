@@ -19,13 +19,14 @@ const (
 	// SchemaHistoryNoDDL: no schema change on the table between the cursor
 	// and the current position, so every event there has the current layout.
 	SchemaHistoryNoDDL SchemaHistoryVerdict = iota + 1
-	// SchemaHistoryTracked: a schema change on the table was followed by a
-	// VERSION event, so vttablet's schema tracker is on and the historian
+	// SchemaHistoryTracked: every schema change on the table between the
+	// cursor and the current position was followed by its own VERSION event,
+	// so vttablet's schema tracker recorded each of them and the historian
 	// decodes older events with the schema they were written with.
 	SchemaHistoryTracked
 	// SchemaHistoryUntracked: a schema change on the table with no VERSION
-	// event after it, so older events are decoded by position against the
-	// current schema.
+	// event after it (any one of them, if there are several), so older events
+	// are decoded by position against the current schema.
 	SchemaHistoryUntracked
 )
 
@@ -70,6 +71,12 @@ var (
 	// cursor). It saves no progress, so the next sync would run out of time
 	// the same way: the caller raises the re-sync Task instead of retrying.
 	ErrSchemaHistoryScanTimeout = errors.New("the schema history scan did not reach the current binlog position in time")
+	// ErrSchemaHistoryPositionCheck: the scan could not read the shard's
+	// current binlog position, so it never streamed from the saved cursor. A
+	// "no tablet found" error here says nothing about the saved position
+	// (unlike the same error from the scan's own stream): the caller must not
+	// treat it as suspected binlog expiration.
+	ErrSchemaHistoryPositionCheck = errors.New("could not read the current binlog position for the schema history scan")
 )
 
 // Variables, not constants, so tests can shorten them (SetSchemaHistoryTimings).
@@ -130,7 +137,9 @@ func (p connectClient) ScanSchemaHistory(ctx context.Context, logger DatabaseLog
 
 	stop, err := p.getLatestCursorPosition(ctx, tc.Shard, tc.Keyspace, tableName, ps, tabletType)
 	if err != nil {
-		return SchemaHistory{}, errors.Wrap(err, "Unable to get latest cursor position")
+		// Both are kept in the chain: errors.Is for the sentinel, and the
+		// gRPC status of err for the caller's connection-wide check.
+		return SchemaHistory{}, fmt.Errorf("%w: %w", ErrSchemaHistoryPositionCheck, err)
 	}
 	if stop == tc.Position {
 		return SchemaHistory{Verdict: SchemaHistoryNoDDL}, nil
@@ -173,18 +182,24 @@ type schemaHistoryTimings struct {
 // its own VERSION event within grace (binlog time); a VERSION event resolves
 // the oldest DDL still waiting for one. A VERSION event written later than
 // that (for example after the tracker was turned on, for another table's
-// schema change) does not show that the table's change was recorded.
+// schema change) does not show that the table's change was recorded. The scan
+// always reads up to stop: a schema change recorded by the tracker says
+// nothing about a later one (the tracker may have been turned off since).
 //
-//   - every DDL event so far followed by a VERSION event within grace:
-//     SchemaHistoryTracked;
 //   - a VERSION event, or any other event, written grace or more after a DDL
-//     event that has no VERSION event yet: SchemaHistoryUntracked;
-//   - the stream passes stop (the position when the scan started) with no DDL
-//     event, or stays at stop for settle: SchemaHistoryNoDDL;
+//     event that has no VERSION event yet: SchemaHistoryUntracked (at once);
+//   - the stream passes stop (the position when the scan started), or stays
+//     at stop for settle, with every DDL event followed by its VERSION event:
+//     SchemaHistoryTracked, or SchemaHistoryNoDDL if there was no DDL event;
 //   - a DDL event and then nothing for liveWait at stop: SchemaHistoryUntracked
 //     if the DDL is older than grace, else ErrSchemaHistoryInconclusive (the
 //     next sync looks again);
 //   - ctx's deadline before any of these: ErrSchemaHistoryScanTimeout.
+//
+// A DDL event without a timestamp is dated with the latest event timestamp
+// before it (or else the first one after it), so the grace never makes it
+// lenient; one still undated when the scan ends counts as untracked, so the
+// table gets the Task instead of an inconclusive scan on every sync.
 func scanSchemaHistoryStream(ctx context.Context, recv func() (*vtgatepb.VStreamResponse, error), keyspace, shard, stop string, t schemaHistoryTimings) (SchemaHistory, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -210,12 +225,17 @@ func scanSchemaHistoryStream(ctx context.Context, recv func() (*vtgatepb.VStream
 	var (
 		history SchemaHistory
 		// pendingDDLs holds the binlog timestamps (seconds) of the table's DDL
-		// events that have no VERSION event after them yet, oldest first.
+		// events that have no VERSION event after them yet, oldest first; 0
+		// for a DDL event that has no timestamp and no event dated before it.
 		pendingDDLs []int64
-		reachedStop bool
-		timer       *time.Timer
-		timerC      <-chan time.Time
-		timerForDDL bool
+		// tracked: at least one DDL event was followed by its VERSION event.
+		tracked bool
+		// lastTimestamp is the latest non-zero event timestamp seen.
+		lastTimestamp int64
+		reachedStop   bool
+		timer         *time.Timer
+		timerC        <-chan time.Time
+		timerForDDL   bool
 	)
 	graceSeconds := int64(t.grace / time.Second)
 	setTimer := func(d time.Duration, forDDL bool) {
@@ -232,11 +252,21 @@ func scanSchemaHistoryStream(ctx context.Context, recv func() (*vtgatepb.VStream
 		}
 	}()
 	untrackedOrInconclusive := func() (SchemaHistory, error) {
-		if ddlTime := pendingDDLs[0]; ddlTime > 0 && t.now().Sub(time.Unix(ddlTime, 0)) >= t.grace {
+		// An undated DDL can never be shown to be recent: raise the Task
+		// rather than scan again on every sync.
+		if ddlTime := pendingDDLs[0]; ddlTime == 0 || t.now().Sub(time.Unix(ddlTime, 0)) >= t.grace {
 			history.Verdict = SchemaHistoryUntracked
 			return history, nil
 		}
 		return history, ErrSchemaHistoryInconclusive
+	}
+	noPendingVerdict := func() SchemaHistory {
+		if tracked {
+			history.Verdict = SchemaHistoryTracked
+		} else {
+			history.Verdict = SchemaHistoryNoDDL
+		}
+		return history
 	}
 	ctxErr := func() error {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
@@ -251,8 +281,7 @@ func scanSchemaHistoryStream(ctx context.Context, recv func() (*vtgatepb.VStream
 			return history, ctxErr()
 		case <-timerC:
 			if len(pendingDDLs) == 0 {
-				history.Verdict = SchemaHistoryNoDDL
-				return history, nil
+				return noPendingVerdict(), nil
 			}
 			return untrackedOrInconclusive()
 		case r := <-ch:
@@ -264,6 +293,14 @@ func scanSchemaHistoryStream(ctx context.Context, recv func() (*vtgatepb.VStream
 			}
 			passedStop := false
 			for _, event := range r.res.GetEvents() {
+				if ts := event.GetTimestamp(); ts > 0 {
+					lastTimestamp = ts
+					for i := range pendingDDLs {
+						if pendingDDLs[i] == 0 {
+							pendingDDLs[i] = ts
+						}
+					}
+				}
 				switch event.GetType() {
 				case binlogdatapb.VEventType_VGTID:
 					if pos := vgtidPositionForShard([]*binlogdatapb.VEvent{event}, keyspace, shard); pos != "" {
@@ -274,7 +311,11 @@ func scanSchemaHistoryStream(ctx context.Context, recv func() (*vtgatepb.VStream
 						}
 					}
 				case binlogdatapb.VEventType_DDL:
-					pendingDDLs = append(pendingDDLs, event.GetTimestamp())
+					ddlTime := event.GetTimestamp()
+					if ddlTime == 0 {
+						ddlTime = lastTimestamp
+					}
+					pendingDDLs = append(pendingDDLs, ddlTime)
 					if history.DDL == "" {
 						history.DDL = event.GetStatement()
 					}
@@ -282,15 +323,16 @@ func scanSchemaHistoryStream(ctx context.Context, recv func() (*vtgatepb.VStream
 					if len(pendingDDLs) == 0 {
 						break
 					}
-					if ddlTime := pendingDDLs[0]; ddlTime > 0 && event.GetTimestamp()-ddlTime >= graceSeconds {
+					versionTime := event.GetTimestamp()
+					if versionTime == 0 {
+						versionTime = lastTimestamp
+					}
+					if ddlTime := pendingDDLs[0]; ddlTime > 0 && versionTime-ddlTime >= graceSeconds {
 						history.Verdict = SchemaHistoryUntracked
 						return history, nil
 					}
 					pendingDDLs = pendingDDLs[1:]
-					if len(pendingDDLs) == 0 {
-						history.Verdict = SchemaHistoryTracked
-						return history, nil
-					}
+					tracked = true
 				}
 				if len(pendingDDLs) > 0 && pendingDDLs[0] > 0 && event.GetTimestamp()-pendingDDLs[0] >= graceSeconds {
 					history.Verdict = SchemaHistoryUntracked
@@ -299,8 +341,7 @@ func scanSchemaHistoryStream(ctx context.Context, recv func() (*vtgatepb.VStream
 			}
 			pending := len(pendingDDLs) > 0
 			if passedStop && !pending {
-				history.Verdict = SchemaHistoryNoDDL
-				return history, nil
+				return noPendingVerdict(), nil
 			}
 			if reachedStop {
 				switch {

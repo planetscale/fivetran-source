@@ -155,16 +155,18 @@ func NewTestMysqlClient(gktc GetKeyspaceTableColumnsFunc) MysqlClient {
 }
 
 type (
-	ReadFunc       func(ctx context.Context, logger DatabaseLogger, ps PlanetScaleSource, tableName string, columns []string, tc *psdbconnect.TableCursor, onResult OnResult, onCursor OnCursor, onUpdate OnUpdate) (*SerializedCursor, error)
-	CanConnectFunc func(ctx context.Context, ps PlanetScaleSource) error
-	ListShardsFunc func(ctx context.Context, ps PlanetScaleSource) ([]string, error)
-	ScanSchemaFunc func(ctx context.Context, logger DatabaseLogger, ps PlanetScaleSource, tableName string, tc *psdbconnect.TableCursor) (SchemaHistory, error)
+	ReadFunc        func(ctx context.Context, logger DatabaseLogger, ps PlanetScaleSource, tableName string, columns []string, tc *psdbconnect.TableCursor, onResult OnResult, onCursor OnCursor, onUpdate OnUpdate) (*SerializedCursor, error)
+	CanConnectFunc  func(ctx context.Context, ps PlanetScaleSource) error
+	ListShardsFunc  func(ctx context.Context, ps PlanetScaleSource) ([]string, error)
+	ScanSchemaFunc  func(ctx context.Context, logger DatabaseLogger, ps PlanetScaleSource, tableName string, tc *psdbconnect.TableCursor) (SchemaHistory, error)
+	ColumnOrderFunc func(ctx context.Context, keyspace, tableName string) ([]string, error)
 
 	TestConnectClient struct {
 		ReadFn              ReadFunc
 		CanConnectFn        CanConnectFunc
 		ListShardsFn        ListShardsFunc
 		ScanSchemaHistoryFn ScanSchemaFunc
+		ColumnOrderFn       ColumnOrderFunc
 	}
 )
 
@@ -198,6 +200,15 @@ func (tcc *TestConnectClient) ScanSchemaHistory(ctx context.Context, logger Data
 		return tcc.ScanSchemaHistoryFn(ctx, logger, ps, tableName, tc)
 	}
 	return SchemaHistory{}, ErrSchemaHistoryUnavailable
+}
+
+// ColumnOrder implements ColumnOrderReader; without ColumnOrderFn it reports
+// ErrColumnOrderUnavailable (the handler then uses the source schema's order).
+func (tcc *TestConnectClient) ColumnOrder(ctx context.Context, keyspace, tableName string) ([]string, error) {
+	if tcc.ColumnOrderFn != nil {
+		return tcc.ColumnOrderFn(ctx, keyspace, tableName)
+	}
+	return nil, ErrColumnOrderUnavailable
 }
 
 func NewTestConnectClient(r ReadFunc) ConnectClient {

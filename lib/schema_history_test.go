@@ -9,6 +9,8 @@ import (
 	psdbconnect "github.com/planetscale/airbyte-source/proto/psdbconnect/v1alpha1"
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	binlogdatapb "vitess.io/vitess/go/vt/proto/binlogdata"
 	vtgatepb "vitess.io/vitess/go/vt/proto/vtgate"
 	vtgateservicepb "vitess.io/vitess/go/vt/proto/vtgateservice"
@@ -79,6 +81,7 @@ func TestScanSchemaHistoryStream(t *testing.T) {
 				shResp(shVGTID("-", "MySQL56/a:1-11"), shRow(shDDLTime-5)),
 				shResp(shVGTID("-", "MySQL56/a:1-12"), shDDL(shDDLTime)),
 				shResp(shVGTID("-", "MySQL56/a:1-13"), shVersion(shDDLTime)),
+				shResp(shVGTID("-", shStop)),
 			},
 			now: longAfter, want: SchemaHistoryTracked, wantDDL: shRename,
 		},
@@ -88,6 +91,7 @@ func TestScanSchemaHistoryStream(t *testing.T) {
 				shResp(shVGTID("-", "MySQL56/a:1-12"), shDDL(shDDLTime)),
 				shResp(shVGTID("-", "MySQL56/a:1-13"), shRow(shDDLTime), shRow(shDDLTime+1)),
 				shResp(shVGTID("-", "MySQL56/a:1-14"), shVersion(shDDLTime+3)),
+				shResp(shVGTID("-", shStop)),
 			},
 			now: longAfter, want: SchemaHistoryTracked, wantDDL: shRename,
 		},
@@ -155,6 +159,8 @@ func TestScanSchemaHistoryStream(t *testing.T) {
 				shResp(shVGTID("80-", "MySQL56/a:1-21"), shRow(shDDLTime)),
 				shResp(shVGTID("-", "MySQL56/a:1-12"), shDDL(shDDLTime)),
 				shResp(shVGTID("-", "MySQL56/a:1-13"), shVersion(shDDLTime)),
+				shResp(shVGTID("-", shStop), shRow(shDDLTime+5)),
+				shResp(shVGTID("-", "MySQL56/a:1-21")),
 			},
 			now: longAfter, want: SchemaHistoryTracked, wantDDL: shRename,
 		},
@@ -195,6 +201,8 @@ func TestScanSchemaHistoryRequests(t *testing.T) {
 		return &vstreamClientMock{responses: []*vtgatepb.VStreamResponse{
 			shResp(shVGTID("-80", "MySQL56/a:1-12"), shDDL(shDDLTime)),
 			shResp(shVGTID("-80", "MySQL56/a:1-13"), shVersion(shDDLTime)),
+			shResp(shVGTID("-80", shStop)),
+			shResp(shVGTID("-80", "MySQL56/a:1-21")),
 		}}, nil
 	}}
 	client := connectClient{vstreamClientFn: func(ctx context.Context, ps PlanetScaleSource) (vstreamClient, error) { return mock, nil }}
@@ -285,8 +293,112 @@ func TestScanSchemaHistoryStreamEveryDDLWithItsVersionIsTracked(t *testing.T) {
 		shResp(shVGTID("-", "MySQL56/a:1-14"), shDDL(shDDLTime+600)),
 		shResp(shVGTID("-", "MySQL56/a:1-15"), shDDL(shDDLTime+601)),
 		shResp(shVGTID("-", "MySQL56/a:1-16"), shVersion(shDDLTime+601), shVersion(shDDLTime+602)),
+		shResp(shVGTID("-", shStop)),
 	}
 	got, err := scanSchemaHistoryStream(ctx, shRecv(ctx, responses...), shKeyspace, "-", shStop, shTimings(time.Unix(shDDLTime, 0).Add(time.Hour)))
 	assert.NoError(t, err)
 	assert.Equal(t, SchemaHistoryTracked, got.Verdict)
+}
+
+// Second review, finding 1: a schema change recorded by the tracker says
+// nothing about a later one. The scan reads up to the current position and
+// every DDL event needs its own VERSION event, even after an earlier DDL was
+// tracked (the tracker turned off in between).
+func TestScanSchemaHistoryStreamLaterUntrackedDDLAfterTrackedOne(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	responses := []*vtgatepb.VStreamResponse{
+		shResp(shVGTID("-", "MySQL56/a:1-12"), shDDL(shDDLTime)),
+		shResp(shVGTID("-", "MySQL56/a:1-13"), shVersion(shDDLTime+1)),
+		shResp(shVGTID("-", "MySQL56/a:1-14"), shRow(shDDLTime+600)),
+		shResp(shVGTID("-", "MySQL56/a:1-15"), shDDL(shDDLTime+3600)),
+		shResp(shVGTID("-", "MySQL56/a:1-16"), shRow(shDDLTime+3700)),
+		shResp(shVGTID("-", shStop), shRow(shDDLTime+3800)),
+		shResp(shVGTID("-", "MySQL56/a:1-21")),
+	}
+	got, err := scanSchemaHistoryStream(ctx, shRecv(ctx, responses...), shKeyspace, "-", shStop, shTimings(time.Unix(shDDLTime, 0).Add(2*time.Hour)))
+	assert.NoError(t, err)
+	assert.Equal(t, SchemaHistoryUntracked, got.Verdict)
+
+	// The same later DDL right at the current position, with no VERSION event
+	// for longer than the grace: untracked once the live wait ends.
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel2()
+	responses = []*vtgatepb.VStreamResponse{
+		shResp(shVGTID("-", "MySQL56/a:1-12"), shDDL(shDDLTime)),
+		shResp(shVGTID("-", "MySQL56/a:1-13"), shVersion(shDDLTime+1)),
+		shResp(shVGTID("-", shStop), shDDL(shDDLTime+3600)),
+	}
+	got, err = scanSchemaHistoryStream(ctx2, shRecv(ctx2, responses...), shKeyspace, "-", shStop, shTimings(time.Unix(shDDLTime, 0).Add(2*time.Hour)))
+	assert.NoError(t, err)
+	assert.Equal(t, SchemaHistoryUntracked, got.Verdict)
+}
+
+// Second review, nit: a DDL event without a timestamp must resolve. Dated
+// with the event before it, the grace applies as usual; with no dated event
+// at all, the scan ends untracked (Task) instead of inconclusive forever.
+func TestScanSchemaHistoryStreamUndatedDDL(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		responses []*vtgatepb.VStreamResponse
+		now       time.Time
+		want      SchemaHistoryVerdict
+	}{
+		{
+			name: "dated by the event before it, no VERSION within the grace: untracked",
+			responses: []*vtgatepb.VStreamResponse{
+				shResp(shVGTID("-", "MySQL56/a:1-11"), shRow(shDDLTime)),
+				shResp(shVGTID("-", "MySQL56/a:1-12"), shDDL(0)),
+				shResp(shVGTID("-", "MySQL56/a:1-13"), shRow(shDDLTime+500)),
+			},
+			now:  time.Unix(shDDLTime, 0).Add(time.Hour),
+			want: SchemaHistoryUntracked,
+		},
+		{
+			name: "dated by the event before it, VERSION right after: tracked",
+			responses: []*vtgatepb.VStreamResponse{
+				shResp(shVGTID("-", "MySQL56/a:1-11"), shRow(shDDLTime)),
+				shResp(shVGTID("-", "MySQL56/a:1-12"), shDDL(0)),
+				shResp(shVGTID("-", "MySQL56/a:1-13"), shVersion(shDDLTime+1)),
+				shResp(shVGTID("-", shStop)),
+			},
+			now:  time.Unix(shDDLTime, 0).Add(time.Hour),
+			want: SchemaHistoryTracked,
+		},
+		{
+			name: "no dated event at all, idle at the current position: untracked, not inconclusive",
+			responses: []*vtgatepb.VStreamResponse{
+				shResp(shVGTID("-", shStop), shDDL(0)),
+			},
+			now:  time.Unix(shDDLTime, 0),
+			want: SchemaHistoryUntracked,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			got, err := scanSchemaHistoryStream(ctx, shRecv(ctx, tc.responses...), shKeyspace, "-", shStop, shTimings(tc.now))
+			assert.NoError(t, err)
+			assert.Equal(t, tc.want, got.Verdict)
+		})
+	}
+}
+
+// Second review, finding 5: when reading the current position fails (for
+// example vtgate finds no tablet during a reparent), the scan never streamed
+// from the saved position; the error is ErrSchemaHistoryPositionCheck and
+// keeps its gRPC status.
+func TestScanSchemaHistoryPositionCheckFailure(t *testing.T) {
+	notFound := status.Error(codes.Unknown, "failed to find a PRIMARY tablet for VStream in ks/-80 within the planetscale_operator_default cell(s): context has expired")
+	var requests int
+	mock := &vstreamConnectionMock{vstreamFn: func(ctx context.Context, in *vtgatepb.VStreamRequest, opts ...grpc.CallOption) (vtgateservicepb.Vitess_VStreamClient, error) {
+		requests++
+		return nil, notFound
+	}}
+	client := connectClient{vstreamClientFn: func(ctx context.Context, ps PlanetScaleSource) (vstreamClient, error) { return mock, nil }}
+	tc := &psdbconnect.TableCursor{Keyspace: shKeyspace, Shard: "-80", Position: shStart}
+	_, err := client.ScanSchemaHistory(context.Background(), &dbLogger{}, PlanetScaleSource{Database: shKeyspace}, "t", tc)
+	assert.ErrorIs(t, err, ErrSchemaHistoryPositionCheck)
+	assert.Equal(t, codes.Unknown, status.Code(err))
+	assert.Equal(t, 1, requests, "no scan stream after the failed position check")
 }

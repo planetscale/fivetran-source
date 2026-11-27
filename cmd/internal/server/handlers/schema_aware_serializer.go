@@ -53,6 +53,25 @@ type LogSender interface {
 	Send(*fivetransdk.UpdateResponse) error
 }
 
+// OutputStreamError reports that sending a response to Fivetran's output
+// stream failed (for example the Update call was cancelled or its transport
+// broke). Nothing more can reach Fivetran in this sync, so the sync handler
+// ends the sync instead of streaming the remaining tables.
+type OutputStreamError struct {
+	Err error
+}
+
+func (e *OutputStreamError) Error() string {
+	return fmt.Sprintf("sending to Fivetran failed: %v", e.Err)
+}
+
+func (e *OutputStreamError) Unwrap() error { return e.Err }
+
+// GRPCStatus keeps the status of the failed Send.
+func (e *OutputStreamError) GRPCStatus() *status.Status {
+	return status.Convert(e.Err)
+}
+
 type schemaAwareSerializer struct {
 	prefix                 string
 	sender                 LogSender
@@ -265,12 +284,20 @@ func (l *schemaAwareSerializer) Severe(msg string) error {
 	return l.Log("SEVERE", msg)
 }
 
+// send sends one response to Fivetran; a failure is an *OutputStreamError.
+func (l *schemaAwareSerializer) send(response *fivetransdk.UpdateResponse) error {
+	if err := l.sender.Send(response); err != nil {
+		return &OutputStreamError{Err: err}
+	}
+	return nil
+}
+
 func (l *schemaAwareSerializer) SendWarningAlert(message string) error {
 	warning := &fivetransdk.Warning{
 		Message: message,
 	}
 
-	return l.sender.Send(&fivetransdk.UpdateResponse{
+	return l.send(&fivetransdk.UpdateResponse{
 		Operation: &fivetransdk.UpdateResponse_Warning{
 			Warning: warning,
 		},
@@ -282,7 +309,7 @@ func (l *schemaAwareSerializer) SendWarningAlert(message string) error {
 // sync once it receives it, so callers must return right after sending.
 // Fivetran resolves the Error after the next successful sync.
 func (l *schemaAwareSerializer) SendTask(message string) error {
-	return l.sender.Send(&fivetransdk.UpdateResponse{
+	return l.send(&fivetransdk.UpdateResponse{
 		Operation: &fivetransdk.UpdateResponse_Task{
 			Task: &fivetransdk.Task{
 				Message: message,
@@ -312,7 +339,7 @@ func (l *schemaAwareSerializer) State(sc lib.SyncState) error {
 	if err != nil {
 		return l.Severe(fmt.Sprintf("marshal schema aware json serializer : %q", err))
 	}
-	return l.sender.Send(&fivetransdk.UpdateResponse{
+	return l.send(&fivetransdk.UpdateResponse{
 		Operation: &fivetransdk.UpdateResponse_Checkpoint{
 			Checkpoint: &fivetransdk.Checkpoint{
 				StateJson: string(state),
@@ -400,7 +427,7 @@ func (l *schemaAwareSerializer) serializeResult(before *sqltypes.Result, after *
 		}
 		operationRecord.Record.Data = row
 		operationRecord.Record.Type = fivetranOpMap[opType]
-		if err := l.sender.Send(l.recordResponse); err != nil {
+		if err := l.send(l.recordResponse); err != nil {
 			return err
 		}
 	}
@@ -409,7 +436,7 @@ func (l *schemaAwareSerializer) serializeResult(before *sqltypes.Result, after *
 }
 
 func (l *schemaAwareSerializer) sendTruncate(schema *fivetransdk.SchemaSelection, table *fivetransdk.TableSelection) error {
-	return l.sender.Send(&fivetransdk.UpdateResponse{
+	return l.send(&fivetransdk.UpdateResponse{
 		Operation: &fivetransdk.UpdateResponse_Record{
 			Record: &fivetransdk.Record{
 				SchemaName: &schema.SchemaName,

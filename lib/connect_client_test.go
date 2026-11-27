@@ -2131,3 +2131,92 @@ func TestRead_MissingColumnNotRetriedWithoutConfirmedColumnOrder(t *testing.T) {
 	assert.True(t, IsVStreamSchemaIncompatibilityError(err))
 	assert.Equal(t, 1, streams, "the column must not be left out without the handler's go-ahead")
 }
+
+// Second review, finding 6: one cut-over that adds more columns than
+// maxSchemaChangeRetries is stepped over like any other: the bound counts
+// cut-overs, not columns (vttablet reports the added columns one at a time).
+func TestRead_StepsOverOneCutOverAddingManyColumns(t *testing.T) {
+	dbl := &dbLogger{}
+	ped := connectClient{}
+	cursorAt := func(position string) *psdbconnect.TableCursor {
+		return &psdbconnect.TableCursor{Shard: "-", Keyspace: "connect-test", Position: position}
+	}
+	added := make([]string, maxSchemaChangeRetries+2)
+	for i := range added {
+		added[i] = fmt.Sprintf("added_%02d", i)
+	}
+	all := append([]string{"id", "name"}, added...)
+	cutOver := "RENAME TABLE `customers` TO `_vt_hld_x_`, `_vt_vrp_y_` TO `customers`, `_vt_hld_x_` TO `_vt_vrp_y_`"
+
+	var filters []string
+	vc := &vstreamConnectionMock{
+		vstreamFn: func(ctx context.Context, in *vtgatepb.VStreamRequest, opts ...grpc.CallOption) (vtgateservicepb.Vitess_VStreamClient, error) {
+			if in.Vgtid.ShardGtids[0].Gtid == "current" {
+				return &vstreamClientMock{responses: []*vtgatepb.VStreamResponse{{
+					Events: []*binlogdatapb.VEvent{vstreamVGtidEventFromCursor("customers", cursorAt("STOP"))},
+				}}}, nil
+			}
+			filter := in.Filter.Rules[0].Filter
+			filters = append(filters, filter)
+			if in.Vgtid.ShardGtids[0].Gtid == "BEFORE_DDL" {
+				for _, c := range added {
+					if strings.Contains(filter, "`"+c+"`") {
+						return &vstreamClientMock{recvFn: func() (*vtgatepb.VStreamResponse, error) {
+							return nil, status.Error(codes.FailedPrecondition, "vttablet: rpc error: code = FailedPrecondition desc = "+
+								"failed to build table replication plan for table customers: column "+c+" not found in table customers")
+						}}, nil
+					}
+				}
+				return &vstreamClientMock{responses: []*vtgatepb.VStreamResponse{{Events: []*binlogdatapb.VEvent{
+					vstreamVGtidEventFromCursor("customers", cursorAt("CUT_OVER")),
+					{Type: binlogdatapb.VEventType_DDL, Statement: cutOver},
+				}}}}, nil
+			}
+			return &vstreamClientMock{responses: []*vtgatepb.VStreamResponse{
+				{Events: []*binlogdatapb.VEvent{vstreamVGtidEventFromCursor("customers", cursorAt("STOP"))}},
+				{Events: []*binlogdatapb.VEvent{vstreamVGtidEventFromCursor("customers", cursorAt("AFTER_STOP"))}},
+			}}, nil
+		},
+	}
+	ped.vstreamClientFn = func(ctx context.Context, ps PlanetScaleSource) (vstreamClient, error) {
+		return vc, nil
+	}
+	mysqlClient := NewTestMysqlClient(func(ctx context.Context, keyspaceName string, tableName string) ([]MysqlColumn, error) {
+		columns := make([]MysqlColumn, 0, len(all))
+		for _, c := range all {
+			columns = append(columns, MysqlColumn{Name: c, Type: "varchar(64)", IsPrimaryKey: c == "id"})
+		}
+		return columns, nil
+	})
+	ped.Mysql = &mysqlClient
+
+	sc, err := ped.Read(WithAddedColumnRetry(context.Background()), dbl, PlanetScaleSource{Database: "connect-test"}, "customers", all, cursorAt("BEFORE_DDL"), nil, nil, nil)
+	assert.NoError(t, err)
+	assert.False(t, IsVStreamSchemaIncompatibilityError(err))
+	if assert.Len(t, filters, len(added)+2) {
+		assert.Equal(t, "SELECT `id`,`name` FROM `customers`", filters[len(added)])
+		assert.Contains(t, filters[len(filters)-1], "`"+added[len(added)-1]+"`")
+	}
+	if sc != nil {
+		tc, err := sc.SerializedCursorToTableCursor()
+		assert.NoError(t, err)
+		assert.Equal(t, "AFTER_STOP", tc.Position)
+	}
+}
+
+// Second review, finding 7: the handler reads the live column order when it
+// gets to the table, in table order.
+func TestConnectClientColumnOrder(t *testing.T) {
+	var keyspaces []string
+	mysqlClient := NewTestMysqlClient(func(ctx context.Context, keyspaceName string, tableName string) ([]MysqlColumn, error) {
+		keyspaces = append(keyspaces, keyspaceName+"."+tableName)
+		return []MysqlColumn{{Name: "id", IsPrimaryKey: true}, {Name: "a"}, {Name: "x"}, {Name: "b"}}, nil
+	})
+	order, err := connectClient{Mysql: &mysqlClient}.ColumnOrder(context.Background(), "ks", "t")
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"id", "a", "x", "b"}, order)
+	assert.Equal(t, []string{"ks.t"}, keyspaces)
+
+	_, err = connectClient{}.ColumnOrder(context.Background(), "ks", "t")
+	assert.ErrorIs(t, err, ErrColumnOrderUnavailable)
+}
