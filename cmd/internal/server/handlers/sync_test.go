@@ -1827,3 +1827,186 @@ func TestColumnOrderFallsBackToSourceSchemaWhenFreshReadFails(t *testing.T) {
 	assert.Equal(t, historianSaved, state.Keyspaces["SalesDB"].Streams["SalesDB:a_add_after"].ColumnOrder)
 	assert.Contains(t, strings.Join(tl.infos, "\n"), "could not read the live column order")
 }
+
+// shardOrders answers shard-targeted column order reads from a map
+// ("table/shard" -> order); a missing entry fails like an unusable target.
+func shardOrders(orders map[string][]string, calls *[]string) lib.ShardColumnOrderFunc {
+	return func(ctx context.Context, ps lib.PlanetScaleSource, keyspace, shard, table string) ([]string, error) {
+		if calls != nil {
+			*calls = append(*calls, table+"/"+shard)
+		}
+		if order, ok := orders[table+"/"+shard]; ok {
+			return order, nil
+		}
+		return nil, errors.New("shard target not available")
+	}
+}
+
+func shardedHistorianClient(readTables, scanned *[]string, verdicts map[string]lib.SchemaHistory, vtgate []string, perShard map[string][]string) lib.ConnectClient {
+	db := lib.NewTestConnectClient(recordingReadFn(readTables))
+	tcc := db.(*lib.TestConnectClient)
+	tcc.ScanSchemaHistoryFn = scanByShard(verdicts, nil, scanned)
+	tcc.ColumnOrderFn = func(ctx context.Context, keyspace, table string) ([]string, error) {
+		if table == "a_add_after" {
+			return vtgate, nil
+		}
+		return []string{"id", "b"}, nil
+	}
+	tcc.ShardColumnOrderFn = shardOrders(perShard, nil)
+	return db
+}
+
+func savedShardOrders(state *lib.SyncState) (map[string][]string, []string) {
+	ss := state.Keyspaces["SalesDB"].Streams["SalesDB:a_add_after"]
+	return ss.ShardColumnOrders, ss.ColumnOrder
+}
+
+// Review item 2 (per-shard column order): Online DDL cuts the shards over
+// independently. Shard -80 cut over (column added in the middle, tracked),
+// 80- not yet: only -80 is scanned, both shards are read, and each keeps its
+// own order. When 80- cuts over later, its own saved order catches it: an
+// untracked cut-over raises the tracker Task, a tracked one syncs and the
+// table-level order follows once both shards agree.
+func TestShardsCuttingOverAtDifferentTimes(t *testing.T) {
+	for name, tc := range map[string]struct {
+		lastShard lib.SchemaHistory
+		wantTask  bool
+	}{
+		"last shard untracked": {untrackedDDL, true},
+		"last shard tracked":   {trackedDDL, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			psc := &lib.PlanetScaleSource{}
+			state := historianTestState(t, historianSaved, map[string]string{"-80": "MySQL56/s1:1-10", "80-": "MySQL56/s2:1-10"})
+
+			var readTables, scanned []string
+			db := shardedHistorianClient(&readTables, &scanned, map[string]lib.SchemaHistory{"-80": trackedDDL}, historianLive,
+				map[string][]string{"a_add_after/-80": historianLive, "a_add_after/80-": historianSaved})
+			tl := historianTestLogger(historianLive)
+			assert.NoError(t, (&Sync{}).Handle(context.Background(), psc, &db, tl, state, columnOrderSelection("a_add_after", "b_bystander")))
+			assert.Empty(t, tl.tasks)
+			assert.Equal(t, []string{"a_add_after/-80@MySQL56/s1:1-10"}, scanned, "only the shard that cut over is scanned")
+			slices.Sort(readTables)
+			assert.Equal(t, []string{"a_add_after/-80", "a_add_after/80-", "b_bystander/-"}, readTables)
+			perShard, tableLevel := savedShardOrders(state)
+			assert.Equal(t, map[string][]string{"-80": historianLive, "80-": historianSaved}, perShard)
+			assert.Equal(t, historianSaved, tableLevel, "the shards disagree: the table-level order stays behind")
+
+			// 80- cuts over.
+			readTables, scanned = nil, nil
+			db = shardedHistorianClient(&readTables, &scanned, map[string]lib.SchemaHistory{"80-": tc.lastShard}, historianLive,
+				map[string][]string{"a_add_after/-80": historianLive, "a_add_after/80-": historianLive})
+			tl = historianTestLogger(historianLive)
+			assert.NoError(t, (&Sync{}).Handle(context.Background(), psc, &db, tl, state, columnOrderSelection("a_add_after", "b_bystander")))
+			assert.Equal(t, []string{"a_add_after/80-@MySQL56/a_add_after:1-20"}, scanned, "-80's saved order matches its live order")
+			perShard, tableLevel = savedShardOrders(state)
+			if tc.wantTask {
+				assert.Equal(t, []string{"b_bystander/-"}, readTables)
+				if assert.Len(t, tl.tasks, 1) {
+					assert.Equal(t, columnOrderTrackerTaskForAddAfter, tl.tasks[0])
+				}
+				assert.Equal(t, map[string][]string{"-80": historianLive, "80-": historianSaved}, perShard)
+				assert.Equal(t, historianSaved, tableLevel)
+				return
+			}
+			assert.Empty(t, tl.tasks)
+			slices.Sort(readTables)
+			assert.Equal(t, []string{"a_add_after/-80", "a_add_after/80-", "b_bystander/-"}, readTables)
+			assert.Equal(t, map[string][]string{"-80": historianLive, "80-": historianLive}, perShard)
+			assert.Equal(t, historianLive, tableLevel)
+		})
+	}
+}
+
+// vtgate may answer from the shard that has not cut over: the shard that did
+// still compares its own order. A column appended at the end needs no scan on
+// either shard, and each shard saves its own order.
+func TestShardAheadOfVtgateOnAppendedColumnNeedsNoScan(t *testing.T) {
+	psc := &lib.PlanetScaleSource{}
+	state := historianTestState(t, historianSaved, map[string]string{"-80": "MySQL56/s1:1-10", "80-": "MySQL56/s2:1-10"})
+	appended := append(slices.Clone(historianSaved), "d")
+	var readTables, scanned []string
+	db := shardedHistorianClient(&readTables, &scanned, nil, historianSaved,
+		map[string][]string{"a_add_after/-80": appended, "a_add_after/80-": historianSaved})
+	tl := historianTestLogger(historianSaved)
+	assert.NoError(t, (&Sync{}).Handle(context.Background(), psc, &db, tl, state, columnOrderSelection("a_add_after", "b_bystander")))
+	assert.Empty(t, tl.tasks)
+	assert.Empty(t, scanned)
+	perShard, tableLevel := savedShardOrders(state)
+	assert.Equal(t, map[string][]string{"-80": appended, "80-": historianSaved}, perShard)
+	assert.Equal(t, historianSaved, tableLevel)
+}
+
+// Old state (table-level order only) is compared shard by shard with that
+// order; the sync then saves every shard's own entry.
+func TestOldStateTableLevelOrderFallback(t *testing.T) {
+	psc := &lib.PlanetScaleSource{}
+	state := historianTestState(t, historianSaved, map[string]string{"-80": "MySQL56/s1:1-10", "80-": "MySQL56/s2:1-10"})
+	var readTables, scanned []string
+	db := shardedHistorianClient(&readTables, &scanned, nil, historianSaved,
+		map[string][]string{"a_add_after/-80": historianSaved, "a_add_after/80-": historianSaved})
+	tl := historianTestLogger(historianSaved)
+	assert.NoError(t, (&Sync{}).Handle(context.Background(), psc, &db, tl, state, columnOrderSelection("a_add_after", "b_bystander")))
+	assert.Empty(t, tl.tasks)
+	assert.Empty(t, scanned)
+	assert.Len(t, readTables, 3)
+	perShard, tableLevel := savedShardOrders(state)
+	assert.Equal(t, map[string][]string{"-80": historianSaved, "80-": historianSaved}, perShard)
+	assert.Equal(t, historianSaved, tableLevel)
+}
+
+// A shard whose live order cannot be read (shard target not usable), or lacks
+// a column vtgate lists and the shard had (e.g. INVISIBLE), is never passed
+// silently: it is scanned, and its order is not saved. Without a scanner it
+// gets the re-sync Task.
+func TestUnknownShardColumnOrderIsCheckedNotPassed(t *testing.T) {
+	for name, perShard := range map[string]map[string][]string{
+		"shard target fails":         {"a_add_after/-80": historianSaved},
+		"shard lacks a saved column": {"a_add_after/-80": historianSaved, "a_add_after/80-": {"id", "a", "b"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			psc := &lib.PlanetScaleSource{}
+			state := historianTestState(t, historianSaved, map[string]string{"-80": "MySQL56/s1:1-10", "80-": "MySQL56/s2:1-10"})
+			var readTables, scanned []string
+			db := shardedHistorianClient(&readTables, &scanned, map[string]lib.SchemaHistory{"80-": noDDL}, historianSaved, perShard)
+			tl := historianTestLogger(historianSaved)
+			assert.NoError(t, (&Sync{}).Handle(context.Background(), psc, &db, tl, state, columnOrderSelection("a_add_after", "b_bystander")))
+			assert.Empty(t, tl.tasks)
+			assert.Equal(t, []string{"a_add_after/80-@MySQL56/s2:1-10"}, scanned)
+			assert.Len(t, readTables, 3)
+			perShardSaved, _ := savedShardOrders(state)
+			assert.Equal(t, historianSaved, perShardSaved["80-"], "an unknown live order is never saved")
+
+			// No schema history scan available: the re-sync Task, not a pass.
+			state = historianTestState(t, historianSaved, map[string]string{"-80": "MySQL56/s1:1-10", "80-": "MySQL56/s2:1-10"})
+			readTables = nil
+			db.(*lib.TestConnectClient).ScanSchemaHistoryFn = nil
+			tl = historianTestLogger(historianSaved)
+			assert.NoError(t, (&Sync{}).Handle(context.Background(), psc, &db, tl, state, columnOrderSelection("a_add_after", "b_bystander")))
+			assert.Equal(t, []string{"b_bystander/-"}, readTables)
+			if assert.Len(t, tl.tasks, 1) {
+				assert.Equal(t, columnOrderTaskForAddAfter, tl.tasks[0])
+			}
+		})
+	}
+}
+
+// Unsharded keyspace (shard "-"): vtgate's order is the shard's, as before;
+// no shard-targeted query, one entry, and the table-level order follows it.
+func TestUnshardedColumnOrderSingleEntry(t *testing.T) {
+	psc := &lib.PlanetScaleSource{}
+	state := historianTestState(t, historianSaved, map[string]string{"-": "MySQL56/old:1-10"})
+	appended := append(slices.Clone(historianSaved), "d")
+	var readTables, scanned, shardCalls []string
+	db := shardedHistorianClient(&readTables, &scanned, nil, appended, nil)
+	db.(*lib.TestConnectClient).ShardColumnOrderFn = shardOrders(nil, &shardCalls)
+	tl := historianTestLogger(historianSaved)
+	assert.NoError(t, (&Sync{}).Handle(context.Background(), psc, &db, tl, state, columnOrderSelection("a_add_after", "b_bystander")))
+	assert.Empty(t, tl.tasks)
+	assert.Empty(t, scanned)
+	assert.Empty(t, shardCalls)
+	assert.Equal(t, []string{"a_add_after/-", "b_bystander/-"}, readTables)
+	perShard, tableLevel := savedShardOrders(state)
+	assert.Equal(t, map[string][]string{"-": appended}, perShard)
+	assert.Equal(t, appended, tableLevel)
+}

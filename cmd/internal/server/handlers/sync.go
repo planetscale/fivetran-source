@@ -120,9 +120,11 @@ keyspaces:
 			// columns. Stream the table only if the schema tracker recorded the
 			// change (or the cursors are already past it); otherwise raise the
 			// re-sync Task instead of streaming the table.
-			order := checkColumnOrder(ctx, db, logger, state, ks.SchemaName, table.TableName, hasShards && !allShardsHaveNoProgress)
+			// Every shard is checked against its own saved and live order: Online
+			// DDL cuts the shards over independently.
+			order := checkColumnOrder(ctx, db, logger, psc, ks.SchemaName, table.TableName, streamState)
 			if orderErr := order.changed; orderErr != nil {
-				tracked, failedShard, hErr := verifySchemaHistory(ctx, db, logger, psc, streamState, orderErr)
+				tracked, failedShard, hErr := verifySchemaHistory(ctx, db, logger, psc, streamState, orderErr, order.changedShards)
 				if err := stop(stateKey); err != nil {
 					// A scan cut short by the cancelled sync proves nothing about
 					// the table: no mark, no Task.
@@ -133,8 +135,11 @@ keyspaces:
 					if tracked {
 						why = "the schema tracker recorded the schema change, so the older binlog events are decoded with the schema they were written with"
 					}
-					logger.Info(fmt.Sprintf("table %s: column order changed (%s); %s, syncing as usual", stateKey, orderErr.Reason, why))
-					order.addedColumnsSafe = true
+					logger.Info(fmt.Sprintf("table %s: column order changed on shard(s) %s (%s); %s, syncing as usual",
+						stateKey, strings.Join(order.changedShards, ","), orderErr.Reason, why))
+					for _, shard := range order.changedShards {
+						order.shards[shard].addedColumnsSafe = true
+					}
 				} else {
 					var suspected *lib.SuspectedBinlogExpirationError
 					if errors.As(hErr, &suspected) && !streamState.Shards[failedShard].HasSuspectedBinlogExpiration() {
@@ -166,15 +171,6 @@ keyspaces:
 					continue
 				}
 			}
-			// Read may only leave out a column that vttablet reports as "not
-			// found" when the saved order is known to be a prefix of the live
-			// order (or the schema history check passed), see lib.WithAddedColumnRetry.
-			readCtx := ctx
-			if order.addedColumnsSafe {
-				readCtx = lib.WithAddedColumnRetry(ctx)
-			}
-			readComplete := true
-
 			// Call truncate before any Read operations only when no shard has durable progress.
 			if hasShards && allShardsHaveNoProgress {
 				if err := noteOutput(logger.Truncate(ks, table)); err != nil {
@@ -197,6 +193,15 @@ keyspaces:
 					return status.Error(codes.Internal, fmt.Sprintf("invalid cursor for stream %v, failed with [%v]", stateKey, err))
 				}
 
+				// Read may only leave out a column that vttablet reports as "not
+				// found" when the shard's saved order is known to be a prefix of
+				// its live order (or the schema history check passed), see
+				// lib.WithAddedColumnRetry.
+				readCtx := ctx
+				shardOrder := order.shards[shardName]
+				if shardOrder != nil && shardOrder.addedColumnsSafe {
+					readCtx = lib.WithAddedColumnRetry(ctx)
+				}
 				columns := includedColumns(table)
 				sc, err := (*db).Read(readCtx, logger, *psc, table.TableName, columns, tc, onRow, onCursor, onUpdate)
 				if sErr := stop(stateKey); sErr != nil {
@@ -205,15 +210,12 @@ keyspaces:
 					// which must not count as suspected binlog expiration.
 					return sErr
 				}
+				readComplete := err == nil
 				if errors.Is(err, lib.ErrReadStoppedEarly) {
 					// Read gave up after repeated timeouts and already sent a Warning:
-					// keep the cursor it reached, but the table was not read up to
+					// keep the cursor it reached, but the shard was not read up to
 					// the current position.
-					readComplete = false
 					err = nil
-				}
-				if err != nil {
-					readComplete = false
 				}
 				var suspected *lib.SuspectedBinlogExpirationError
 				if errors.As(err, &suspected) && !shardState.HasSuspectedBinlogExpiration() {
@@ -275,13 +277,16 @@ keyspaces:
 						return sErr
 					}
 				}
-			}
-			// Save the live column order only once every shard was read up to
-			// the current position, i.e. past the schema change that produced
-			// it. Saved earlier, a cursor still before the change would be
-			// compared with an order that does not describe its events.
-			if readComplete && order.current != nil {
-				recordColumnOrder(state, ks.SchemaName, table.TableName, order.current)
+				// Save the shard's live column order only once the shard was read
+				// up to the current position, i.e. past the schema change that
+				// produced it, whatever the other shards did. Saved earlier, a
+				// cursor still before the change would be compared with an order
+				// that does not describe its events. An unknown live order is
+				// never saved: the shard keeps its saved order and is checked
+				// again.
+				if readComplete && shardOrder != nil && shardOrder.live != nil {
+					recordShardColumnOrder(state, ks.SchemaName, table.TableName, shardName, shardOrder.live)
+				}
 			}
 		}
 	}
@@ -349,41 +354,67 @@ func (e *ColumnOrderChangedError) Error() string {
 
 // columnOrderCheck is the result of checkColumnOrder for one table.
 type columnOrderCheck struct {
-	// changed is set when the live column order is not the saved order with
-	// columns appended (or only dropped), see lib.ColumnOrderChange.
+	// shards has every shard of the table; nil when the Serializer does not
+	// know the source schema of the table (the check is skipped).
+	shards map[string]*shardColumnOrder
+	// changed is set for the first shard (in shard order) whose live order is
+	// not its saved order with columns appended (or only dropped), see
+	// lib.ColumnOrderChange, or whose live order could not be read.
 	changed *ColumnOrderChangedError
-	// current is the live column order, saved in state once the table was
-	// read up to the current position; nil when the Serializer does not know
-	// the source schema of the table.
-	current []string
-	// addedColumnsSafe: the saved order is a prefix of the live order (or the
-	// table is copied from scratch), so a column vttablet reports as "not
-	// found" at the saved position was added at the end of the table and Read
-	// may step over it (lib.WithAddedColumnRetry). False when the saved order
-	// is unknown (state from an older connector version): vttablet reports the
-	// last live column as "not found" after a column added in the middle of the
+	// changedShards lists every such shard, sorted; only these are scanned.
+	changedShards []string
+}
+
+// shardColumnOrder is the column order check of one shard.
+type shardColumnOrder struct {
+	// live is the shard's live column order, saved for the shard once it was
+	// read up to the current position; nil when it could not be read.
+	live []string
+	// addedColumnsSafe: the shard's saved order is a prefix of its live order
+	// (or the shard is copied from scratch, or its schema history check
+	// passed), so a column vttablet reports as "not found" at the saved
+	// position was added at the end of the table and Read may step over it
+	// (lib.WithAddedColumnRetry). False when the saved order is unknown
+	// (state from an older connector version): vttablet reports the last
+	// live column as "not found" after a column added in the middle of the
 	// table too, so Read keeps raising the re-sync Task as before.
 	addedColumnsSafe bool
 }
 
-// checkColumnOrder compares the column order saved in the table's state with
-// the live order, if the Serializer knows the source schema (see
-// SourceColumnOrderer). The live order is read again now, when the sync gets
-// to the table, if the client can (lib.ColumnOrderReader); else it is the one
-// from the schema read at the start of the sync. Either way it was read
-// before any of the table's binlog positions, so the order the caller saves
-// after the read is never ahead of the cursors; the fresh read keeps it from
-// falling far behind them (a schema change during a long sync would leave the
-// saved order older than the cursors, and a later safe change would then get
-// a needless Task). It never changes the saved order: the caller saves the
-// live order once the table's read completed, and keeps the saved order when
-// it raises the Task, so every sync raises it until the connection is
-// re-synced (or verifySchemaHistory clears it).
+// errUnknownShardColumnOrder is the Reason of a ColumnOrderChangedError for a
+// shard whose live column order could not be read: it is checked like a
+// changed order (schema history scan, or the Task), never passed silently.
+const errUnknownShardColumnOrder = "the live column order of the shard could not be read"
+
+// checkColumnOrder compares, for every shard of the table, the column order
+// saved for that shard (lib.ShardStates.SavedColumnOrder: its own entry, or
+// else the table-level order of older state) with the shard's own live order,
+// if the Serializer knows the source schema (see SourceColumnOrderer).
 //
-// compare is false when no shard of the table has durable progress (initial
-// sync, "Resync all data", or a cursor reset after binlog expiration): the
-// table is copied from scratch, so only the order is recorded.
-func checkColumnOrder(ctx context.Context, db *lib.ConnectClient, logger Serializer, state *lib.SyncState, keyspace, table string, compare bool) columnOrderCheck {
+// Online DDL cuts every shard over on its own, so vtgate's answer (from one of
+// the shards) does not describe the others. For a table with more than one
+// shard the live order of each shard is read with a shard-targeted query
+// (lib.ShardColumnOrderReader). If that fails, or the shard's order lacks a
+// column that vtgate lists and the shard had (an INVISIBLE column, which the
+// shard query leaves out, or a drop only this shard cut over to), the shard's
+// live order is unknown: it is checked like a changed order (schema history
+// scan or Task) and never saved.
+// For an unsharded keyspace (one shard, "-") vtgate's order is that shard's,
+// as before. vtgate's order is read again when the sync gets to the table
+// (lib.ColumnOrderReader), else taken from the schema read at the start of the
+// sync.
+//
+// Every live order is read before any of the shard's binlog positions, so the
+// order saved after the shard's read is never ahead of its cursor. It never
+// changes the saved orders: the caller saves a shard's live order once that
+// shard's read completed, and keeps the saved orders when it raises the Task,
+// so every sync raises it until the connection is re-synced (or
+// verifySchemaHistory clears it).
+//
+// A shard with no durable progress (initial sync, "Resync all data", or a
+// cursor reset after binlog expiration) is copied from scratch: it is not
+// compared, only its order is recorded.
+func checkColumnOrder(ctx context.Context, db *lib.ConnectClient, logger Serializer, psc *lib.PlanetScaleSource, keyspace, table string, streamState lib.ShardStates) columnOrderCheck {
 	orderer, ok := logger.(SourceColumnOrderer)
 	if !ok {
 		return columnOrderCheck{}
@@ -392,6 +423,11 @@ func checkColumnOrder(ctx context.Context, db *lib.ConnectClient, logger Seriali
 	if !ok {
 		return columnOrderCheck{}
 	}
+	shards := make([]string, 0, len(streamState.Shards))
+	for shard := range streamState.Shards {
+		shards = append(shards, shard)
+	}
+	slices.Sort(shards)
 	if reader, ok := (*db).(lib.ColumnOrderReader); ok {
 		fresh, err := reader.ColumnOrder(ctx, keyspace, table)
 		switch {
@@ -401,41 +437,108 @@ func checkColumnOrder(ctx context.Context, db *lib.ConnectClient, logger Seriali
 			logger.Info(fmt.Sprintf("table %s:%s: could not read the live column order (%v); using the one from the start of the sync", keyspace, table, err))
 		}
 	}
-	check := columnOrderCheck{current: slices.Clone(current)}
-	if !compare {
-		check.addedColumnsSafe = true
-		return check
-	}
-	saved := state.Keyspaces[keyspace].Streams[keyspace+":"+table].ColumnOrder
-	if len(saved) == 0 {
-		return check
-	}
-	if reason := lib.ColumnOrderChange(saved, current); reason != "" {
-		check.changed = &ColumnOrderChangedError{
-			Keyspace: keyspace,
-			Table:    table,
-			Reason:   reason,
-			Saved:    slices.Clone(saved),
-			Current:  slices.Clone(current),
+	shardReader, _ := (*db).(lib.ShardColumnOrderReader)
+
+	check := columnOrderCheck{shards: make(map[string]*shardColumnOrder, len(shards))}
+	for _, shard := range shards {
+		so := &shardColumnOrder{}
+		check.shards[shard] = so
+		saved := streamState.SavedColumnOrder(shard)
+		if len(shards) == 1 && shard == "-" {
+			// Unsharded keyspace: vtgate's order is the one shard's.
+			so.live = slices.Clone(current)
+		} else {
+			var err error
+			if shardReader == nil {
+				err = lib.ErrColumnOrderUnavailable
+			} else {
+				so.live, err = shardReader.ShardColumnOrder(ctx, *psc, keyspace, shard, table)
+			}
+			switch {
+			case err != nil || len(so.live) == 0:
+				so.live = nil
+				logger.Info(fmt.Sprintf("table %s:%s shard %s: could not read the shard's live column order (%v); checking the shard's schema history instead", keyspace, table, shard, err))
+			case missingColumn(so.live, current, saved) != "":
+				// A column vtgate still lists, and the shard had, is missing
+				// from the shard's own order: an INVISIBLE column (the shard
+				// query leaves those out) or a dropped column that only this
+				// shard cut over to. Either way the shard's order cannot be
+				// trusted: it is checked like a changed one and not saved.
+				// (A shard behind or ahead of vtgate's shard on an added
+				// column is fine: that column is not in the shard's saved
+				// order.)
+				logger.Info(fmt.Sprintf("table %s:%s shard %s: column %s is missing from the shard's live column order; checking the shard's schema history instead",
+					keyspace, table, shard, missingColumn(so.live, current, saved)))
+				so.live = nil
+			}
 		}
-		return check
+
+		tc, err := streamState.Shards[shard].SerializedCursorToTableCursor()
+		if err == nil && tc.Position == "" && tc.LastKnownPk == nil {
+			so.addedColumnsSafe = true
+			continue
+		}
+		if len(saved) == 0 {
+			continue
+		}
+		reason := errUnknownShardColumnOrder
+		if so.live != nil {
+			reason = lib.ColumnOrderChange(saved, so.live)
+		}
+		if reason == "" {
+			so.addedColumnsSafe = true
+			continue
+		}
+		check.changedShards = append(check.changedShards, shard)
+		if check.changed == nil {
+			check.changed = &ColumnOrderChangedError{
+				Keyspace: keyspace,
+				Table:    table,
+				Reason:   reason,
+				Saved:    slices.Clone(saved),
+				Current:  slices.Clone(so.live),
+				Shard:    shard,
+			}
+		}
 	}
-	check.addedColumnsSafe = true
 	return check
 }
 
-func recordColumnOrder(state *lib.SyncState, keyspace, table string, current []string) {
+// missingColumn returns a column of vtgate's order that is also in ref (the
+// shard's saved order, or vtgate's order when the shard has none) but not in
+// the shard's live order, or "" (case-insensitive, like MySQL column names).
+func missingColumn(live, vtgate, ref []string) string {
+	if len(ref) == 0 {
+		ref = vtgate
+	}
+	inLive := make(map[string]bool, len(live))
+	for _, c := range live {
+		inLive[strings.ToLower(c)] = true
+	}
+	inRef := make(map[string]bool, len(ref))
+	for _, c := range ref {
+		inRef[strings.ToLower(c)] = true
+	}
+	for _, c := range vtgate {
+		if inRef[strings.ToLower(c)] && !inLive[strings.ToLower(c)] {
+			return c
+		}
+	}
+	return ""
+}
+
+// recordShardColumnOrder saves order as the shard's column order (see
+// lib.ShardStates.RecordShardColumnOrder).
+func recordShardColumnOrder(state *lib.SyncState, keyspace, table, shard string, order []string) {
 	stateKey := keyspace + ":" + table
 	streamState := state.Keyspaces[keyspace].Streams[stateKey]
-	if !slices.Equal(streamState.ColumnOrder, current) {
-		streamState.ColumnOrder = slices.Clone(current)
-		state.Keyspaces[keyspace].Streams[stateKey] = streamState
-	}
+	streamState.RecordShardColumnOrder(shard, order)
+	state.Keyspaces[keyspace].Streams[stateKey] = streamState
 }
 
 // verifySchemaHistory decides what to do about a column order change: it scans
-// every shard with a saved binlog position (lib.SchemaHistoryScanner, in shard
-// order) and returns a nil error when each shard either has no schema change on
+// every given shard (the shards whose order changed, sorted) with a saved
+// binlog position (lib.SchemaHistoryScanner, in shard order) and returns a nil error when each shard either has no schema change on
 // the table since its cursor or has one followed by a schema version, so the
 // historian decodes the older events correctly (tracked reports whether any
 // shard had one). A shard whose binary logs at the saved position have expired
@@ -452,7 +555,7 @@ func recordColumnOrder(state *lib.SyncState, keyspace, table string, current []s
 //     reading the current position failed (lib.ErrSchemaHistoryPositionCheck);
 //   - the scan error, e.g. lib.ErrSchemaHistoryInconclusive (a plain error, so
 //     Fivetran retries and the next sync scans again).
-func verifySchemaHistory(ctx context.Context, db *lib.ConnectClient, logger Serializer, psc *lib.PlanetScaleSource, streamState lib.ShardStates, orderErr *ColumnOrderChangedError) (tracked bool, failedShard string, err error) {
+func verifySchemaHistory(ctx context.Context, db *lib.ConnectClient, logger Serializer, psc *lib.PlanetScaleSource, streamState lib.ShardStates, orderErr *ColumnOrderChangedError, shards []string) (tracked bool, failedShard string, err error) {
 	scanner, ok := (*db).(lib.SchemaHistoryScanner)
 	if !ok {
 		return false, "", orderErr
@@ -461,11 +564,6 @@ func verifySchemaHistory(ctx context.Context, db *lib.ConnectClient, logger Seri
 	if psc.UseReplica {
 		tabletType = psdbconnect.TabletType_replica
 	}
-	shards := make([]string, 0, len(streamState.Shards))
-	for shard := range streamState.Shards {
-		shards = append(shards, shard)
-	}
-	slices.Sort(shards)
 	for _, shard := range shards {
 		tc, err := streamState.Shards[shard].SerializedCursorToTableCursor()
 		if err != nil {

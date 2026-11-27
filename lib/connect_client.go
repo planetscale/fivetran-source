@@ -1010,6 +1010,30 @@ type ColumnOrderReader interface {
 
 var _ ColumnOrderReader = connectClient{}
 
+// ShardColumnOrderReader is implemented by a ConnectClient that can read the
+// live column order of a table as one shard has it (see
+// MysqlClient.GetShardTableColumnOrder). The sync handler compares every
+// shard's saved order with that shard's own live order, because Online DDL
+// cuts the shards over independently.
+type ShardColumnOrderReader interface {
+	ShardColumnOrder(ctx context.Context, ps PlanetScaleSource, keyspace, shard, tableName string) ([]string, error)
+}
+
+var _ ShardColumnOrderReader = connectClient{}
+
+// ShardColumnOrder returns every column of the table in table order on one
+// shard (of ps's tablet type), or ErrColumnOrderUnavailable.
+func (p connectClient) ShardColumnOrder(ctx context.Context, ps PlanetScaleSource, keyspace, shard, tableName string) ([]string, error) {
+	if p.Mysql == nil || *p.Mysql == nil {
+		return nil, ErrColumnOrderUnavailable
+	}
+	tabletType := psdbconnect.TabletType_primary
+	if ps.UseReplica {
+		tabletType = psdbconnect.TabletType_replica
+	}
+	return (*p.Mysql).GetShardTableColumnOrder(ctx, keyspace, shard, tableName, tabletType)
+}
+
 // ErrColumnOrderUnavailable: the client has no MySQL connection to read the
 // column order with.
 var ErrColumnOrderUnavailable = errors.New("column order is not available")

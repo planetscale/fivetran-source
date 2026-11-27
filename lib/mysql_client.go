@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pkg/errors"
@@ -16,6 +17,7 @@ type MysqlClient interface {
 	PingContext(context.Context, PlanetScaleSource) error
 	GetVitessShards(ctx context.Context, psc PlanetScaleSource) ([]string, error)
 	GetKeyspaceTableColumns(ctx context.Context, keyspaceName string, tableName string) ([]MysqlColumn, error)
+	GetShardTableColumnOrder(ctx context.Context, keyspaceName, shard, tableName string, tabletType psdbconnect.TabletType) ([]string, error)
 	Close() error
 }
 
@@ -26,12 +28,23 @@ func NewMySQL(psc *PlanetScaleSource) (MysqlClient, error) {
 	}
 
 	return mysqlClient{
-		db: db,
+		db:     db,
+		psc:    *psc,
+		shards: &shardDBs{dbs: map[string]*sql.DB{}},
 	}, nil
 }
 
 type mysqlClient struct {
-	db *sql.DB
+	db  *sql.DB
+	psc PlanetScaleSource
+	// shards holds one connection pool per shard target, opened on first
+	// use (see GetShardTableColumnOrder) and closed by Close.
+	shards *shardDBs
+}
+
+type shardDBs struct {
+	mu  sync.Mutex
+	dbs map[string]*sql.DB
 }
 
 // BuildSchema returns schemas for all tables in a PlanetScale database
@@ -68,6 +81,14 @@ func (p mysqlClient) BuildSchema(ctx context.Context, psc PlanetScaleSource, sch
 }
 
 func (p mysqlClient) Close() error {
+	if p.shards != nil {
+		p.shards.mu.Lock()
+		for target, db := range p.shards.dbs {
+			_ = db.Close()
+			delete(p.shards.dbs, target)
+		}
+		p.shards.mu.Unlock()
+	}
 	return p.db.Close()
 }
 
@@ -106,6 +127,67 @@ func (p mysqlClient) GetKeyspaceTableColumns(ctx context.Context, keyspaceName s
 	}
 
 	return columns, nil
+}
+
+// GetShardTableColumnOrder returns the columns of a table in table order as
+// one shard has them. Online DDL cuts over every shard on its own, so during a
+// schema change the shards of a table can have different column orders, and
+// vtgate answers information_schema queries from one of them.
+//
+// The query goes to the shard with Vitess shard targeting in the connection's
+// database name, "<keyspace>:<shard>" (with the "@primary"/"@replica" suffix
+// that DSN adds), the same way the integration tests read one shard
+// (assertIntegrationRowsOnEveryShard). vtgate sends a statement on such a
+// connection to that shard's tablet as is. It reads the column names of
+// "SELECT * ... LIMIT 0", which returns no rows. That leaves out INVISIBLE
+// columns, so the caller only trusts the result when it has the same columns
+// as vtgate's information_schema order.
+func (p mysqlClient) GetShardTableColumnOrder(ctx context.Context, keyspaceName, shard, tableName string, tabletType psdbconnect.TabletType) ([]string, error) {
+	db, err := p.shardDB(keyspaceName, shard, tabletType)
+	if err != nil {
+		return nil, err
+	}
+	target := keyspaceName + ":" + shard
+	rows, err := db.QueryContext(ctx, "select * from "+quoteIdentifier(tableName)+" limit 0")
+	if err != nil {
+		return nil, errors.Wrapf(err, "unable to read the columns of table %s on shard %s", tableName, target)
+	}
+	defer rows.Close()
+	order, err := rows.Columns()
+	if err != nil {
+		return nil, errors.Wrapf(err, "unable to read the columns of table %s on shard %s", tableName, target)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, errors.Wrapf(err, "unable to read the columns of table %s on shard %s", tableName, target)
+	}
+	return order, nil
+}
+
+// shardDB returns the connection pool targeted at keyspace:shard, opening it
+// on first use.
+func (p mysqlClient) shardDB(keyspaceName, shard string, tabletType psdbconnect.TabletType) (*sql.DB, error) {
+	if p.shards == nil {
+		return nil, errors.New("shard-targeted connections are not available")
+	}
+	key := keyspaceName + ":" + shard + "@" + tabletTypeToString(tabletType)
+	p.shards.mu.Lock()
+	defer p.shards.mu.Unlock()
+	if db, ok := p.shards.dbs[key]; ok {
+		return db, nil
+	}
+	psc := p.psc
+	psc.Database = keyspaceName + ":" + shard
+	db, err := sql.Open("mysql", psc.DSN(tabletType))
+	if err != nil {
+		return nil, errors.Wrapf(err, "unable to open a connection to shard %s:%s", keyspaceName, shard)
+	}
+	db.SetMaxOpenConns(1)
+	p.shards.dbs[key] = db
+	return db, nil
+}
+
+func quoteIdentifier(name string) string {
+	return "`" + strings.ReplaceAll(name, "`", "``") + "`"
 }
 
 func (p mysqlClient) GetVitessShards(ctx context.Context, psc PlanetScaleSource) ([]string, error) {

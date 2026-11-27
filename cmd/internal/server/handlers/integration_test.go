@@ -183,6 +183,64 @@ func TestIntegrationShardedInsertUpdateDelete(t *testing.T) {
 	assertIntegrationRecordCount(t, idle.recordsForTable(tableName), 0)
 }
 
+// The per-shard column order check reads each shard's columns with a
+// shard-targeted connection (lib.MysqlClient.GetShardTableColumnOrder). This
+// checks that the target works with the integration credentials on every
+// shard, in table order, including after a column is added in the middle.
+func TestIntegrationShardTargetedColumnOrder(t *testing.T) {
+	psc := loadIntegrationSource(t)
+	psc, shards := loadIntegrationShardedSource(t, psc)
+	ctx := context.Background()
+	tableName := integrationTableName(t)
+
+	db := openIntegrationSQL(t, psc)
+	t.Cleanup(func() {
+		if _, err := db.ExecContext(context.Background(), fmt.Sprintf(
+			"alter vschema on %s drop vindex hash",
+			quoteQualifiedIdent(psc.Database, tableName),
+		)); err != nil {
+			t.Logf("drop integration vschema vindex for %s.%s: %v", psc.Database, tableName, err)
+		}
+		if _, err := db.ExecContext(context.Background(), "drop table if exists "+quoteIdent(tableName)); err != nil {
+			t.Logf("drop integration table %s: %v", tableName, err)
+		}
+		_ = db.Close()
+	})
+	mustExec(t, ctx, db, fmt.Sprintf("create table %s (id bigint primary key, name varchar(64) not null, qty int not null)", quoteIdent(tableName)))
+	mustExec(t, ctx, db, fmt.Sprintf("alter vschema on %s add vindex hash(id) using hash", quoteQualifiedIdent(psc.Database, tableName)))
+
+	mysqlClient, err := lib.NewMySQL(&psc)
+	if err != nil {
+		t.Fatalf("create mysql client: %v", err)
+	}
+	defer mysqlClient.Close()
+
+	tabletType := psdbconnect.TabletType_primary
+	if psc.UseReplica {
+		tabletType = psdbconnect.TabletType_replica
+	}
+	assertOrders := func(want []string) {
+		t.Helper()
+		for _, shard := range shards {
+			deadline := time.Now().Add(2 * time.Minute)
+			for {
+				got, err := mysqlClient.GetShardTableColumnOrder(ctx, psc.Database, shard, tableName, tabletType)
+				if err == nil && reflect.DeepEqual(got, want) {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("shard %s: column order %v (err %v), want %v", shard, got, err, want)
+				}
+				time.Sleep(2 * time.Second)
+			}
+		}
+	}
+	assertOrders([]string{"id", "name", "qty"})
+
+	mustExec(t, ctx, db, fmt.Sprintf("alter table %s add column mid varchar(16) after id", quoteIdent(tableName)))
+	assertOrders([]string{"id", "mid", "name", "qty"})
+}
+
 func TestIntegrationBitValues(t *testing.T) {
 	psc := loadIntegrationSource(t)
 	ctx := context.Background()
