@@ -380,7 +380,13 @@ func TestRead_ReturnsVStreamSchemaIncompatibilityErrors(t *testing.T) {
 	esc, err := TableCursorToSerializedCursor(tc)
 	assert.NoError(t, err)
 	assert.Equal(t, esc, sc)
-	// peek, stream, peek, stream without after_col (still not found), give up.
+	// peek, stream, give up: without WithAddedColumnRetry the column is not left out.
+	assert.Equal(t, 2, cc.syncFnInvokedCount)
+
+	// With it: peek, stream, peek, stream without after_col (still not found), give up.
+	cc.syncFnInvokedCount = 0
+	_, err = ped.Read(WithAddedColumnRetry(context.Background()), dbl, PlanetScaleSource{Database: "connect-test"}, "customers", []string{"id", "before_col", "after_col"}, tc, nil, nil, nil)
+	assert.True(t, IsVStreamSchemaIncompatibilityError(err))
 	assert.Equal(t, 4, cc.syncFnInvokedCount)
 }
 
@@ -814,7 +820,7 @@ func TestRead_ReturnsLastKnownPKCursorAfterMaxNoProgressTimeout(t *testing.T) {
 	}
 
 	sc, err := ped.Read(context.Background(), dbl, PlanetScaleSource{Database: "connect-test"}, "customers", []string{"id"}, copyCursor, nil, nil, nil)
-	assert.NoError(t, err)
+	assert.ErrorIs(t, err, ErrReadStoppedEarly)
 	if assert.NotNil(t, sc) {
 		cursor, err := sc.SerializedCursorToTableCursor()
 		assert.NoError(t, err)
@@ -1819,7 +1825,7 @@ func TestRead_StepsOverColumnAddedAfterCursor(t *testing.T) {
 
 	var rows []*sqltypes.Result
 	var checkpoints []string
-	sc, err := ped.Read(context.Background(), dbl, PlanetScaleSource{Database: "connect-test"}, "customers", []string{"id", "name", "added_col"}, startCursor,
+	sc, err := ped.Read(WithAddedColumnRetry(context.Background()), dbl, PlanetScaleSource{Database: "connect-test"}, "customers", []string{"id", "name", "added_col"}, startCursor,
 		func(res *sqltypes.Result, _ Operation) error {
 			rows = append(rows, res)
 			return nil
@@ -2075,4 +2081,53 @@ func TestVStreamErrorReason(t *testing.T) {
 	long := VStreamErrorReason(errors.New("vttablet: " + strings.Repeat("x", 1000)))
 	assert.Equal(t, maxVStreamErrorReasonLength+1, len([]rune(long)))
 	assert.True(t, strings.HasSuffix(long, "…"))
+}
+
+// Review finding 1: with state from an older connector version (no saved
+// column order) the handler cannot tell whether the missing column was added
+// at the end of the table. vttablet reports the last live column(s) beyond the
+// event's column count as "not found" for a column added in the middle too, so
+// leaving the reported column out would shift the older values (x gets b's
+// value, b gets c's). Without the handler's go-ahead Read keeps the re-sync
+// error.
+func TestRead_MissingColumnNotRetriedWithoutConfirmedColumnOrder(t *testing.T) {
+	dbl := &dbLogger{}
+	ped := connectClient{}
+	startCursor := &psdbconnect.TableCursor{Shard: "-", Keyspace: "connect-test", Position: "BEFORE_DDL"}
+	stopCursor := &psdbconnect.TableCursor{Shard: "-", Keyspace: "connect-test", Position: "STOP"}
+	streams := 0
+	vc := &vstreamConnectionMock{
+		vstreamFn: func(ctx context.Context, in *vtgatepb.VStreamRequest, opts ...grpc.CallOption) (vtgateservicepb.Vitess_VStreamClient, error) {
+			if in.Vgtid.ShardGtids[0].Gtid == "current" {
+				return &vstreamClientMock{responses: []*vtgatepb.VStreamResponse{{
+					Events: []*binlogdatapb.VEvent{vstreamVGtidEventFromCursor("customers", stopCursor)},
+				}}}, nil
+			}
+			streams++
+			return &vstreamClientMock{recvFn: func() (*vtgatepb.VStreamResponse, error) {
+				// ADD COLUMN x AFTER a on (id, a, b, c): the 4-column events resolve
+				// to (id, a, x, b), so c is the column "not found".
+				return nil, status.Error(codes.FailedPrecondition, "vttablet: rpc error: code = FailedPrecondition desc = "+
+					"failed to build table replication plan for table customers: column c not found in table customers")
+			}}, nil
+		},
+	}
+	ped.vstreamClientFn = func(ctx context.Context, ps PlanetScaleSource) (vstreamClient, error) {
+		return vc, nil
+	}
+	mysqlClient := NewTestMysqlClient(func(ctx context.Context, keyspaceName string, tableName string) ([]MysqlColumn, error) {
+		return []MysqlColumn{
+			{Name: "id", Type: "bigint", IsPrimaryKey: true},
+			{Name: "a", Type: "varchar(64)"},
+			{Name: "x", Type: "varchar(64)"},
+			{Name: "b", Type: "varchar(64)"},
+			{Name: "c", Type: "varchar(64)"},
+		}, nil
+	})
+	ped.Mysql = &mysqlClient
+
+	_, err := ped.Read(context.Background(), dbl, PlanetScaleSource{Database: "connect-test"}, "customers", []string{"id", "a", "x", "b", "c"}, startCursor, nil, nil, nil)
+	assert.Error(t, err)
+	assert.True(t, IsVStreamSchemaIncompatibilityError(err))
+	assert.Equal(t, 1, streams, "the column must not be left out without the handler's go-ahead")
 }

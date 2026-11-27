@@ -1430,3 +1430,223 @@ func TestColumnOrderTrackerTaskText(t *testing.T) {
 	}
 	assert.Equal(t, columnOrderTrackerTaskForAddAfter, resyncTaskMessage(err, "SalesDB", "a_add_after", "-"))
 }
+
+// Review finding 3: a column order that passes the check (here drop-only) is
+// only saved once the table's read completed. If it were saved before a read
+// that fails (cursor kept before the DROP), a later ADD COLUMN at the end
+// would look like a plain append to the saved order while the cursor is still
+// behind the DROP, and the older events would be decoded shifted.
+func TestColumnOrderSavedOnlyAfterReadCompletes(t *testing.T) {
+	psc := &lib.PlanetScaleSource{}
+	saved := []string{"id", "a", "b", "c"}
+	state := &lib.SyncState{Keyspaces: map[string]lib.KeyspaceState{
+		"SalesDB": {Streams: map[string]lib.ShardStates{"SalesDB:t": streamWithProgress(t, saved, map[string]string{"-": "MySQL56/old:1-10"})}},
+	}}
+	tl := &orderedTestLogger{testLogger: &testLogger{}, columns: map[string][]string{"SalesDB:t": {"id", "a", "c"}}}
+	db := lib.NewTestConnectClient(func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string,
+		cur *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
+	) (*lib.SerializedCursor, error) {
+		return nil, errors.New("vttablet: rpc error: code = Unavailable desc = no healthy tablet")
+	})
+	assert.Error(t, (&Sync{}).Handle(context.Background(), psc, &db, tl, state, columnOrderSelection("t")))
+	assert.Equal(t, saved, state.Keyspaces["SalesDB"].Streams["SalesDB:t"].ColumnOrder)
+	if assert.NotEmpty(t, tl.states) {
+		assert.Equal(t, saved, tl.states[len(tl.states)-1].Keyspaces["SalesDB"].Streams["SalesDB:t"].ColumnOrder)
+	}
+}
+
+// Review finding 4: binlogs purged at the saved position make the schema
+// history scan fail the same way Read does. Read resets that shard's cursor
+// and copies the table again (nothing is decoded from before the change), so
+// the scan error must not skip the table forever.
+func TestColumnOrderChangeWithPurgedBinlogsLetsReadResetTheCursor(t *testing.T) {
+	psc := &lib.PlanetScaleSource{}
+	state := historianTestState(t, historianSaved, map[string]string{"-": "MySQL56/old:1-10"})
+	tl := historianTestLogger(historianLive)
+	var readTables, readFrom, scanned []string
+	record := recordingReadFn(&readTables)
+	db := lib.NewTestConnectClient(func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string,
+		cur *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
+	) (*lib.SerializedCursor, error) {
+		readFrom = append(readFrom, tableName+"@"+cur.Position)
+		return record(ctx, logger, ps, tableName, columns, cur, onResult, onCursor, onUpdate)
+	})
+	purged := errors.New("rpc error: code = Unknown desc = Cannot replicate because the source purged required binary logs.")
+	db.(*lib.TestConnectClient).ScanSchemaHistoryFn = scanByShard(nil, map[string]error{"-": purged}, &scanned)
+	assert.NoError(t, (&Sync{}).Handle(context.Background(), psc, &db, tl, state, columnOrderSelection("a_add_after", "b_bystander")))
+	assert.Empty(t, tl.tasks)
+	assert.Equal(t, []string{"a_add_after/-", "b_bystander/-"}, readTables)
+	assert.Equal(t, []string{"a_add_after@", "b_bystander@MySQL56/old:1-10"}, readFrom, "the expired shard is read from an empty cursor (copied again)")
+	assert.Equal(t, historianLive, tl.states[len(tl.states)-1].Keyspaces["SalesDB"].Streams["SalesDB:a_add_after"].ColumnOrder)
+}
+
+// Review finding 4: a scan error that raises a Task names the shard that
+// failed, not "".
+func TestColumnOrderChangeScanShardNotFoundTaskNamesShard(t *testing.T) {
+	psc := &lib.PlanetScaleSource{}
+	state := historianTestState(t, historianSaved, map[string]string{"-40": "MySQL56/s1:1-10", "40-": "MySQL56/s2:1-10"})
+	tl := historianTestLogger(historianLive)
+	var readTables, scanned []string
+	db := lib.NewTestConnectClient(recordingReadFn(&readTables))
+	gone := errors.New("rpc error: code = InvalidArgument desc = shard provided in VGTID, -40, not found in the SalesDB keyspace")
+	db.(*lib.TestConnectClient).ScanSchemaHistoryFn = scanByShard(nil, map[string]error{"-40": gone}, &scanned)
+	assert.NoError(t, (&Sync{}).Handle(context.Background(), psc, &db, tl, state, columnOrderSelection("a_add_after")))
+	if assert.Len(t, tl.tasks, 1) {
+		assert.Contains(t, tl.tasks[0], `shard "-40" no longer exists`)
+	}
+}
+
+// Review finding 6: an error that affects the whole connection (rejected
+// credentials, vtgate unreachable) stops the sync instead of trying every
+// remaining table.
+func TestConnectionWideErrorStopsTheSync(t *testing.T) {
+	psc := &lib.PlanetScaleSource{}
+	state := historianTestState(t, historianSaved, map[string]string{"-": "MySQL56/old:1-10"})
+	tl := historianTestLogger(historianSaved)
+	var readTables []string
+	db := lib.NewTestConnectClient(func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string,
+		cur *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
+	) (*lib.SerializedCursor, error) {
+		readTables = append(readTables, tableName+"/"+cur.Shard)
+		return nil, errors.Wrap(status.Error(codes.Unauthenticated, "invalid credentials"), "Unable to get latest cursor position")
+	})
+	err := (&Sync{}).Handle(context.Background(), psc, &db, tl, state, columnOrderSelection("a_add_after", "b_bystander"))
+	assert.Error(t, err)
+	assert.Equal(t, []string{"a_add_after/-"}, readTables)
+}
+
+// Review finding 1: Read may only step over a column vttablet reports as "not
+// found" when the handler confirmed that the saved order is a prefix of the
+// live order (or the schema history check passed, or the table is copied from
+// scratch); never for state without a saved order or an unknown source schema.
+func TestAddedColumnRetryOnlyWithConfirmedColumnOrder(t *testing.T) {
+	saved := []string{"id", "a", "b", "c"}
+	for _, tc := range []struct {
+		name      string
+		saved     []string
+		live      []string // nil: the Serializer does not know the table
+		progress  bool
+		verdict   *lib.SchemaHistory
+		wantAllow bool
+	}{
+		{name: "identical", saved: saved, live: saved, progress: true, wantAllow: true},
+		{name: "appended at end", saved: saved, live: []string{"id", "a", "b", "c", "d"}, progress: true, wantAllow: true},
+		{name: "state without saved order", saved: nil, live: []string{"id", "a", "x", "b", "c"}, progress: true},
+		{name: "source schema unknown", saved: saved, live: nil, progress: true},
+		{name: "copied from scratch", saved: nil, live: saved, progress: false, wantAllow: true},
+		{name: "order change, schema change tracked", saved: saved, live: []string{"id", "a", "x", "b", "c"}, progress: true, verdict: &trackedDDL, wantAllow: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			psc := &lib.PlanetScaleSource{}
+			pos := ""
+			if tc.progress {
+				pos = "MySQL56/old:1-10"
+			}
+			state := &lib.SyncState{Keyspaces: map[string]lib.KeyspaceState{
+				"SalesDB": {Streams: map[string]lib.ShardStates{"SalesDB:t": streamWithProgress(t, tc.saved, map[string]string{"-": pos})}},
+			}}
+			columns := map[string][]string{}
+			if tc.live != nil {
+				columns["SalesDB:t"] = tc.live
+			}
+			tl := &orderedTestLogger{testLogger: &testLogger{}, columns: columns}
+			var allowed []bool
+			db := lib.NewTestConnectClient(func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string,
+				cur *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
+			) (*lib.SerializedCursor, error) {
+				allowed = append(allowed, lib.AddedColumnRetryAllowed(ctx))
+				return lib.TableCursorToSerializedCursor(&psdbconnect.TableCursor{Keyspace: cur.Keyspace, Shard: cur.Shard, Position: "MySQL56/t:1-20"})
+			})
+			if tc.verdict != nil {
+				var scanned []string
+				db.(*lib.TestConnectClient).ScanSchemaHistoryFn = scanByShard(map[string]lib.SchemaHistory{"-": *tc.verdict}, nil, &scanned)
+			}
+			assert.NoError(t, (&Sync{}).Handle(context.Background(), psc, &db, tl, state, columnOrderSelection("t")))
+			assert.Equal(t, []bool{tc.wantAllow}, allowed)
+		})
+	}
+}
+
+// Review finding 3: a Read that gives up after repeated timeouts keeps the
+// cursor it reached, but the live order is not saved (the cursor may still be
+// before the schema change).
+func TestColumnOrderNotSavedWhenReadStopsEarly(t *testing.T) {
+	psc := &lib.PlanetScaleSource{}
+	saved := []string{"id", "a", "b", "c"}
+	state := &lib.SyncState{Keyspaces: map[string]lib.KeyspaceState{
+		"SalesDB": {Streams: map[string]lib.ShardStates{"SalesDB:t": streamWithProgress(t, saved, map[string]string{"-": "MySQL56/old:1-10"})}},
+	}}
+	tl := &orderedTestLogger{testLogger: &testLogger{}, columns: map[string][]string{"SalesDB:t": {"id", "a", "b", "c", "d"}}}
+	db := lib.NewTestConnectClient(func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string,
+		cur *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
+	) (*lib.SerializedCursor, error) {
+		sc, err := lib.TableCursorToSerializedCursor(&psdbconnect.TableCursor{Keyspace: cur.Keyspace, Shard: cur.Shard, Position: "MySQL56/old:1-15"})
+		assert.NoError(t, err)
+		return sc, lib.ErrReadStoppedEarly
+	})
+	assert.NoError(t, (&Sync{}).Handle(context.Background(), psc, &db, tl, state, columnOrderSelection("t")))
+	assert.Equal(t, "MySQL56/old:1-15", lastPosition(t, tl.states, "SalesDB:t", "-"))
+	assert.Equal(t, saved, tl.states[len(tl.states)-1].Keyspaces["SalesDB"].Streams["SalesDB:t"].ColumnOrder)
+}
+
+// Review finding 4: vtgate finding no tablet for the saved position during
+// the scan is handled like the same error from Read: the first sync marks the
+// cursor and fails, the next one raises the expired-binlogs Task for that shard.
+func TestColumnOrderChangeScanTabletNotFoundFailsOnceThenRaisesTask(t *testing.T) {
+	psc := &lib.PlanetScaleSource{}
+	state := historianTestState(t, historianSaved, map[string]string{"-": "MySQL56/old:1-10"})
+	notFound := errors.New("rpc error: code = Unknown desc = failed to find a PRIMARY tablet for VStream in SalesDB/- within the planetscale_operator_default cell(s): context has expired")
+	for sync := 1; sync <= 2; sync++ {
+		tl := historianTestLogger(historianLive)
+		var readTables, scanned []string
+		db := lib.NewTestConnectClient(recordingReadFn(&readTables))
+		db.(*lib.TestConnectClient).ScanSchemaHistoryFn = scanByShard(nil, map[string]error{"-": notFound}, &scanned)
+		err := (&Sync{}).Handle(context.Background(), psc, &db, tl, state, columnOrderSelection("a_add_after", "b_bystander"))
+		assert.Equal(t, []string{"b_bystander/-"}, readTables, "sync %d", sync)
+		if sync == 1 {
+			if assert.Error(t, err) {
+				assert.Contains(t, err.Error(), "a re-sync Task is raised")
+			}
+			assert.Empty(t, tl.tasks)
+			assert.True(t, state.Keyspaces["SalesDB"].Streams["SalesDB:a_add_after"].Shards["-"].HasSuspectedBinlogExpiration())
+			continue
+		}
+		assert.NoError(t, err)
+		if assert.Len(t, tl.tasks, 1) {
+			assert.Contains(t, tl.tasks[0], `binary logs needed to resume table "a_add_after" in keyspace "SalesDB" (shard "-") have expired`)
+		}
+	}
+}
+
+// Review finding 5: a scan that cannot reach the current position in time
+// raises the re-sync Task instead of failing every sync the same way.
+func TestColumnOrderChangeScanTimeoutRaisesResyncTask(t *testing.T) {
+	psc := &lib.PlanetScaleSource{}
+	state := historianTestState(t, historianSaved, map[string]string{"-": "MySQL56/old:1-10"})
+	tl := historianTestLogger(historianLive)
+	var readTables, scanned []string
+	db := lib.NewTestConnectClient(recordingReadFn(&readTables))
+	db.(*lib.TestConnectClient).ScanSchemaHistoryFn = scanByShard(nil, map[string]error{"-": errors.Wrap(lib.ErrSchemaHistoryScanTimeout, "context deadline exceeded")}, &scanned)
+	assert.NoError(t, (&Sync{}).Handle(context.Background(), psc, &db, tl, state, columnOrderSelection("a_add_after", "b_bystander")))
+	assert.Equal(t, []string{"b_bystander/-"}, readTables)
+	if assert.Len(t, tl.tasks, 1) {
+		assert.Equal(t, columnOrderTaskForAddAfter, tl.tasks[0])
+	}
+}
+
+func TestIsConnectionWideError(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want bool
+	}{
+		{status.Error(codes.Unauthenticated, "invalid credentials"), true},
+		{errors.Wrap(status.Error(codes.PermissionDenied, "denied"), "Unable to get latest cursor position"), true},
+		{status.Error(codes.Unavailable, `connection error: desc = "transport: Error while dialing: dial tcp: lookup aws.connect.psdb.cloud: no such host"`), true},
+		{status.Error(codes.Unavailable, "target: SalesDB.-.primary: vttablet: rpc error: code = Unavailable desc = connection error: desc = \"transport: ...\""), false},
+		{status.Error(codes.Unavailable, "no healthy tablet available for 'keyspace:\"SalesDB\" shard:\"-\" tablet_type:PRIMARY'"), false},
+		{status.Error(codes.DeadlineExceeded, "context deadline exceeded"), false},
+		{errors.New("vttablet: rpc error: code = FailedPrecondition desc = column c not found in table t"), false},
+	} {
+		assert.Equal(t, tc.want, isConnectionWideError(tc.err), "%v", tc.err)
+	}
+}

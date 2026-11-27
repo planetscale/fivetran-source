@@ -51,6 +51,7 @@ func (s *Sync) handle(ctx context.Context, psc *lib.PlanetScaleSource, db *lib.C
 		firstErr    error
 		pendingTask string
 	)
+keyspaces:
 	for _, ks := range includedKeyspaces(schema) {
 		for _, table := range includedTables(ks) {
 			stateKey := ks.SchemaName + ":" + table.TableName
@@ -90,27 +91,55 @@ func (s *Sync) handle(ctx context.Context, psc *lib.PlanetScaleSource, db *lib.C
 			// columns. Stream the table only if the schema tracker recorded the
 			// change (or the cursors are already past it); otherwise raise the
 			// re-sync Task instead of streaming the table.
-			if orderErr := checkColumnOrder(logger, state, ks.SchemaName, table.TableName, hasShards && !allShardsHaveNoProgress); orderErr != nil {
-				tracked, hErr := verifySchemaHistory(ctx, db, logger, psc, streamState, orderErr)
+			order := checkColumnOrder(logger, state, ks.SchemaName, table.TableName, hasShards && !allShardsHaveNoProgress)
+			if orderErr := order.changed; orderErr != nil {
+				tracked, failedShard, hErr := verifySchemaHistory(ctx, db, logger, psc, streamState, orderErr)
 				if hErr == nil {
 					why := "the saved cursors are already past the schema change"
 					if tracked {
 						why = "the schema tracker recorded the schema change, so the older binlog events are decoded with the schema they were written with"
 					}
 					logger.Info(fmt.Sprintf("table %s: column order changed (%s); %s, syncing as usual", stateKey, orderErr.Reason, why))
-					recordColumnOrder(state, ks.SchemaName, table.TableName, orderErr.Current)
+					order.addedColumnsSafe = true
 				} else {
+					var suspected *lib.SuspectedBinlogExpirationError
+					if errors.As(hErr, &suspected) && !streamState.Shards[failedShard].HasSuspectedBinlogExpiration() {
+						// Same as a Read that fails this way (see below): mark the
+						// cursor and fail this sync; the next one raises the Task.
+						streamState.Shards[failedShard].SetSuspectedBinlogExpiration()
+						if sErr := logger.State(*state); sErr != nil {
+							return status.Error(codes.Internal, sErr.Error())
+						}
+						summary := logSkippedTable(logger, stateKey, hErr)
+						if firstErr == nil {
+							firstErr = status.Error(codes.Internal, fmt.Sprintf("failed to download rows for table : %s , error : %s "+
+								"(if the next sync fails the same way, a re-sync Task is raised)", table.TableName, summary))
+						}
+						continue
+					}
 					summary := logSkippedTable(logger, stateKey, hErr)
-					if task := resyncTaskMessage(hErr, ks.SchemaName, table.TableName, ""); task != "" {
+					if task := resyncTaskMessage(hErr, ks.SchemaName, table.TableName, failedShard); task != "" {
 						if pendingTask == "" {
 							pendingTask = task
 						}
 					} else if firstErr == nil {
 						firstErr = status.Error(codes.Internal, fmt.Sprintf("failed to download rows for table : %s , error : %s", table.TableName, summary))
 					}
+					if isConnectionWideError(hErr) {
+						logger.Severe(fmt.Sprintf("stopping the sync after table %s: the error affects every table in the connection", stateKey))
+						break keyspaces
+					}
 					continue
 				}
 			}
+			// Read may only leave out a column that vttablet reports as "not
+			// found" when the saved order is known to be a prefix of the live
+			// order (or the schema history check passed), see lib.WithAddedColumnRetry.
+			readCtx := ctx
+			if order.addedColumnsSafe {
+				readCtx = lib.WithAddedColumnRetry(ctx)
+			}
+			readComplete := true
 
 			// Call truncate before any Read operations only when no shard has durable progress.
 			if hasShards && allShardsHaveNoProgress {
@@ -135,7 +164,17 @@ func (s *Sync) handle(ctx context.Context, psc *lib.PlanetScaleSource, db *lib.C
 				}
 
 				columns := includedColumns(table)
-				sc, err := (*db).Read(ctx, logger, *psc, table.TableName, columns, tc, onRow, onCursor, onUpdate)
+				sc, err := (*db).Read(readCtx, logger, *psc, table.TableName, columns, tc, onRow, onCursor, onUpdate)
+				if errors.Is(err, lib.ErrReadStoppedEarly) {
+					// Read gave up after repeated timeouts and already sent a Warning:
+					// keep the cursor it reached, but the table was not read up to
+					// the current position.
+					readComplete = false
+					err = nil
+				}
+				if err != nil {
+					readComplete = false
+				}
 				var suspected *lib.SuspectedBinlogExpirationError
 				if errors.As(err, &suspected) && !shardState.HasSuspectedBinlogExpiration() {
 					// Seen once: a tablet that is briefly unavailable (for example during
@@ -176,6 +215,10 @@ func (s *Sync) handle(ctx context.Context, psc *lib.PlanetScaleSource, db *lib.C
 					} else if firstErr == nil {
 						firstErr = status.Error(codes.Internal, fmt.Sprintf("failed to download rows for table : %s , error : %s", table.TableName, summary))
 					}
+					if isConnectionWideError(err) {
+						logger.Severe(fmt.Sprintf("stopping the sync after table %s: the error affects every table in the connection", stateKey))
+						break keyspaces
+					}
 					break
 				}
 				if sc != nil {
@@ -188,6 +231,13 @@ func (s *Sync) handle(ctx context.Context, psc *lib.PlanetScaleSource, db *lib.C
 					shardState.ClearSuspectedBinlogExpiration()
 					logger.State(*state)
 				}
+			}
+			// Save the live column order only once every shard was read up to
+			// the current position, i.e. past the schema change that produced
+			// it. Saved earlier, a cursor still before the change would be
+			// compared with an order that does not describe its events.
+			if readComplete && order.current != nil {
+				recordColumnOrder(state, ks.SchemaName, table.TableName, order.current)
 			}
 		}
 	}
@@ -253,40 +303,65 @@ func (e *ColumnOrderChangedError) Error() string {
 	return msg
 }
 
+// columnOrderCheck is the result of checkColumnOrder for one table.
+type columnOrderCheck struct {
+	// changed is set when the live column order is not the saved order with
+	// columns appended (or only dropped), see lib.ColumnOrderChange.
+	changed *ColumnOrderChangedError
+	// current is the live column order, saved in state once the table was
+	// read up to the current position; nil when the Serializer does not know
+	// the source schema of the table.
+	current []string
+	// addedColumnsSafe: the saved order is a prefix of the live order (or the
+	// table is copied from scratch), so a column vttablet reports as "not
+	// found" at the saved position was added at the end of the table and Read
+	// may step over it (lib.WithAddedColumnRetry). False when the saved order
+	// is unknown (state from an older connector version): vttablet reports the
+	// last live column as "not found" after a column added in the middle of the
+	// table too, so Read keeps raising the re-sync Task as before.
+	addedColumnsSafe bool
+}
+
 // checkColumnOrder compares the column order saved in the table's state with
 // the live order from the source schema, if the Serializer knows it (see
-// SourceColumnOrderer). It returns a *ColumnOrderChangedError, leaving the
-// saved order as it was so every sync raises the Task until the connection is
-// re-synced (or verifySchemaHistory clears it). Otherwise it records the live
-// order in state (saved with the next checkpoint).
+// SourceColumnOrderer). It never changes the saved order: the caller saves the
+// live order once the table's read completed, and keeps the saved order when
+// it raises the Task, so every sync raises it until the connection is
+// re-synced (or verifySchemaHistory clears it).
 //
 // compare is false when no shard of the table has durable progress (initial
 // sync, "Resync all data", or a cursor reset after binlog expiration): the
 // table is copied from scratch, so only the order is recorded.
-func checkColumnOrder(logger Serializer, state *lib.SyncState, keyspace, table string, compare bool) *ColumnOrderChangedError {
+func checkColumnOrder(logger Serializer, state *lib.SyncState, keyspace, table string, compare bool) columnOrderCheck {
 	orderer, ok := logger.(SourceColumnOrderer)
 	if !ok {
-		return nil
+		return columnOrderCheck{}
 	}
 	current, ok := orderer.SourceColumnOrder(keyspace, table)
 	if !ok {
-		return nil
+		return columnOrderCheck{}
 	}
-	stateKey := keyspace + ":" + table
-	streamState := state.Keyspaces[keyspace].Streams[stateKey]
-	if compare {
-		if reason := lib.ColumnOrderChange(streamState.ColumnOrder, current); reason != "" {
-			return &ColumnOrderChangedError{
-				Keyspace: keyspace,
-				Table:    table,
-				Reason:   reason,
-				Saved:    slices.Clone(streamState.ColumnOrder),
-				Current:  slices.Clone(current),
-			}
+	check := columnOrderCheck{current: slices.Clone(current)}
+	if !compare {
+		check.addedColumnsSafe = true
+		return check
+	}
+	saved := state.Keyspaces[keyspace].Streams[keyspace+":"+table].ColumnOrder
+	if len(saved) == 0 {
+		return check
+	}
+	if reason := lib.ColumnOrderChange(saved, current); reason != "" {
+		check.changed = &ColumnOrderChangedError{
+			Keyspace: keyspace,
+			Table:    table,
+			Reason:   reason,
+			Saved:    slices.Clone(saved),
+			Current:  slices.Clone(current),
 		}
+		return check
 	}
-	recordColumnOrder(state, keyspace, table, current)
-	return nil
+	check.addedColumnsSafe = true
+	return check
 }
 
 func recordColumnOrder(state *lib.SyncState, keyspace, table string, current []string) {
@@ -303,17 +378,27 @@ func recordColumnOrder(state *lib.SyncState, keyspace, table string, current []s
 // order) and returns a nil error when each shard either has no schema change on
 // the table since its cursor or has one followed by a schema version, so the
 // historian decodes the older events correctly (tracked reports whether any
-// shard had one). Otherwise it returns:
+// shard had one). A shard whose binary logs at the saved position have expired
+// gets its cursor reset here, like lib.Read does, so the shard is copied again
+// and nothing is decoded from before the change. Otherwise it returns the shard
+// that failed and:
 //
 //   - orderErr with Untracked set for the first shard whose schema change has
 //     no schema version after it (Task: enable the tracker, then re-sync);
-//   - orderErr unchanged when the client cannot scan (Task: re-sync);
+//   - orderErr unchanged when the client cannot scan, or the scan did not
+//     reach the current position in time (Task: re-sync);
+//   - a *lib.SuspectedBinlogExpirationError when vtgate found no tablet for the
+//     saved position (handled like the same error from lib.Read);
 //   - the scan error, e.g. lib.ErrSchemaHistoryInconclusive (a plain error, so
 //     Fivetran retries and the next sync scans again).
-func verifySchemaHistory(ctx context.Context, db *lib.ConnectClient, logger Serializer, psc *lib.PlanetScaleSource, streamState lib.ShardStates, orderErr *ColumnOrderChangedError) (tracked bool, err error) {
+func verifySchemaHistory(ctx context.Context, db *lib.ConnectClient, logger Serializer, psc *lib.PlanetScaleSource, streamState lib.ShardStates, orderErr *ColumnOrderChangedError) (tracked bool, failedShard string, err error) {
 	scanner, ok := (*db).(lib.SchemaHistoryScanner)
 	if !ok {
-		return false, orderErr
+		return false, "", orderErr
+	}
+	tabletType := psdbconnect.TabletType_primary
+	if psc.UseReplica {
+		tabletType = psdbconnect.TabletType_replica
 	}
 	shards := make([]string, 0, len(streamState.Shards))
 	for shard := range streamState.Shards {
@@ -323,26 +408,72 @@ func verifySchemaHistory(ctx context.Context, db *lib.ConnectClient, logger Seri
 	for _, shard := range shards {
 		tc, err := streamState.Shards[shard].SerializedCursorToTableCursor()
 		if err != nil {
-			return false, status.Error(codes.Internal, fmt.Sprintf("invalid cursor for stream %v:%v, failed with [%v]", orderErr.Keyspace, orderErr.Table, err))
+			return false, shard, status.Error(codes.Internal, fmt.Sprintf("invalid cursor for stream %v:%v, failed with [%v]", orderErr.Keyspace, orderErr.Table, err))
 		}
 		if tc.Position == "" {
 			continue
 		}
 		history, err := scanner.ScanSchemaHistory(ctx, logger, *psc, orderErr.Table, tc)
-		if errors.Is(err, lib.ErrSchemaHistoryUnavailable) {
-			return false, orderErr
-		}
-		if err != nil {
-			return false, errors.Wrapf(err, "checking the schema history of table %s on shard %s after its column order changed (%s)", orderErr.Table, shard, orderErr.Reason)
+		switch {
+		case errors.Is(err, lib.ErrSchemaHistoryUnavailable):
+			return false, shard, orderErr
+		case errors.Is(err, lib.ErrSchemaHistoryScanTimeout):
+			logger.Severe(fmt.Sprintf("table %s:%s shard %s: %v", orderErr.Keyspace, orderErr.Table, shard, err))
+			return false, shard, orderErr
+		case lib.IsBinlogsExpirationError(err):
+			if rErr := resetExpiredCursor(logger, streamState, shard, tc, orderErr.Table, err); rErr != nil {
+				return false, shard, rErr
+			}
+			continue
+		case lib.IsVStreamTabletNotFoundError(err, tabletType):
+			return false, shard, &lib.SuspectedBinlogExpirationError{Keyspace: tc.Keyspace, Shard: shard, Table: orderErr.Table, Err: err}
+		case err != nil:
+			return false, shard, errors.Wrapf(err, "checking the schema history of table %s on shard %s after its column order changed (%s)", orderErr.Table, shard, orderErr.Reason)
 		}
 		if history.Verdict == lib.SchemaHistoryUntracked {
 			orderErr.Untracked, orderErr.Shard, orderErr.DDL = true, shard, history.DDL
-			return false, orderErr
+			return false, shard, orderErr
 		}
 		tracked = tracked || history.Verdict == lib.SchemaHistoryTracked
 		logger.Info(fmt.Sprintf("table %s:%s shard %s: %s", orderErr.Keyspace, orderErr.Table, shard, history.Verdict))
 	}
-	return tracked, nil
+	return tracked, "", nil
+}
+
+// resetExpiredCursor resets a shard's cursor whose binary logs have expired,
+// the same way lib.Read does: the shard is copied again by the next Read and
+// the reset goes into the combined binlog expiration Warning.
+func resetExpiredCursor(logger Serializer, streamState lib.ShardStates, shard string, tc *psdbconnect.TableCursor, table string, cause error) error {
+	logger.Info(fmt.Sprintf("table %s:%s shard %s: the binary logs at the saved position have expired; resetting the cursor to copy the shard again", tc.Keyspace, table, shard))
+	if recorder, ok := logger.(lib.BinlogExpirationRecorder); ok {
+		recorder.RecordBinlogExpiration(tc.Keyspace, table, shard)
+	}
+	sc, err := lib.TableCursorToSerializedCursor(&psdbconnect.TableCursor{Keyspace: tc.Keyspace, Shard: tc.Shard})
+	if err != nil {
+		return errors.Wrap(err, "unable to serialize reset cursor after binlog expiration")
+	}
+	sc.SetBinlogExpirationError(fmt.Sprintf("Binlogs have expired. Cursor reset to trigger historical sync. Original error: %v", cause.Error()))
+	streamState.Shards[shard] = sc
+	return nil
+}
+
+// isConnectionWideError reports errors that every other table in the
+// connection would hit as well, so the sync stops instead of trying each
+// remaining table: credentials rejected by vtgate (Unauthenticated,
+// PermissionDenied), or vtgate itself unreachable (Unavailable from the gRPC
+// transport). An Unavailable error that vtgate relays from a vttablet (one
+// shard without a healthy tablet) is not: other keyspaces or shards may still
+// sync. DeadlineExceeded is not either: lib.Read handles timeouts per table.
+func isConnectionWideError(err error) bool {
+	switch status.Code(err) {
+	case codes.Unauthenticated, codes.PermissionDenied:
+		return true
+	case codes.Unavailable:
+		msg := err.Error()
+		return strings.Contains(msg, "connection error") && !strings.Contains(msg, "vttablet")
+	default:
+		return false
+	}
 }
 
 // resyncTaskMessage returns the customer-facing Fivetran Task text for read

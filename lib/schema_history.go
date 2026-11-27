@@ -65,9 +65,15 @@ var (
 	// ErrSchemaHistoryInconclusive: the scan ended before it could tell, for
 	// example right after a schema change, before the tracker recorded it.
 	ErrSchemaHistoryInconclusive = errors.New("could not yet tell whether the schema change was recorded by the schema tracker")
+	// ErrSchemaHistoryScanTimeout: the scan did not reach the current position
+	// within schemaHistoryScanTimeout (a large binlog backlog since the saved
+	// cursor). It saves no progress, so the next sync would run out of time
+	// the same way: the caller raises the re-sync Task instead of retrying.
+	ErrSchemaHistoryScanTimeout = errors.New("the schema history scan did not reach the current binlog position in time")
 )
 
-const (
+// Variables, not constants, so tests can shorten them (SetSchemaHistoryTimings).
+var (
 	// schemaVersionGrace is how much binlog time may pass between a schema
 	// change and the VERSION event of the tracker's insert into
 	// _vt.schema_version. The tracker inserts as soon as its own stream
@@ -76,6 +82,9 @@ const (
 	// schemaVersionLiveWait is how long the scan waits at the current
 	// position for a VERSION event after a schema change it just saw.
 	schemaVersionLiveWait = 30 * time.Second
+)
+
+const (
 	// schemaHistorySettle is how long the scan keeps reading at the current
 	// position for a schema change at exactly that position.
 	schemaHistorySettle = 5 * time.Second
@@ -83,9 +92,20 @@ const (
 	schemaHistoryScanTimeout = 15 * time.Minute
 )
 
+// SetSchemaHistoryTimings sets the grace a VERSION event has after a schema
+// change and how long the scan waits for one at the current position, and
+// returns a func that restores the previous values. For tests only (e.g. the
+// integration tests, which would otherwise wait out the 2-minute grace).
+func SetSchemaHistoryTimings(grace, liveWait time.Duration) (restore func()) {
+	prevGrace, prevLiveWait := schemaVersionGrace, schemaVersionLiveWait
+	schemaVersionGrace, schemaVersionLiveWait = grace, liveWait
+	return func() { schemaVersionGrace, schemaVersionLiveWait = prevGrace, prevLiveWait }
+}
+
 // ScanSchemaHistory streams the table's binlog events from tc's position to
-// the current position, emitting nothing, and reports whether a schema change
-// on the table in that range was followed by a VERSION event.
+// the current position, emitting nothing, and reports whether each schema
+// change on the table in that range was followed by a VERSION event within
+// schemaVersionGrace (see scanSchemaHistoryStream).
 //
 // vttablet only sends DDL events for statements that name the table
 // (mustSendDDL); for Online DDL that is the cut-over RENAME. It sends VERSION
@@ -149,16 +169,22 @@ type schemaHistoryTimings struct {
 }
 
 // scanSchemaHistoryStream reads VStream responses (recv) for one shard until
-// it can tell the verdict:
+// it can tell the verdict. Every DDL event on the table must be followed by
+// its own VERSION event within grace (binlog time); a VERSION event resolves
+// the oldest DDL still waiting for one. A VERSION event written later than
+// that (for example after the tracker was turned on, for another table's
+// schema change) does not show that the table's change was recorded.
 //
-//   - a VERSION event after a DDL event: SchemaHistoryTracked;
-//   - an event written grace (binlog time) or more after a DDL event, with no
-//     VERSION event in between: SchemaHistoryUntracked;
+//   - every DDL event so far followed by a VERSION event within grace:
+//     SchemaHistoryTracked;
+//   - a VERSION event, or any other event, written grace or more after a DDL
+//     event that has no VERSION event yet: SchemaHistoryUntracked;
 //   - the stream passes stop (the position when the scan started) with no DDL
 //     event, or stays at stop for settle: SchemaHistoryNoDDL;
 //   - a DDL event and then nothing for liveWait at stop: SchemaHistoryUntracked
 //     if the DDL is older than grace, else ErrSchemaHistoryInconclusive (the
-//     next sync looks again).
+//     next sync looks again);
+//   - ctx's deadline before any of these: ErrSchemaHistoryScanTimeout.
 func scanSchemaHistoryStream(ctx context.Context, recv func() (*vtgatepb.VStreamResponse, error), keyspace, shard, stop string, t schemaHistoryTimings) (SchemaHistory, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -182,14 +208,16 @@ func scanSchemaHistoryStream(ctx context.Context, recv func() (*vtgatepb.VStream
 	}()
 
 	var (
-		history     SchemaHistory
-		pending     bool  // a DDL event with no VERSION event after it yet
-		ddlTime     int64 // binlog timestamp (seconds) of the pending DDL
+		history SchemaHistory
+		// pendingDDLs holds the binlog timestamps (seconds) of the table's DDL
+		// events that have no VERSION event after them yet, oldest first.
+		pendingDDLs []int64
 		reachedStop bool
 		timer       *time.Timer
 		timerC      <-chan time.Time
 		timerForDDL bool
 	)
+	graceSeconds := int64(t.grace / time.Second)
 	setTimer := func(d time.Duration, forDDL bool) {
 		if timer != nil {
 			timer.Stop()
@@ -204,25 +232,34 @@ func scanSchemaHistoryStream(ctx context.Context, recv func() (*vtgatepb.VStream
 		}
 	}()
 	untrackedOrInconclusive := func() (SchemaHistory, error) {
-		if ddlTime > 0 && t.now().Sub(time.Unix(ddlTime, 0)) >= t.grace {
+		if ddlTime := pendingDDLs[0]; ddlTime > 0 && t.now().Sub(time.Unix(ddlTime, 0)) >= t.grace {
 			history.Verdict = SchemaHistoryUntracked
 			return history, nil
 		}
 		return history, ErrSchemaHistoryInconclusive
 	}
+	ctxErr := func() error {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return errors.Wrap(ErrSchemaHistoryScanTimeout, ctx.Err().Error())
+		}
+		return errors.Wrap(ErrSchemaHistoryInconclusive, ctx.Err().Error())
+	}
 
 	for {
 		select {
 		case <-ctx.Done():
-			return history, errors.Wrap(ErrSchemaHistoryInconclusive, ctx.Err().Error())
+			return history, ctxErr()
 		case <-timerC:
-			if !pending {
+			if len(pendingDDLs) == 0 {
 				history.Verdict = SchemaHistoryNoDDL
 				return history, nil
 			}
 			return untrackedOrInconclusive()
 		case r := <-ch:
 			if r.err != nil {
+				if ctx.Err() != nil {
+					return history, ctxErr()
+				}
 				return history, r.err
 			}
 			passedStop := false
@@ -237,24 +274,30 @@ func scanSchemaHistoryStream(ctx context.Context, recv func() (*vtgatepb.VStream
 						}
 					}
 				case binlogdatapb.VEventType_DDL:
-					if !pending {
-						pending = true
-						ddlTime = event.GetTimestamp()
-					}
+					pendingDDLs = append(pendingDDLs, event.GetTimestamp())
 					if history.DDL == "" {
 						history.DDL = event.GetStatement()
 					}
 				case binlogdatapb.VEventType_VERSION:
-					if pending {
+					if len(pendingDDLs) == 0 {
+						break
+					}
+					if ddlTime := pendingDDLs[0]; ddlTime > 0 && event.GetTimestamp()-ddlTime >= graceSeconds {
+						history.Verdict = SchemaHistoryUntracked
+						return history, nil
+					}
+					pendingDDLs = pendingDDLs[1:]
+					if len(pendingDDLs) == 0 {
 						history.Verdict = SchemaHistoryTracked
 						return history, nil
 					}
 				}
-				if pending && ddlTime > 0 && event.GetTimestamp()-ddlTime >= int64(t.grace/time.Second) {
+				if len(pendingDDLs) > 0 && pendingDDLs[0] > 0 && event.GetTimestamp()-pendingDDLs[0] >= graceSeconds {
 					history.Verdict = SchemaHistoryUntracked
 					return history, nil
 				}
 			}
+			pending := len(pendingDDLs) > 0
 			if passedStop && !pending {
 				history.Verdict = SchemaHistoryNoDDL
 				return history, nil

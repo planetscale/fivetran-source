@@ -224,3 +224,69 @@ func TestConnectClientScansSchemaHistory(t *testing.T) {
 	_, ok := NewConnectClient(&mysql).(SchemaHistoryScanner)
 	assert.True(t, ok, "the handler finds the scanner by type assertion on the ConnectClient")
 }
+
+// Review finding 2: a VERSION event only shows that the table's schema change
+// was recorded if it follows that change within the grace. A VERSION much
+// later (the tracker was turned on afterwards and another table changed) must
+// not make an untracked change look tracked; nor may one VERSION cover two
+// schema changes on the table.
+func TestScanSchemaHistoryStreamVersionMustFollowEachDDLWithinGrace(t *testing.T) {
+	longAfter := time.Unix(shDDLTime, 0).Add(2 * time.Hour)
+	for _, tc := range []struct {
+		name      string
+		responses []*vtgatepb.VStreamResponse
+	}{
+		{
+			name: "VERSION an hour after the DDL, nothing in between",
+			responses: []*vtgatepb.VStreamResponse{
+				shResp(shVGTID("-", "MySQL56/a:1-12"), shDDL(shDDLTime)),
+				shResp(shVGTID("-", "MySQL56/a:1-13"), shVersion(shDDLTime+3600)),
+				shResp(shVGTID("-", shStop)),
+			},
+		},
+		{
+			name: "two DDLs, one VERSION",
+			responses: []*vtgatepb.VStreamResponse{
+				shResp(shVGTID("-", "MySQL56/a:1-12"), shDDL(shDDLTime)),
+				shResp(shVGTID("-", "MySQL56/a:1-13"), shDDL(shDDLTime+30)),
+				shResp(shVGTID("-", "MySQL56/a:1-14"), shVersion(shDDLTime+31)),
+				shResp(shVGTID("-", shStop)),
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			got, err := scanSchemaHistoryStream(ctx, shRecv(ctx, tc.responses...), shKeyspace, "-", shStop, shTimings(longAfter))
+			assert.NoError(t, err)
+			assert.Equal(t, SchemaHistoryUntracked, got.Verdict)
+		})
+	}
+}
+
+// Review finding 5: a scan that runs out of time before it reaches the current
+// position (a large backlog) is not "inconclusive, try again": the next scan
+// starts from the same cursor and runs out of time again.
+func TestScanSchemaHistoryStreamTimeoutIsNotInconclusive(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	responses := []*vtgatepb.VStreamResponse{shResp(shVGTID("-", "MySQL56/a:1-11"), shRow(shDDLTime))}
+	_, err := scanSchemaHistoryStream(ctx, shRecv(ctx, responses...), shKeyspace, "-", shStop, shTimings(time.Unix(shDDLTime, 0)))
+	assert.ErrorIs(t, err, ErrSchemaHistoryScanTimeout)
+	assert.NotErrorIs(t, err, ErrSchemaHistoryInconclusive)
+}
+
+func TestScanSchemaHistoryStreamEveryDDLWithItsVersionIsTracked(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	responses := []*vtgatepb.VStreamResponse{
+		shResp(shVGTID("-", "MySQL56/a:1-12"), shDDL(shDDLTime)),
+		shResp(shVGTID("-", "MySQL56/a:1-13"), shVersion(shDDLTime+1)),
+		shResp(shVGTID("-", "MySQL56/a:1-14"), shDDL(shDDLTime+600)),
+		shResp(shVGTID("-", "MySQL56/a:1-15"), shDDL(shDDLTime+601)),
+		shResp(shVGTID("-", "MySQL56/a:1-16"), shVersion(shDDLTime+601), shVersion(shDDLTime+602)),
+	}
+	got, err := scanSchemaHistoryStream(ctx, shRecv(ctx, responses...), shKeyspace, "-", shStop, shTimings(time.Unix(shDDLTime, 0).Add(time.Hour)))
+	assert.NoError(t, err)
+	assert.Equal(t, SchemaHistoryTracked, got.Verdict)
+}

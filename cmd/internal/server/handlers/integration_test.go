@@ -511,40 +511,21 @@ func TestIntegrationMidTableDDLRaisesResyncTask(t *testing.T) {
 		"alter table %s add column middle_col varchar(64) null after before_col",
 		quoteIdent(tableName),
 	))
-	ddlAt := time.Now()
 	mustExec(t, ctx, db, fmt.Sprintf(
 		"insert into %s (id, before_col, middle_col, after_col) values (2, 'before-new', 'middle-new', 'after-new')",
 		quoteIdent(tableName),
 	))
 
-	// Snapshot the cursors before the failing syncs; Sync.Handle mutates state in place.
+	// Snapshot the cursors before the failing sync; Sync.Handle mutates state in place.
 	beforeCursors := integrationStateTableCursors(t, state, psc.Database, tableName)
 
-	// The integration keyspace does not track schema versions. Right after the
-	// schema change the connector cannot tell yet whether the schema tracker
-	// will record it, so it skips the table without a Task and checks again on
-	// the next sync.
-	sender, failedState, err := runIntegrationSyncWithError(t, psc, tableName, columns, state)
-	if err == nil || !strings.Contains(err.Error(), lib.ErrSchemaHistoryInconclusive.Error()) {
-		t.Fatalf("expected the first sync right after the schema change to be inconclusive, got %v", err)
-	}
-	if tasks := sender.tasks(); len(tasks) != 0 {
-		t.Fatalf("expected no Task while the schema history is inconclusive, got %q", tasks)
-	}
-	assertIntegrationRecordCount(t, sender.recordsForTable(tableName), 0)
-	for shard, before := range beforeCursors {
-		if after := integrationStateTableCursors(t, failedState, psc.Database, tableName)[shard]; !proto.Equal(before, after) {
-			t.Fatalf("inconclusive sync advanced cursor for shard %s: before %v, after %v", shard, before, after)
-		}
-	}
+	// The integration keyspace does not track schema versions. Shorten the
+	// grace the schema tracker gets to record the schema change (2m) and the
+	// wait for it at the current position (30s), so this sync can already tell
+	// that the change was not recorded instead of waiting out the grace.
+	t.Cleanup(lib.SetSchemaHistoryTimings(5*time.Second, 20*time.Second))
 
-	// Once the schema change is older than the grace the tracker gets to
-	// record it (lib.schemaVersionGrace, 2m), the next sync raises the Task.
-	if wait := integrationSchemaVersionGrace - time.Since(ddlAt); wait > 0 {
-		t.Logf("waiting %s for the schema change to pass the schema version grace", wait.Round(time.Second))
-		time.Sleep(wait)
-	}
-	sender, failedState, err = runIntegrationSyncWithError(t, psc, tableName, columns, failedState)
+	sender, failedState, err := runIntegrationSyncWithError(t, psc, tableName, columns, state)
 	if err != nil {
 		t.Fatalf("expected mid-table DDL to raise a Fivetran Task and return nil, got %s: %v", status.Code(err), err)
 	}
@@ -721,10 +702,6 @@ func TestIntegrationStressBurstLoad(t *testing.T) {
 		state = nextState
 	}
 }
-
-// integrationSchemaVersionGrace is lib.schemaVersionGrace (2m) plus a margin
-// for clock skew between the test runner and the database's binlog timestamps.
-const integrationSchemaVersionGrace = 2*time.Minute + 15*time.Second
 
 func loadIntegrationSource(t *testing.T) lib.PlanetScaleSource {
 	t.Helper()
