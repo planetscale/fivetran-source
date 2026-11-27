@@ -101,15 +101,19 @@ func (x *vstreamClientMock) Recv() (*vtgatepb.VStreamResponse, error) {
 }
 
 type (
-	BuildSchemaFunc             func(ctx context.Context, psc PlanetScaleSource, schemaBuilder SchemaBuilder) error
-	PingContextFunc             func(context.Context, PlanetScaleSource) error
-	GetVitessShardsFunc         func(ctx context.Context, psc PlanetScaleSource) ([]string, error)
-	GetKeyspaceTableColumnsFunc func(ctx context.Context, keyspaceName string, tableName string) ([]MysqlColumn, error)
-	TestMysqlClient             struct {
-		BuildSchemaFn             BuildSchemaFunc
-		PingContextFn             PingContextFunc
-		GetVitessShardsFn         GetVitessShardsFunc
-		GetKeyspaceTableColumnsFn GetKeyspaceTableColumnsFunc
+	BuildSchemaFunc              func(ctx context.Context, psc PlanetScaleSource, schemaBuilder SchemaBuilder) error
+	PingContextFunc              func(context.Context, PlanetScaleSource) error
+	GetVitessShardsFunc          func(ctx context.Context, psc PlanetScaleSource) ([]string, error)
+	GetKeyspaceTableColumnsFunc  func(ctx context.Context, keyspaceName string, tableName string) ([]MysqlColumn, error)
+	GetShardTableColumnOrderFunc func(ctx context.Context, keyspaceName, shard, tableName string, tabletType psdbconnect.TabletType) ([]string, error)
+	GetShardTableColumnsFunc     func(ctx context.Context, keyspaceName, shard, tableName string, tabletType psdbconnect.TabletType) ([]ColumnDetail, error)
+	TestMysqlClient              struct {
+		BuildSchemaFn              BuildSchemaFunc
+		PingContextFn              PingContextFunc
+		GetVitessShardsFn          GetVitessShardsFunc
+		GetKeyspaceTableColumnsFn  GetKeyspaceTableColumnsFunc
+		GetShardTableColumnOrderFn GetShardTableColumnOrderFunc
+		GetShardTableColumnsFn     GetShardTableColumnsFunc
 	}
 )
 
@@ -119,6 +123,20 @@ func (t TestMysqlClient) GetKeyspaceTableColumns(ctx context.Context, keyspaceNa
 	}
 
 	panic("GetKeyspaceTableColumnsFunc is not implemented")
+}
+
+func (t TestMysqlClient) GetShardTableColumnOrder(ctx context.Context, keyspaceName, shard, tableName string, tabletType psdbconnect.TabletType) ([]string, error) {
+	if t.GetShardTableColumnOrderFn != nil {
+		return t.GetShardTableColumnOrderFn(ctx, keyspaceName, shard, tableName, tabletType)
+	}
+	panic("GetShardTableColumnOrder is not implemented")
+}
+
+func (t TestMysqlClient) GetShardTableColumns(ctx context.Context, keyspaceName, shard, tableName string, tabletType psdbconnect.TabletType) ([]ColumnDetail, error) {
+	if t.GetShardTableColumnsFn != nil {
+		return t.GetShardTableColumnsFn(ctx, keyspaceName, shard, tableName, tabletType)
+	}
+	panic("GetShardTableColumns is not implemented")
 }
 
 func (t TestMysqlClient) BuildSchema(ctx context.Context, psc PlanetScaleSource, schemaBuilder SchemaBuilder) error {
@@ -155,14 +173,22 @@ func NewTestMysqlClient(gktc GetKeyspaceTableColumnsFunc) MysqlClient {
 }
 
 type (
-	ReadFunc       func(ctx context.Context, logger DatabaseLogger, ps PlanetScaleSource, tableName string, columns []string, tc *psdbconnect.TableCursor, onResult OnResult, onCursor OnCursor, onUpdate OnUpdate) (*SerializedCursor, error)
-	CanConnectFunc func(ctx context.Context, ps PlanetScaleSource) error
-	ListShardsFunc func(ctx context.Context, ps PlanetScaleSource) ([]string, error)
+	ReadFunc               func(ctx context.Context, logger DatabaseLogger, ps PlanetScaleSource, tableName string, columns []string, tc *psdbconnect.TableCursor, onResult OnResult, onCursor OnCursor, onUpdate OnUpdate) (*SerializedCursor, error)
+	CanConnectFunc         func(ctx context.Context, ps PlanetScaleSource) error
+	ListShardsFunc         func(ctx context.Context, ps PlanetScaleSource) ([]string, error)
+	ScanSchemaFunc         func(ctx context.Context, logger DatabaseLogger, ps PlanetScaleSource, tableName string, tc *psdbconnect.TableCursor, resume *SchemaScanProgress) (SchemaHistory, error)
+	ColumnOrderFunc        func(ctx context.Context, keyspace, tableName string) ([]string, error)
+	ShardColumnOrderFunc   func(ctx context.Context, ps PlanetScaleSource, keyspace, shard, tableName string) ([]string, error)
+	ShardColumnDetailsFunc func(ctx context.Context, ps PlanetScaleSource, keyspace, shard, tableName string) ([]ColumnDetail, error)
 
 	TestConnectClient struct {
-		ReadFn       ReadFunc
-		CanConnectFn CanConnectFunc
-		ListShardsFn ListShardsFunc
+		ReadFn               ReadFunc
+		CanConnectFn         CanConnectFunc
+		ListShardsFn         ListShardsFunc
+		ScanSchemaHistoryFn  ScanSchemaFunc
+		ColumnOrderFn        ColumnOrderFunc
+		ShardColumnOrderFn   ShardColumnOrderFunc
+		ShardColumnDetailsFn ShardColumnDetailsFunc
 	}
 )
 
@@ -187,6 +213,43 @@ func (tcc *TestConnectClient) Read(ctx context.Context, logger DatabaseLogger, p
 	}
 
 	return nil, errors.New("Read is Unimplemented")
+}
+
+// ScanSchemaHistory implements SchemaHistoryScanner; without
+// ScanSchemaHistoryFn it reports ErrSchemaHistoryUnavailable.
+func (tcc *TestConnectClient) ScanSchemaHistory(ctx context.Context, logger DatabaseLogger, ps PlanetScaleSource, tableName string, tc *psdbconnect.TableCursor, resume *SchemaScanProgress) (SchemaHistory, error) {
+	if tcc.ScanSchemaHistoryFn != nil {
+		return tcc.ScanSchemaHistoryFn(ctx, logger, ps, tableName, tc, resume)
+	}
+	return SchemaHistory{}, ErrSchemaHistoryUnavailable
+}
+
+// ColumnOrder implements ColumnOrderReader; without ColumnOrderFn it reports
+// ErrColumnOrderUnavailable (the handler then uses the source schema's order).
+func (tcc *TestConnectClient) ColumnOrder(ctx context.Context, keyspace, tableName string) ([]string, error) {
+	if tcc.ColumnOrderFn != nil {
+		return tcc.ColumnOrderFn(ctx, keyspace, tableName)
+	}
+	return nil, ErrColumnOrderUnavailable
+}
+
+// ShardColumnOrder implements ShardColumnOrderReader; without
+// ShardColumnOrderFn it fails, so the handler treats every shard's live order
+// as unknown (like a shard target that does not work).
+func (tcc *TestConnectClient) ShardColumnOrder(ctx context.Context, ps PlanetScaleSource, keyspace, shard, tableName string) ([]string, error) {
+	if tcc.ShardColumnOrderFn != nil {
+		return tcc.ShardColumnOrderFn(ctx, ps, keyspace, shard, tableName)
+	}
+	return nil, ErrColumnOrderUnavailable
+}
+
+// ShardColumnDetails implements ShardColumnDetailsReader; without
+// ShardColumnDetailsFn it reports ErrColumnOrderUnavailable (no step-over).
+func (tcc *TestConnectClient) ShardColumnDetails(ctx context.Context, ps PlanetScaleSource, keyspace, shard, tableName string) ([]ColumnDetail, error) {
+	if tcc.ShardColumnDetailsFn != nil {
+		return tcc.ShardColumnDetailsFn(ctx, ps, keyspace, shard, tableName)
+	}
+	return nil, ErrColumnOrderUnavailable
 }
 
 func NewTestConnectClient(r ReadFunc) ConnectClient {

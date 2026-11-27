@@ -183,6 +183,134 @@ func TestIntegrationShardedInsertUpdateDelete(t *testing.T) {
 	assertIntegrationRecordCount(t, idle.recordsForTable(tableName), 0)
 }
 
+// The per-shard column order check reads each shard's columns with a
+// shard-targeted connection (lib.MysqlClient.GetShardTableColumnOrder). This
+// checks that the target works with the integration credentials on every
+// shard, in table order, including after a column is added in the middle and
+// with an INVISIBLE column.
+func TestIntegrationShardTargetedColumnOrder(t *testing.T) {
+	psc := loadIntegrationSource(t)
+	psc, shards := loadIntegrationShardedSource(t, psc)
+	ctx := context.Background()
+	tableName := integrationTableName(t)
+
+	db := openIntegrationSQL(t, psc)
+	t.Cleanup(func() {
+		if _, err := db.ExecContext(context.Background(), fmt.Sprintf(
+			"alter vschema on %s drop vindex hash",
+			quoteQualifiedIdent(psc.Database, tableName),
+		)); err != nil {
+			t.Logf("drop integration vschema vindex for %s.%s: %v", psc.Database, tableName, err)
+		}
+		if _, err := db.ExecContext(context.Background(), "drop table if exists "+quoteIdent(tableName)); err != nil {
+			t.Logf("drop integration table %s: %v", tableName, err)
+		}
+		_ = db.Close()
+	})
+	mustExec(t, ctx, db, fmt.Sprintf("create table %s (id bigint primary key, name varchar(64) not null, qty int not null)", quoteIdent(tableName)))
+	mustExec(t, ctx, db, fmt.Sprintf("alter vschema on %s add vindex hash(id) using hash", quoteQualifiedIdent(psc.Database, tableName)))
+
+	mysqlClient, err := lib.NewMySQL(&psc)
+	if err != nil {
+		t.Fatalf("create mysql client: %v", err)
+	}
+	defer mysqlClient.Close()
+
+	tabletType := psdbconnect.TabletType_primary
+	if psc.UseReplica {
+		tabletType = psdbconnect.TabletType_replica
+	}
+	assertOrders := func(want []string) {
+		t.Helper()
+		for _, shard := range shards {
+			deadline := time.Now().Add(2 * time.Minute)
+			for {
+				got, err := mysqlClient.GetShardTableColumnOrder(ctx, psc.Database, shard, tableName, tabletType)
+				if err == nil && reflect.DeepEqual(got, want) {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("shard %s: column order %v (err %v), want %v", shard, got, err, want)
+				}
+				time.Sleep(2 * time.Second)
+			}
+		}
+	}
+	assertOrders([]string{"id", "name", "qty"})
+
+	mustExec(t, ctx, db, fmt.Sprintf("alter table %s add column mid varchar(16) after id", quoteIdent(tableName)))
+	assertOrders([]string{"id", "mid", "name", "qty"})
+
+	// INVISIBLE columns are in the binlog row events too, so the shard's
+	// order must list them.
+	mustExec(t, ctx, db, fmt.Sprintf("alter table %s add column hidden int invisible after name", quoteIdent(tableName)))
+	assertOrders([]string{"id", "mid", "name", "hidden", "qty"})
+
+	// The column details that decide whether a column added by a tracked
+	// schema change may be left out of older binlog events.
+	mustExec(t, ctx, db, fmt.Sprintf("alter table %s add column opt varchar(8) null, add column dflt int not null default 0", quoteIdent(tableName)))
+	assertIntegrationStepOverDetails(t, ctx, mysqlClient, psc.Database, shards, tableName, tabletType)
+}
+
+// assertIntegrationStepOverDetails checks GetShardTableColumns on every shard
+// of a table with the columns of TestIntegrationShardTargetedColumnOrder:
+// only nullable columns without a default (INVISIBLE ones included) may be
+// stepped over.
+func assertIntegrationStepOverDetails(t *testing.T, ctx context.Context, mysqlClient lib.MysqlClient, keyspace string, shards []string, tableName string, tabletType psdbconnect.TabletType) {
+	t.Helper()
+	want := map[string]bool{"id": false, "mid": true, "name": false, "hidden": true, "qty": false, "opt": true, "dflt": false}
+	for _, shard := range shards {
+		deadline := time.Now().Add(2 * time.Minute)
+		for {
+			details, err := mysqlClient.GetShardTableColumns(ctx, keyspace, shard, tableName, tabletType)
+			got := map[string]bool{}
+			for _, d := range details {
+				got[d.Name] = d.StepOverBlocker() == ""
+			}
+			if err == nil && reflect.DeepEqual(got, want) {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("shard %s: step-over eligibility %v (err %v), want %v", shard, got, err, want)
+			}
+			time.Sleep(2 * time.Second)
+		}
+	}
+}
+
+// The shard-targeted column details also work for an unsharded keyspace
+// (shard "-"), which the sync reads the same way.
+func TestIntegrationUnshardedColumnDetails(t *testing.T) {
+	psc := loadIntegrationSource(t)
+	ctx := context.Background()
+	tableName := integrationTableName(t)
+
+	db := openIntegrationSQL(t, psc)
+	t.Cleanup(func() {
+		if _, err := db.ExecContext(context.Background(), "drop table if exists "+quoteIdent(tableName)); err != nil {
+			t.Logf("drop integration table %s: %v", tableName, err)
+		}
+		_ = db.Close()
+	})
+	mustExec(t, ctx, db, fmt.Sprintf("create table %s (id bigint primary key, mid varchar(16), name varchar(64) not null, hidden int invisible, "+
+		"qty int not null, opt varchar(8) null, dflt int not null default 0)", quoteIdent(tableName)))
+
+	mysqlClient, err := lib.NewMySQL(&psc)
+	if err != nil {
+		t.Fatalf("create mysql client: %v", err)
+	}
+	defer mysqlClient.Close()
+	shards, err := mysqlClient.GetVitessShards(ctx, psc)
+	if err != nil || len(shards) == 0 {
+		t.Fatalf("list shards: %v (%v)", shards, err)
+	}
+	tabletType := psdbconnect.TabletType_primary
+	if psc.UseReplica {
+		tabletType = psdbconnect.TabletType_replica
+	}
+	assertIntegrationStepOverDetails(t, ctx, mysqlClient, psc.Database, shards, tableName, tabletType)
+}
+
 func TestIntegrationBitValues(t *testing.T) {
 	psc := loadIntegrationSource(t)
 	ctx := context.Background()
@@ -519,6 +647,12 @@ func TestIntegrationMidTableDDLRaisesResyncTask(t *testing.T) {
 	// Snapshot the cursors before the failing sync; Sync.Handle mutates state in place.
 	beforeCursors := integrationStateTableCursors(t, state, psc.Database, tableName)
 
+	// The integration keyspace does not track schema versions. Shorten the
+	// grace the schema tracker gets to record the schema change (2m) and the
+	// wait for it at the current position (30s), so this sync can already tell
+	// that the change was not recorded instead of waiting out the grace.
+	t.Cleanup(lib.SetSchemaHistoryTimings(5*time.Second, 20*time.Second))
+
 	sender, failedState, err := runIntegrationSyncWithError(t, psc, tableName, columns, state)
 	if err != nil {
 		t.Fatalf("expected mid-table DDL to raise a Fivetran Task and return nil, got %s: %v", status.Code(err), err)
@@ -560,10 +694,11 @@ func TestIntegrationMidTableDDLRaisesResyncTask(t *testing.T) {
 	}
 }
 
-// A cursor that is behind an ADD COLUMN at the end of the table, with the new
-// column selected, fails in vstreamer with "column ... not found in table" while
-// replaying the pre-DDL events. This is what stalled production connections.
-func TestIntegrationAddColumnBehindCursorRaisesResyncTask(t *testing.T) {
+// A column added at the end of the table after the saved cursor is a column
+// change like any other: without the schema tracker (the integration keyspace
+// does not track schema versions) the table is not streamed, and the
+// enable-tracking re-sync Task is raised instead.
+func TestIntegrationAddColumnAtEndWithoutTrackerRaisesResyncTask(t *testing.T) {
 	psc := loadIntegrationSource(t)
 	ctx := context.Background()
 	tableName := integrationTableName(t)
@@ -583,17 +718,27 @@ func TestIntegrationAddColumnBehindCursorRaisesResyncTask(t *testing.T) {
 	mustExec(t, ctx, db, fmt.Sprintf("alter table %s add column added_col varchar(64) null", quoteIdent(tableName)))
 	mustExec(t, ctx, db, fmt.Sprintf("insert into %s (id, before_col, added_col) values (2, 'new', 'new')", quoteIdent(tableName)))
 
-	sender, _, err := runIntegrationSyncWithError(t, psc, tableName, []string{"id", "before_col", "added_col"}, state)
+	beforeCursors := integrationStateTableCursors(t, state, psc.Database, tableName)
+	t.Cleanup(lib.SetSchemaHistoryTimings(5*time.Second, 20*time.Second))
+
+	sender, failedState, err := runIntegrationSyncWithError(t, psc, tableName, []string{"id", "before_col", "added_col"}, state)
 	if err != nil {
-		t.Fatalf("expected ADD COLUMN behind the cursor to raise a Fivetran Task and return nil, got %s: %v", status.Code(err), err)
+		t.Fatalf("expected ADD COLUMN at the end to raise a Fivetran Task and return nil, got %s: %v", status.Code(err), err)
 	}
 	tasks := sender.tasks()
 	if len(tasks) != 1 {
 		t.Fatalf("expected exactly one Task, got %d: %q", len(tasks), tasks)
 	}
-	for _, want := range []string{"Re-sync required", tableName, "Resync all data"} {
+	for _, want := range []string{"Re-sync required", tableName, "track_schema_versions", "Resync all data"} {
 		if !strings.Contains(tasks[0], want) {
 			t.Fatalf("expected Task to contain %q, got %q", want, tasks[0])
+		}
+	}
+	assertIntegrationRecordCount(t, sender.recordsForTable(tableName), 0)
+	afterCursors := integrationStateTableCursors(t, failedState, psc.Database, tableName)
+	for shard, before := range beforeCursors {
+		if !proto.Equal(before, afterCursors[shard]) {
+			t.Fatalf("cursor for shard %s advanced past the schema change: before %v, after %v", shard, before, afterCursors[shard])
 		}
 	}
 }

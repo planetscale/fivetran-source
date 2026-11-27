@@ -151,6 +151,33 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 	logger.Info(fmt.Sprintf("%sFiltering with columns %s", preamble, strings.Join(existingColumns, ",")))
 	logger.Info(fmt.Sprintf("%sUsing read timeout: %v", preamble, readDuration))
 
+	// streamColumns is what the VStream filter asks for: existingColumns,
+	// except while a TrackedStepOver replays events written before a column
+	// was added (see TrackedStepOver). stopAtDDL is set while it does.
+	streamColumns := existingColumns
+	stopAtDDL := false
+	stepOver, canStepOver := TrackedStepOverFrom(ctx)
+	if canStepOver && (stepOver.Shard != currentPosition.Shard || stepOver.Cursor == "" ||
+		stepOver.Cursor != currentPosition.Position || currentPosition.LastKnownPk != nil) {
+		// Not the cursor the schema history scan verified from.
+		canStepOver = false
+	}
+	var (
+		// steppedOver: columns already left out once in this Read.
+		steppedOver []string
+		// cutOversSteppedOver counts reduced streams (one per cut-over).
+		cutOversSteppedOver int
+		// stepOverErr is vttablet's error that started the reduced stream.
+		stepOverErr error
+	)
+	// refuseStepOver ends the read with vttablet's original error, which
+	// raises the re-sync Task.
+	refuseStepOver := func(why string) (*SerializedCursor, error) {
+		logger.Warning(fmt.Sprintf("%snot stepping over the schema change: %s", preamble, why))
+		return currentSerializedCursor, errors.Wrapf(stepOverErr, "PlanetScale VStream cannot continue incremental replication for table %s after a schema change (%s); "+
+			"run a Fivetran historical re-sync for this connection to recover", tableName, why)
+	}
+
 	for {
 		logger.Info(preamble + "peeking to see if there's any new rows")
 		latestCursorPosition, lcErr := p.getLatestCursorPosition(ctx, currentPosition.Shard, currentPosition.Keyspace, tableName, ps, tabletType)
@@ -169,7 +196,7 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 		logger.Info(fmt.Sprintf(preamble+"syncing rows with cursor [%v]", currentPosition))
 
 		previousPosition := cloneTableCursor(currentPosition)
-		currentPosition, err = p.sync(ctx, logger, tableName, existingColumns, currentPosition, latestCursorPosition, ps, tabletType, readDuration, onResult, onCursor, onUpdate)
+		currentPosition, err = p.sync(ctx, logger, tableName, streamColumns, stopAtDDL, currentPosition, latestCursorPosition, ps, tabletType, readDuration, onResult, onCursor, onUpdate)
 		madeProgress := tableCursorMadeProgress(previousPosition, currentPosition)
 		if tableCursorHasProgress(currentPosition) {
 			currentSerializedCursor, sErr = TableCursorToSerializedCursor(currentPosition)
@@ -177,6 +204,36 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 				// if we failed to serialize here, we should bail.
 				return currentSerializedCursor, errors.Wrap(sErr, "unable to serialize current position")
 			}
+		}
+		if errors.Is(err, errPassedSchemaChange) {
+			// The reduced stream reached a DDL for the table; currentPosition
+			// includes it. Restart there with every column only if the scan
+			// verified that range (the DDL's schema version is recorded).
+			within, pErr := PositionAtLeast(stepOver.VerifiedTo, currentPosition.Position)
+			if pErr != nil || !within {
+				return refuseStepOver(fmt.Sprintf("the stream reached a schema change at %s, past the range the schema history check verified (up to %s)", currentPosition.Position, stepOver.VerifiedTo))
+			}
+			if onCursor != nil {
+				if cErr := onCursor(currentPosition); cErr != nil {
+					return currentSerializedCursor, status.Error(codes.Internal, "unable to serialize cursor")
+				}
+			}
+			logger.Info(fmt.Sprintf("%spassed the schema change, resuming with columns %s", preamble, strings.Join(existingColumns, ",")))
+			streamColumns = existingColumns
+			stopAtDDL = false
+			continue
+		}
+		if stopAtDDL && errors.Is(err, io.EOF) {
+			// The reduced stream reached the current position without a DDL
+			// for the table: the cut-over that added the column was not seen.
+			return refuseStepOver("the stream reached the current position without passing the schema change that added the column")
+		}
+		if errors.Is(err, errStreamEnded) {
+			// vtgate ended the stream (for example while it restarts or
+			// drains) before it reached the stop position: keep the cursor,
+			// but the shard was not read up to the current position.
+			logger.Info(fmt.Sprintf("%sthe stream ended before it reached the current position; stopping with cursor [%v]", preamble, currentPosition))
+			return currentSerializedCursor, ErrReadStoppedEarly
 		}
 		if err != nil {
 			if s, ok := status.FromError(err); ok {
@@ -193,6 +250,9 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 						// Reset the cursor position to empty to trigger historical sync on next iteration
 						currentPosition.Position = ""
 						currentPosition.LastKnownPk = nil
+						// The copy reads the current table: every column, and no
+						// step-over (the verified cursor is gone).
+						streamColumns, stopAtDDL, canStepOver = existingColumns, false, false
 
 						currentSerializedCursor, sErr = TableCursorToSerializedCursor(currentPosition)
 						if sErr != nil {
@@ -214,6 +274,26 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 							Table:    tableName,
 							Err:      err,
 						}
+					}
+
+					// A selected column added after the event being decoded, in a
+					// range the schema history scan verified as tracked: leave it
+					// out until the stream reaches the cut-over (TrackedStepOver).
+					if missing, ok := VStreamMissingFilterColumn(err); ok && canStepOver {
+						if reason := p.stepOverRefusal(stepOver, missing, currentPosition.Position, streamColumns, steppedOver, stopAtDDL, cutOversSteppedOver); reason != "" {
+							stepOverErr = err
+							return refuseStepOver(reason)
+						}
+						if !stopAtDDL {
+							cutOversSteppedOver++
+						}
+						stepOverErr = err
+						steppedOver = append(steppedOver, missing)
+						streamColumns, _ = withoutColumn(streamColumns, missing)
+						stopAtDDL = true
+						logger.Warning(fmt.Sprintf("%scolumn %s did not exist yet at the saved position (added by a schema change that the schema tracker recorded); "+
+							"streaming without it until the stream passes the schema change (schema change %d/%d)", preamble, missing, cutOversSteppedOver, maxTrackedStepOvers))
+						continue
 					}
 
 					if IsVStreamSchemaIncompatibilityError(err) {
@@ -262,7 +342,7 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 						logger.Warning(warningMessage)
 					}
 
-					return currentSerializedCursor, nil
+					return currentSerializedCursor, ErrReadStoppedEarly
 				}
 
 				// Apply exponential backoff only for timeouts that did not move the cursor.
@@ -291,7 +371,32 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 	}
 }
 
-func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableName string, columns []string, tc *psdbconnect.TableCursor, stopPosition string, ps PlanetScaleSource, tabletType psdbconnect.TabletType, readDuration time.Duration, onResult OnResult, onCursor OnCursor, onUpdate OnUpdate) (*psdbconnect.TableCursor, error) {
+// stepOverRefusal returns why Read must not leave column out of the stream
+// that starts at position, or "" if it may (see TrackedStepOver).
+func (p connectClient) stepOverRefusal(s TrackedStepOver, column, position string, streamColumns, steppedOver []string, stopAtDDL bool, cutOvers int) string {
+	if !s.allows(column) {
+		return fmt.Sprintf("column %s is not a nullable column without a default that the schema history check found added on this shard", column)
+	}
+	for _, c := range steppedOver {
+		if strings.EqualFold(c, column) {
+			return fmt.Sprintf("column %s was already left out once in this read", column)
+		}
+	}
+	if !stopAtDDL && cutOvers >= maxTrackedStepOvers {
+		return fmt.Sprintf("already stepped over %d schema changes in this read", cutOvers)
+	}
+	reduced, removed := withoutColumn(streamColumns, column)
+	if !removed || len(reduced) == 0 {
+		return fmt.Sprintf("column %s can't be left out of the stream", column)
+	}
+	reached, err := PositionAtLeast(position, s.VerifiedTo)
+	if err != nil || reached {
+		return fmt.Sprintf("the stream is at %s, not before the end of the range the schema history check verified (%s)", position, s.VerifiedTo)
+	}
+	return ""
+}
+
+func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableName string, columns []string, stopAtDDL bool, tc *psdbconnect.TableCursor, stopPosition string, ps PlanetScaleSource, tabletType psdbconnect.TabletType, readDuration time.Duration, onResult OnResult, onCursor OnCursor, onUpdate OnUpdate) (*psdbconnect.TableCursor, error) {
 	ctx, cancel := context.WithTimeout(ctx, readDuration)
 	defer cancel()
 
@@ -325,6 +430,15 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 	fieldsByTable := map[string][]*query.Field{}
 	for {
 		res, err := c.Recv()
+		if errors.Is(err, io.EOF) {
+			// The stream ended (for example vtgate restarting or draining).
+			// That only completes the read if the cursor got to the stop
+			// position, out of the copy phase.
+			if watchForVgGtidChange && tc.LastKnownPk == nil {
+				return tc, io.EOF
+			}
+			return tc, errStreamEnded
+		}
 		if err != nil {
 			return tc, err
 		}
@@ -341,6 +455,24 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 			}
 			recordsSinceCheckpoint += eventRecords
 			copyCompleted = copyCompleted || eventCopyCompleted
+			// Log only: a VERSION event is vttablet's insert into
+			// _vt.schema_version, which only happens with the schema tracker
+			// (track_schema_versions) on; a DDL event is a schema change on this
+			// table (for Online DDL, the cut-over RENAME).
+			switch event.Type {
+			case binlogdatapb.VEventType_VERSION:
+				logger.Info(preamble + "VERSION event: the vttablet schema tracker recorded a schema version")
+			case binlogdatapb.VEventType_DDL:
+				logger.Info(fmt.Sprintf("%sDDL event: %q", preamble, event.Statement))
+			}
+			if stopAtDDL && event.Type == binlogdatapb.VEventType_DDL {
+				// vttablet only sends DDL events for statements that name this
+				// table (mustSendDDL); for Online DDL that is the cut-over RENAME.
+				// The DDL's GTID arrives (as a VGTID) just before it, so tc
+				// already includes it. No checkpoint here: Read checks the
+				// position first.
+				return tc, errPassedSchemaChange
+			}
 		}
 
 		// A single VGTID can appear in multiple ordered responses. Once we reach
@@ -737,6 +869,12 @@ func handleVStreamRows(tableName string, rowEvent *binlogdatapb.RowEvent, fields
 	if len(fields) == 0 {
 		return 0, status.Error(codes.Internal, fmt.Sprintf("missing VStream fields for table %s", rowEvent.TableName))
 	}
+	if vstreamFieldsArePositional(fields) {
+		// vttablet could not match the event to a table schema (for example after
+		// a column type change) and only knows positions (@1, @2, ...). Nothing
+		// would match the column selection, so fail instead of syncing empty rows.
+		return 0, fmt.Errorf("cannot determine table columns for %s: event has positional column names only (%s)", tableName, fields[0].Name)
+	}
 
 	records := 0
 	for _, change := range rowEvent.RowChanges {
@@ -916,6 +1054,104 @@ func (p connectClient) filterExistingColumns(ctx context.Context, ps PlanetScale
 	return existingColumns, err
 }
 
+// ColumnOrderReader is implemented by a ConnectClient that can read a table's
+// live column order (table order) when the sync gets to the table. The sync
+// handler compares and saves that order rather than the one in the schema
+// read at the start of the sync, which can be hours older on a large
+// connection: an order read before the table's binlog positions are read is
+// never ahead of the cursors, and one read just before is rarely behind them.
+type ColumnOrderReader interface {
+	ColumnOrder(ctx context.Context, keyspace, tableName string) ([]string, error)
+}
+
+var _ ColumnOrderReader = connectClient{}
+
+// ShardColumnOrderReader is implemented by a ConnectClient that can read the
+// live column order of a table as one shard has it (see
+// MysqlClient.GetShardTableColumnOrder). The sync handler compares every
+// shard's saved order with that shard's own live order, because Online DDL
+// cuts the shards over independently.
+type ShardColumnOrderReader interface {
+	ShardColumnOrder(ctx context.Context, ps PlanetScaleSource, keyspace, shard, tableName string) ([]string, error)
+}
+
+var _ ShardColumnOrderReader = connectClient{}
+
+// ShardColumnOrder returns every column of the table in table order on one
+// shard (of ps's tablet type), or ErrColumnOrderUnavailable.
+func (p connectClient) ShardColumnOrder(ctx context.Context, ps PlanetScaleSource, keyspace, shard, tableName string) ([]string, error) {
+	if p.Mysql == nil || *p.Mysql == nil {
+		return nil, ErrColumnOrderUnavailable
+	}
+	tabletType := psdbconnect.TabletType_primary
+	if ps.UseReplica {
+		tabletType = psdbconnect.TabletType_replica
+	}
+	return (*p.Mysql).GetShardTableColumnOrder(ctx, keyspace, shard, tableName, tabletType)
+}
+
+// ShardColumnDetailsReader is implemented by a ConnectClient that can read
+// SHOW COLUMNS of a table as one shard has it (see
+// MysqlClient.GetShardTableColumns).
+type ShardColumnDetailsReader interface {
+	ShardColumnDetails(ctx context.Context, ps PlanetScaleSource, keyspace, shard, tableName string) ([]ColumnDetail, error)
+}
+
+var _ ShardColumnDetailsReader = connectClient{}
+
+// ShardColumnDetails returns SHOW COLUMNS of the table on one shard (of ps's
+// tablet type), or ErrColumnOrderUnavailable.
+func (p connectClient) ShardColumnDetails(ctx context.Context, ps PlanetScaleSource, keyspace, shard, tableName string) ([]ColumnDetail, error) {
+	if p.Mysql == nil || *p.Mysql == nil {
+		return nil, ErrColumnOrderUnavailable
+	}
+	tabletType := psdbconnect.TabletType_primary
+	if ps.UseReplica {
+		tabletType = psdbconnect.TabletType_replica
+	}
+	return (*p.Mysql).GetShardTableColumns(ctx, keyspace, shard, tableName, tabletType)
+}
+
+// PrimaryPositionReader is implemented by a ConnectClient that can read a
+// shard's current binlog position on its primary. Every tablet of a shard has
+// applied a subset of the primary's GTIDs, so a position read from the
+// primary after a column order was read (on any tablet) contains every
+// schema change that order reflects. The sync handler saves a shard's column
+// order only once the shard's cursor contains that position, so the saved
+// order is never ahead of the cursor, also with UseReplica (the order and the
+// VStream may come from different replicas).
+type PrimaryPositionReader interface {
+	PrimaryPosition(ctx context.Context, ps PlanetScaleSource, keyspace, shard, tableName string) (string, error)
+}
+
+var _ PrimaryPositionReader = connectClient{}
+
+// PrimaryPosition returns the shard's current binlog position on its primary.
+func (p connectClient) PrimaryPosition(ctx context.Context, ps PlanetScaleSource, keyspace, shard, tableName string) (string, error) {
+	return p.getLatestCursorPosition(ctx, shard, keyspace, tableName, ps, psdbconnect.TabletType_primary)
+}
+
+// ErrColumnOrderUnavailable: the client has no MySQL connection to read the
+// column order with.
+var ErrColumnOrderUnavailable = errors.New("column order is not available")
+
+// ColumnOrder returns every column of the table in table order
+// (information_schema ordinal_position), or ErrColumnOrderUnavailable.
+func (p connectClient) ColumnOrder(ctx context.Context, keyspace, tableName string) ([]string, error) {
+	if p.Mysql == nil || *p.Mysql == nil {
+		return nil, ErrColumnOrderUnavailable
+	}
+	columns, err := (*p.Mysql).GetKeyspaceTableColumns(ctx, keyspace, tableName)
+	if err != nil {
+		return nil, err
+	}
+	order := make([]string, 0, len(columns))
+	for _, c := range columns {
+		order = append(order, c.Name)
+	}
+	return order, nil
+}
+
 func (p connectClient) getLatestCursorPosition(ctx context.Context, shard, keyspace string, tableName string, ps PlanetScaleSource, tabletType psdbconnect.TabletType) (string, error) {
 	timeout := 45 * time.Second
 	ctx, cancel := context.WithTimeout(ctx, timeout)
@@ -1040,7 +1276,10 @@ func IsVStreamSchemaIncompatibilityError(err error) bool {
 	if strings.Contains(message, "cannot determine table columns for ") && strings.Contains(message, ": event has ") {
 		return true
 	}
-	if !strings.Contains(message, "Code: FAILED_PRECONDITION") {
+	// vtgate can rewrap the vttablet error ("persistent error in vstream ...;
+	// giving up: target: ...: vttablet: rpc error: code = FailedPrecondition"),
+	// so accept either rendering of the FAILED_PRECONDITION code.
+	if !strings.Contains(message, "Code: FAILED_PRECONDITION") && !strings.Contains(message, "code = FailedPrecondition") {
 		return false
 	}
 	if !strings.Contains(message, "failed to build table replication plan") {
@@ -1049,4 +1288,80 @@ func IsVStreamSchemaIncompatibilityError(err error) bool {
 
 	return strings.Contains(message, "cannot use column names in vstream filter") ||
 		(strings.Contains(message, "column ") && strings.Contains(message, " not found in table "))
+}
+
+// errStreamEnded: vtgate ended the VStream (io.EOF) before sync reached the
+// stop position.
+var errStreamEnded = errors.New("the vstream ended before it reached the stop position")
+
+// ErrReadStoppedEarly is returned by Read, with the cursor it reached, when it
+// stopped before it reached the position it was meant to reach: it gave up
+// after maxConsecutiveSyncTimeouts timeouts without progress (it has already
+// sent a Warning), or vtgate ended the stream (io.EOF) early. The caller keeps
+// the cursor but must not assume the table was read up to the current
+// position.
+var ErrReadStoppedEarly = errors.New("read stopped before reaching the current position")
+
+func vstreamFieldsArePositional(fields []*query.Field) bool {
+	for _, f := range fields {
+		if !strings.HasPrefix(f.GetName(), "@") {
+			return false
+		}
+	}
+	return len(fields) > 0
+}
+
+// maxVStreamErrorReasonLength caps VStreamErrorReason; Fivetran cuts long
+// error messages, so the reason has to fit well inside what survives.
+const maxVStreamErrorReasonLength = 400
+
+var (
+	vterrorCodePattern = regexp.MustCompile(`Code: [A-Z_]+`)
+	gtidSetPattern     = regexp.MustCompile(`\b(MySQL56|MariaDB|FilePos)/(?:[0-9A-Za-z_.:,-]*[0-9A-Za-z])?`)
+)
+
+// VStreamErrorReason returns what vttablet said went wrong in a VStream error,
+// or "" if the error has no vttablet part. vtgate puts the whole GTID set of
+// the saved position in front of the reason ("error starting stream from shard
+// GTID ...: persistent error in vstream ...; giving up: target: ...: vttablet:
+// rpc error: ... Code: FAILED_PRECONDITION\ncolumn c not found in table t"),
+// and that set grows with every primary failover, so a log or error that
+// leads with the raw message loses the reason when it is cut. The reason is
+// taken from the last vterrors "Code: ..." (or else the last "vttablet: "),
+// with any GTID set in it replaced by "<flavor>/…" and its lines joined.
+func VStreamErrorReason(err error) string {
+	if err == nil {
+		return ""
+	}
+	message := err.Error()
+	var reason string
+	if locs := vterrorCodePattern.FindAllStringIndex(message, -1); len(locs) > 0 {
+		reason = message[locs[len(locs)-1][0]:]
+	} else if i := strings.LastIndex(message, "vttablet: "); i >= 0 {
+		reason = message[i+len("vttablet: "):]
+	} else {
+		return ""
+	}
+	reason = gtidSetPattern.ReplaceAllString(reason, "$1/…")
+	var lines []string
+	for _, line := range strings.Split(reason, "\n") {
+		if line = strings.Join(strings.Fields(line), " "); line != "" {
+			lines = append(lines, line)
+		}
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	reason = lines[0]
+	if len(lines) > 1 {
+		sep := "; "
+		if vterrorCodePattern.FindString(lines[0]) == lines[0] {
+			sep = " " // "Code: FAILED_PRECONDITION column c not found in table t; ..."
+		}
+		reason += sep + strings.Join(lines[1:], "; ")
+	}
+	if r := []rune(reason); len(r) > maxVStreamErrorReasonLength {
+		reason = string(r[:maxVStreamErrorReasonLength]) + "…"
+	}
+	return reason
 }

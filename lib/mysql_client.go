@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pkg/errors"
@@ -16,6 +17,8 @@ type MysqlClient interface {
 	PingContext(context.Context, PlanetScaleSource) error
 	GetVitessShards(ctx context.Context, psc PlanetScaleSource) ([]string, error)
 	GetKeyspaceTableColumns(ctx context.Context, keyspaceName string, tableName string) ([]MysqlColumn, error)
+	GetShardTableColumnOrder(ctx context.Context, keyspaceName, shard, tableName string, tabletType psdbconnect.TabletType) ([]string, error)
+	GetShardTableColumns(ctx context.Context, keyspaceName, shard, tableName string, tabletType psdbconnect.TabletType) ([]ColumnDetail, error)
 	Close() error
 }
 
@@ -26,12 +29,23 @@ func NewMySQL(psc *PlanetScaleSource) (MysqlClient, error) {
 	}
 
 	return mysqlClient{
-		db: db,
+		db:     db,
+		psc:    *psc,
+		shards: &shardDBs{dbs: map[string]*sql.DB{}},
 	}, nil
 }
 
 type mysqlClient struct {
-	db *sql.DB
+	db  *sql.DB
+	psc PlanetScaleSource
+	// shards holds one connection pool per shard target, opened on first
+	// use (see GetShardTableColumnOrder) and closed by Close.
+	shards *shardDBs
+}
+
+type shardDBs struct {
+	mu  sync.Mutex
+	dbs map[string]*sql.DB
 }
 
 // BuildSchema returns schemas for all tables in a PlanetScale database
@@ -68,14 +82,25 @@ func (p mysqlClient) BuildSchema(ctx context.Context, psc PlanetScaleSource, sch
 }
 
 func (p mysqlClient) Close() error {
+	if p.shards != nil {
+		p.shards.mu.Lock()
+		for target, db := range p.shards.dbs {
+			_ = db.Close()
+			delete(p.shards.dbs, target)
+		}
+		p.shards.mu.Unlock()
+	}
 	return p.db.Close()
 }
 
+// GetKeyspaceTableColumns returns the columns of a table in table order
+// (ordinal_position): the sync compares that order between syncs (see
+// ColumnOrderChange).
 func (p mysqlClient) GetKeyspaceTableColumns(ctx context.Context, keyspaceName string, tableName string) ([]MysqlColumn, error) {
 	var columns []MysqlColumn
 	columnNamesQR, err := p.db.QueryContext(
 		ctx,
-		"select column_name, column_type, column_key from information_schema.columns where table_name=? AND table_schema=?;",
+		"select column_name, column_type, column_key from information_schema.columns where table_name=? AND table_schema=? order by ordinal_position;",
 		tableName, keyspaceName,
 	)
 	if err != nil {
@@ -103,6 +128,156 @@ func (p mysqlClient) GetKeyspaceTableColumns(ctx context.Context, keyspaceName s
 	}
 
 	return columns, nil
+}
+
+// shardColumnOrderTimeout bounds the shard-targeted column query; a shard
+// that does not answer in time gets the unknown-order path (schema history
+// check), not a stuck sync.
+const shardColumnOrderTimeout = 30 * time.Second
+
+// shardConnMaxIdleTime closes a shard connection that the sync no longer
+// uses (it moved on to other tables) instead of keeping it open for the rest
+// of the sync.
+const shardConnMaxIdleTime = time.Minute
+
+// GetShardTableColumnOrder returns every column of a table, INVISIBLE ones
+// included, in table order as one shard has them. Online DDL cuts over every
+// shard on its own, so during a schema change the shards of a table can have
+// different column orders, and vtgate answers information_schema queries
+// from one of them.
+//
+// The query goes to the shard with Vitess shard targeting in the connection's
+// database name, "<keyspace>:<shard>" (with the "@primary"/"@replica" suffix
+// that DSN adds), the same way the integration tests read one shard
+// (assertIntegrationRowsOnEveryShard). It is SHOW COLUMNS without a schema
+// name, so the tablet answers for its own database whatever that is named;
+// unlike the column names of a SELECT *, SHOW COLUMNS lists INVISIBLE columns,
+// which binlog row events contain too.
+func (p mysqlClient) GetShardTableColumnOrder(ctx context.Context, keyspaceName, shard, tableName string, tabletType psdbconnect.TabletType) ([]string, error) {
+	db, err := p.shardDB(keyspaceName, shard, tabletType)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, shardColumnOrderTimeout)
+	defer cancel()
+	target := keyspaceName + ":" + shard
+	rows, err := db.QueryContext(ctx, "show columns from "+quoteIdentifier(tableName))
+	if err != nil {
+		return nil, errors.Wrapf(err, "unable to read the columns of table %s on shard %s", tableName, target)
+	}
+	defer rows.Close()
+	fields, err := rows.Columns()
+	if err != nil {
+		return nil, errors.Wrapf(err, "unable to read the columns of table %s on shard %s", tableName, target)
+	}
+	if len(fields) == 0 {
+		return nil, errors.Errorf("unable to read the columns of table %s on shard %s: SHOW COLUMNS returned no fields", tableName, target)
+	}
+	// The first field is the column name (Field); the rest are not needed.
+	values := make([]sql.RawBytes, len(fields))
+	dest := make([]any, len(fields))
+	for i := range values {
+		dest[i] = &values[i]
+	}
+	var order []string
+	for rows.Next() {
+		if err := rows.Scan(dest...); err != nil {
+			return nil, errors.Wrapf(err, "unable to read the columns of table %s on shard %s", tableName, target)
+		}
+		order = append(order, string(values[0]))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, errors.Wrapf(err, "unable to read the columns of table %s on shard %s", tableName, target)
+	}
+	return order, nil
+}
+
+// GetShardTableColumns returns SHOW COLUMNS of a table as one shard has it
+// (shard-targeted, like GetShardTableColumnOrder): name, nullability, key,
+// default and extra of every column, INVISIBLE ones included. The sync uses
+// it to decide whether a column added by a tracked schema change may be left
+// out of older binlog events (ColumnDetail.StepOverBlocker).
+func (p mysqlClient) GetShardTableColumns(ctx context.Context, keyspaceName, shard, tableName string, tabletType psdbconnect.TabletType) ([]ColumnDetail, error) {
+	db, err := p.shardDB(keyspaceName, shard, tabletType)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, shardColumnOrderTimeout)
+	defer cancel()
+	target := keyspaceName + ":" + shard
+	rows, err := db.QueryContext(ctx, "show columns from "+quoteIdentifier(tableName))
+	if err != nil {
+		return nil, errors.Wrapf(err, "unable to read the columns of table %s on shard %s", tableName, target)
+	}
+	defer rows.Close()
+	fields, err := rows.Columns()
+	if err != nil {
+		return nil, errors.Wrapf(err, "unable to read the columns of table %s on shard %s", tableName, target)
+	}
+	index := map[string]int{}
+	for i, f := range fields {
+		index[strings.ToLower(f)] = i
+	}
+	for _, f := range []string{"field", "null", "key", "default", "extra"} {
+		if _, ok := index[f]; !ok {
+			return nil, errors.Errorf("unable to read the columns of table %s on shard %s: SHOW COLUMNS has no %s field", tableName, target, f)
+		}
+	}
+	values := make([]sql.NullString, len(fields))
+	dest := make([]any, len(fields))
+	for i := range values {
+		dest[i] = &values[i]
+	}
+	var columns []ColumnDetail
+	for rows.Next() {
+		if err := rows.Scan(dest...); err != nil {
+			return nil, errors.Wrapf(err, "unable to read the columns of table %s on shard %s", tableName, target)
+		}
+		c := ColumnDetail{
+			Name:     values[index["field"]].String,
+			Nullable: strings.EqualFold(values[index["null"]].String, "YES"),
+			Key:      values[index["key"]].String,
+			Extra:    values[index["extra"]].String,
+		}
+		if d := values[index["default"]]; d.Valid {
+			def := d.String
+			c.Default = &def
+		}
+		columns = append(columns, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, errors.Wrapf(err, "unable to read the columns of table %s on shard %s", tableName, target)
+	}
+	return columns, nil
+}
+
+// shardDB returns the connection pool targeted at keyspace:shard, opening it
+// on first use.
+func (p mysqlClient) shardDB(keyspaceName, shard string, tabletType psdbconnect.TabletType) (*sql.DB, error) {
+	if p.shards == nil {
+		return nil, errors.New("shard-targeted connections are not available")
+	}
+	key := keyspaceName + ":" + shard + "@" + tabletTypeToString(tabletType)
+	p.shards.mu.Lock()
+	defer p.shards.mu.Unlock()
+	if db, ok := p.shards.dbs[key]; ok {
+		return db, nil
+	}
+	psc := p.psc
+	psc.Database = keyspaceName + ":" + shard
+	db, err := sql.Open("mysql", psc.DSN(tabletType))
+	if err != nil {
+		return nil, errors.Wrapf(err, "unable to open a connection to shard %s:%s", keyspaceName, shard)
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxIdleTime(shardConnMaxIdleTime)
+	p.shards.dbs[key] = db
+	return db, nil
+}
+
+func quoteIdentifier(name string) string {
+	return "`" + strings.ReplaceAll(name, "`", "``") + "`"
 }
 
 func (p mysqlClient) GetVitessShards(ctx context.Context, psc PlanetScaleSource) ([]string, error) {
