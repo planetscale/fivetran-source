@@ -2052,3 +2052,182 @@ func TestColumnOrderChangeScanTimeoutResumesNextSync(t *testing.T) {
 	assert.Nil(t, state.Keyspaces["SalesDB"].Streams["SalesDB:a_add_after"].Shards["-"].SchemaScan)
 	assert.Equal(t, historianLive, state.Keyspaces["SalesDB"].Streams["SalesDB:a_add_after"].ColumnOrder)
 }
+
+// stepOverSelection selects id, b and the new column of a_add_after.
+func stepOverSelection(selected ...string) *fivetransdk.Selection_WithSchema {
+	cols := map[string]bool{"id": true, "b": true}
+	for _, c := range selected {
+		cols[c] = true
+	}
+	return &fivetransdk.Selection_WithSchema{WithSchema: &fivetransdk.TablesWithSchema{
+		Schemas: []*fivetransdk.SchemaSelection{{SchemaName: "SalesDB", Included: true, Tables: []*fivetransdk.TableSelection{
+			{Included: true, TableName: "a_add_after", Columns: cols},
+			{Included: true, TableName: "b_bystander", Columns: map[string]bool{"id": true, "b": true}},
+		}}},
+	}}
+}
+
+var trackedTo30 = lib.SchemaHistory{
+	Verdict: lib.SchemaHistoryTracked, DDL: "RENAME TABLE ...",
+	Progress: &lib.SchemaScanProgress{Position: "MySQL56/old:1-30", Tracked: true},
+}
+
+func nullableDetails(live []string) []lib.ColumnDetail {
+	var d []lib.ColumnDetail
+	for _, c := range live {
+		d = append(d, lib.ColumnDetail{Name: c, Nullable: c != "id", Key: map[bool]string{true: "PRI"}[c == "id"]})
+	}
+	return d
+}
+
+type stepOverCase struct {
+	verdicts map[string]lib.SchemaHistory
+	// positions of a_add_after's shards; default {"-": old:1-10}
+	positions map[string]string
+	live      []string
+	// perShard live orders (sharded); nil for unsharded
+	perShard map[string][]string
+	details  func(shard string) ([]lib.ColumnDetail, error)
+	selected []string
+}
+
+// runStepOver syncs once and returns the TrackedStepOver each read of
+// a_add_after got (nil without one), by shard, and the Tasks.
+func runStepOver(t *testing.T, c stepOverCase) (map[string]*lib.TrackedStepOver, []string) {
+	t.Helper()
+	if c.positions == nil {
+		c.positions = map[string]string{"-": "MySQL56/old:1-10"}
+	}
+	if c.selected == nil {
+		c.selected = []string{"newcol"}
+	}
+	got := map[string]*lib.TrackedStepOver{}
+	db := lib.NewTestConnectClient(func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string,
+		cur *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
+	) (*lib.SerializedCursor, error) {
+		if tableName == "a_add_after" {
+			if s, ok := lib.TrackedStepOverFrom(ctx); ok {
+				got[cur.Shard] = &s
+			} else {
+				got[cur.Shard] = nil
+			}
+		}
+		return lib.TableCursorToSerializedCursor(&psdbconnect.TableCursor{Keyspace: cur.Keyspace, Shard: cur.Shard, Position: "MySQL56/" + tableName + ":1-40"})
+	})
+	tcc := db.(*lib.TestConnectClient)
+	var scanned []string
+	tcc.ScanSchemaHistoryFn = scanByShard(c.verdicts, nil, &scanned)
+	if c.perShard != nil {
+		tcc.ShardColumnOrderFn = shardOrders(c.perShard, nil)
+	}
+	if c.details != nil {
+		tcc.ShardColumnDetailsFn = func(ctx context.Context, ps lib.PlanetScaleSource, keyspace, shard, table string) ([]lib.ColumnDetail, error) {
+			return c.details(shard)
+		}
+	}
+	state := historianTestState(t, historianSaved, c.positions)
+	tl := historianTestLogger(c.live)
+	assert.NoError(t, (&Sync{}).Handle(context.Background(), &lib.PlanetScaleSource{}, &db, tl, state, stepOverSelection(c.selected...)))
+	return got, tl.tasks
+}
+
+// A tracked verdict for the shard in this sync, a plain addition of a
+// selected nullable column without a default: Read may step over it, tied to
+// the shard, its saved cursor and the range the scan read.
+func TestTrackedStepOverOffered(t *testing.T) {
+	got, tasks := runStepOver(t, stepOverCase{
+		verdicts: map[string]lib.SchemaHistory{"-": trackedTo30},
+		live:     historianLive,
+		details:  func(string) ([]lib.ColumnDetail, error) { return nullableDetails(historianLive), nil },
+	})
+	assert.Empty(t, tasks)
+	if assert.NotNil(t, got["-"]) {
+		assert.Equal(t, lib.TrackedStepOver{Shard: "-", Cursor: "MySQL56/old:1-10", VerifiedTo: "MySQL56/old:1-30", Columns: []string{"newcol"}}, *got["-"])
+	}
+}
+
+// Every guard on the handler side: no step-over, so a selected new column
+// keeps vttablet's error (re-sync Task) as before.
+func TestTrackedStepOverNotOffered(t *testing.T) {
+	nullable := func(string) ([]lib.ColumnDetail, error) { return nullableDetails(historianLive), nil }
+	withDetail := func(mod func(*lib.ColumnDetail)) func(string) ([]lib.ColumnDetail, error) {
+		return func(string) ([]lib.ColumnDetail, error) {
+			d := nullableDetails(historianLive)
+			for i := range d {
+				if d[i].Name == "newcol" {
+					mod(&d[i])
+				}
+			}
+			return d, nil
+		}
+	}
+	zero := "0"
+	for name, c := range map[string]stepOverCase{
+		"cursor past the change (no DDL)": {verdicts: map[string]lib.SchemaHistory{"-": noDDL}, live: historianLive, details: nullable},
+		"tracked without a scan position": {verdicts: map[string]lib.SchemaHistory{"-": trackedDDL}, live: historianLive, details: nullable},
+		"new column not selected":         {verdicts: map[string]lib.SchemaHistory{"-": trackedTo30}, live: historianLive, details: nullable, selected: []string{}},
+		"rename": {
+			verdicts: map[string]lib.SchemaHistory{"-": trackedTo30}, live: []string{"id", "a", "b", "c2"}, selected: []string{"c2"},
+			details: func(string) ([]lib.ColumnDetail, error) { return nullableDetails([]string{"id", "a", "b", "c2"}), nil },
+		},
+		"default":           {verdicts: map[string]lib.SchemaHistory{"-": trackedTo30}, live: historianLive, details: withDetail(func(d *lib.ColumnDetail) { d.Default = &zero })},
+		"not null":          {verdicts: map[string]lib.SchemaHistory{"-": trackedTo30}, live: historianLive, details: withDetail(func(d *lib.ColumnDetail) { d.Nullable = false })},
+		"generated":         {verdicts: map[string]lib.SchemaHistory{"-": trackedTo30}, live: historianLive, details: withDetail(func(d *lib.ColumnDetail) { d.Extra = "STORED GENERATED" })},
+		"primary key":       {verdicts: map[string]lib.SchemaHistory{"-": trackedTo30}, live: historianLive, details: withDetail(func(d *lib.ColumnDetail) { d.Key = "PRI" })},
+		"no column details": {verdicts: map[string]lib.SchemaHistory{"-": trackedTo30}, live: historianLive},
+		"column details fail": {
+			verdicts: map[string]lib.SchemaHistory{"-": trackedTo30}, live: historianLive,
+			details: func(string) ([]lib.ColumnDetail, error) { return nil, errors.New("shard target not available") },
+		},
+		"new column missing from the details": {
+			verdicts: map[string]lib.SchemaHistory{"-": trackedTo30}, live: historianLive,
+			details: func(string) ([]lib.ColumnDetail, error) { return nullableDetails(historianSaved), nil },
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, tasks := runStepOver(t, c)
+			assert.Empty(t, tasks)
+			v, read := got["-"]
+			assert.True(t, read, "the table is still read")
+			assert.Nil(t, v)
+		})
+	}
+}
+
+// The step-over belongs to the shard whose scan found the change tracked: a
+// shard that did not change gets none, and a shard whose live order is
+// unknown gets none even with a tracked verdict.
+func TestTrackedStepOverPerShard(t *testing.T) {
+	positions := map[string]string{"-80": "MySQL56/s1:1-10", "80-": "MySQL56/s2:1-10"}
+	details := func(string) ([]lib.ColumnDetail, error) { return nullableDetails(historianLive), nil }
+
+	t.Run("only the tracked shard", func(t *testing.T) {
+		got, tasks := runStepOver(t, stepOverCase{
+			verdicts:  map[string]lib.SchemaHistory{"-80": {Verdict: lib.SchemaHistoryTracked, Progress: &lib.SchemaScanProgress{Position: "MySQL56/s1:1-30"}}},
+			positions: positions, live: historianLive, details: details,
+			perShard: map[string][]string{"a_add_after/-80": historianLive, "a_add_after/80-": historianSaved, "b_bystander/-": {"id", "b"}},
+		})
+		assert.Empty(t, tasks)
+		if assert.NotNil(t, got["-80"]) {
+			assert.Equal(t, "-80", got["-80"].Shard)
+			assert.Equal(t, "MySQL56/s1:1-10", got["-80"].Cursor)
+			assert.Equal(t, "MySQL56/s1:1-30", got["-80"].VerifiedTo)
+		}
+		v, read := got["80-"]
+		assert.True(t, read)
+		assert.Nil(t, v)
+	})
+	t.Run("unknown shard order", func(t *testing.T) {
+		tracked := lib.SchemaHistory{Verdict: lib.SchemaHistoryTracked, Progress: &lib.SchemaScanProgress{Position: "MySQL56/s1:1-30"}}
+		got, tasks := runStepOver(t, stepOverCase{
+			verdicts:  map[string]lib.SchemaHistory{"-80": tracked, "80-": tracked},
+			positions: positions, live: historianLive, details: details,
+			// -80's live order can't be read.
+			perShard: map[string][]string{"a_add_after/80-": historianSaved, "b_bystander/-": {"id", "b"}},
+		})
+		assert.Empty(t, tasks)
+		v, read := got["-80"]
+		assert.True(t, read)
+		assert.Nil(t, v)
+	})
+}

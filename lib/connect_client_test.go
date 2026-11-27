@@ -1224,7 +1224,7 @@ func TestSync_DirectVStreamHandlesRawEventsAndCopyCompleted(t *testing.T) {
 
 	records := 0
 	checkpoints := []*psdbconnect.TableCursor{}
-	returnedCursor, err := ped.sync(context.Background(), dbl, "customers", []string{"id", "name"}, startCursor, "STOP_GTID", PlanetScaleSource{Database: "connect-test"}, psdbconnect.TabletType_primary, time.Second, func(*sqltypes.Result, Operation) error {
+	returnedCursor, err := ped.sync(context.Background(), dbl, "customers", []string{"id", "name"}, false, startCursor, "STOP_GTID", PlanetScaleSource{Database: "connect-test"}, psdbconnect.TabletType_primary, time.Second, func(*sqltypes.Result, Operation) error {
 		records++
 		return nil
 	}, func(cursor *psdbconnect.TableCursor) error {
@@ -1276,7 +1276,7 @@ func TestSync_DirectVStreamRejectsFieldlessLastKnownPK(t *testing.T) {
 		return vc, nil
 	}
 
-	returnedCursor, err := ped.sync(context.Background(), dbl, "customers", []string{"id", "name"}, startCursor, "STOP_GTID", PlanetScaleSource{Database: "connect-test"}, psdbconnect.TabletType_primary, time.Second, nil, nil, nil)
+	returnedCursor, err := ped.sync(context.Background(), dbl, "customers", []string{"id", "name"}, false, startCursor, "STOP_GTID", PlanetScaleSource{Database: "connect-test"}, psdbconnect.TabletType_primary, time.Second, nil, nil, nil)
 
 	assert.Error(t, err)
 	assert.Equal(t, codes.Internal, status.Code(err))
@@ -1351,7 +1351,7 @@ func TestSync_CheckpointsHistoricalCopyProgress(t *testing.T) {
 		return nil
 	}
 
-	returnedCursor, err := ped.sync(context.Background(), dbl, "customers", []string{"id", "name"}, startCursor, stopCursor.Position, PlanetScaleSource{Database: "connect-test"}, psdbconnect.TabletType_primary, time.Second, onResult, onCursor, nil)
+	returnedCursor, err := ped.sync(context.Background(), dbl, "customers", []string{"id", "name"}, false, startCursor, stopCursor.Position, PlanetScaleSource{Database: "connect-test"}, psdbconnect.TabletType_primary, time.Second, onResult, onCursor, nil)
 	assert.True(t, errors.Is(err, io.EOF))
 	assert.True(t, proto.Equal(afterStopCursor, returnedCursor))
 	assert.Equal(t, 2, rows)
@@ -1422,7 +1422,7 @@ func TestSync_DoesNotPeriodicallyCheckpointVGTIDProgress(t *testing.T) {
 		return nil
 	}
 
-	returnedCursor, err := ped.sync(context.Background(), dbl, "customers", []string{"id", "name"}, startCursor, stopCursor.Position, PlanetScaleSource{Database: "connect-test"}, psdbconnect.TabletType_primary, time.Second, func(*sqltypes.Result, Operation) error {
+	returnedCursor, err := ped.sync(context.Background(), dbl, "customers", []string{"id", "name"}, false, startCursor, stopCursor.Position, PlanetScaleSource{Database: "connect-test"}, psdbconnect.TabletType_primary, time.Second, func(*sqltypes.Result, Operation) error {
 		return nil
 	}, onCursor, nil)
 	assert.True(t, errors.Is(err, io.EOF))
@@ -1454,7 +1454,7 @@ func TestSync_ResumesHistoricalCopyWithLastKnownPKOnly(t *testing.T) {
 		return &cc, nil
 	}
 
-	_, err := ped.sync(context.Background(), dbl, "customers", []string{"id"}, resumeCursor, "STOP_GTID", PlanetScaleSource{Database: "connect-test"}, psdbconnect.TabletType_primary, time.Second, nil, nil, nil)
+	_, err := ped.sync(context.Background(), dbl, "customers", []string{"id"}, false, resumeCursor, "STOP_GTID", PlanetScaleSource{Database: "connect-test"}, psdbconnect.TabletType_primary, time.Second, nil, nil, nil)
 	// The mock stream ends at once: not a completed copy.
 	assert.ErrorIs(t, err, errStreamEnded)
 	assert.True(t, requestChecked)
@@ -1483,7 +1483,7 @@ func TestSync_ResumesHistoricalCopyWithPositionAndLastKnownPK(t *testing.T) {
 		return &cc, nil
 	}
 
-	_, err := ped.sync(context.Background(), dbl, "customers", []string{"id"}, resumeCursor, "STOP_GTID", PlanetScaleSource{Database: "connect-test"}, psdbconnect.TabletType_primary, time.Second, nil, nil, nil)
+	_, err := ped.sync(context.Background(), dbl, "customers", []string{"id"}, false, resumeCursor, "STOP_GTID", PlanetScaleSource{Database: "connect-test"}, psdbconnect.TabletType_primary, time.Second, nil, nil, nil)
 	// The mock stream ends at once: not a completed copy.
 	assert.ErrorIs(t, err, errStreamEnded)
 	assert.True(t, requestChecked)

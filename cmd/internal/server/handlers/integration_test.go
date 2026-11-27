@@ -245,6 +245,70 @@ func TestIntegrationShardTargetedColumnOrder(t *testing.T) {
 	// order must list them.
 	mustExec(t, ctx, db, fmt.Sprintf("alter table %s add column hidden int invisible after name", quoteIdent(tableName)))
 	assertOrders([]string{"id", "mid", "name", "hidden", "qty"})
+
+	// The column details that decide whether a column added by a tracked
+	// schema change may be left out of older binlog events.
+	mustExec(t, ctx, db, fmt.Sprintf("alter table %s add column opt varchar(8) null, add column dflt int not null default 0", quoteIdent(tableName)))
+	assertIntegrationStepOverDetails(t, ctx, mysqlClient, psc.Database, shards, tableName, tabletType)
+}
+
+// assertIntegrationStepOverDetails checks GetShardTableColumns on every shard
+// of a table with the columns of TestIntegrationShardTargetedColumnOrder:
+// only nullable columns without a default (INVISIBLE ones included) may be
+// stepped over.
+func assertIntegrationStepOverDetails(t *testing.T, ctx context.Context, mysqlClient lib.MysqlClient, keyspace string, shards []string, tableName string, tabletType psdbconnect.TabletType) {
+	t.Helper()
+	want := map[string]bool{"id": false, "mid": true, "name": false, "hidden": true, "qty": false, "opt": true, "dflt": false}
+	for _, shard := range shards {
+		deadline := time.Now().Add(2 * time.Minute)
+		for {
+			details, err := mysqlClient.GetShardTableColumns(ctx, keyspace, shard, tableName, tabletType)
+			got := map[string]bool{}
+			for _, d := range details {
+				got[d.Name] = d.StepOverBlocker() == ""
+			}
+			if err == nil && reflect.DeepEqual(got, want) {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("shard %s: step-over eligibility %v (err %v), want %v", shard, got, err, want)
+			}
+			time.Sleep(2 * time.Second)
+		}
+	}
+}
+
+// The shard-targeted column details also work for an unsharded keyspace
+// (shard "-"), which the sync reads the same way.
+func TestIntegrationUnshardedColumnDetails(t *testing.T) {
+	psc := loadIntegrationSource(t)
+	ctx := context.Background()
+	tableName := integrationTableName(t)
+
+	db := openIntegrationSQL(t, psc)
+	t.Cleanup(func() {
+		if _, err := db.ExecContext(context.Background(), "drop table if exists "+quoteIdent(tableName)); err != nil {
+			t.Logf("drop integration table %s: %v", tableName, err)
+		}
+		_ = db.Close()
+	})
+	mustExec(t, ctx, db, fmt.Sprintf("create table %s (id bigint primary key, mid varchar(16), name varchar(64) not null, hidden int invisible, "+
+		"qty int not null, opt varchar(8) null, dflt int not null default 0)", quoteIdent(tableName)))
+
+	mysqlClient, err := lib.NewMySQL(&psc)
+	if err != nil {
+		t.Fatalf("create mysql client: %v", err)
+	}
+	defer mysqlClient.Close()
+	shards, err := mysqlClient.GetVitessShards(ctx, psc)
+	if err != nil || len(shards) == 0 {
+		t.Fatalf("list shards: %v (%v)", shards, err)
+	}
+	tabletType := psdbconnect.TabletType_primary
+	if psc.UseReplica {
+		tabletType = psdbconnect.TabletType_replica
+	}
+	assertIntegrationStepOverDetails(t, ctx, mysqlClient, psc.Database, shards, tableName, tabletType)
 }
 
 func TestIntegrationBitValues(t *testing.T) {

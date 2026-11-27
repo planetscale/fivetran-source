@@ -124,8 +124,12 @@ keyspaces:
 			// Every shard is checked against its own saved and live order: Online
 			// DDL cuts the shards over independently.
 			order := checkColumnOrder(ctx, db, logger, psc, ks.SchemaName, table.TableName, streamState)
+			// trackedShards: the shards whose schema history scan in this sync
+			// found every schema change tracked (see trackedStepOver).
+			var trackedShards map[string]trackedRange
 			if orderErr := order.changed; orderErr != nil {
 				tracked, failedShard, hErr := verifySchemaHistory(ctx, db, logger, psc, streamState, orderErr, order.changedShards)
+				trackedShards = tracked
 				if err := stop(stateKey); err != nil {
 					// A scan cut short by the cancelled sync proves nothing about
 					// the table: no mark, no Task.
@@ -133,7 +137,7 @@ keyspaces:
 				}
 				if hErr == nil {
 					why := "the saved cursors are already past the schema change"
-					if tracked {
+					if len(tracked) > 0 {
 						why = "the schema tracker recorded the schema change, so the older binlog events are decoded with the schema they were written with"
 					}
 					logger.Info(fmt.Sprintf("table %s: column order changed on shard(s) %s (%s); %s, syncing as usual",
@@ -229,7 +233,13 @@ keyspaces:
 
 				shardOrder := order.shards[shardName]
 				columns := includedColumns(table)
-				sc, err := (*db).Read(ctx, logger, *psc, table.TableName, columns, tc, onRow, onCursor, onUpdate)
+				readCtx := ctx
+				if r, ok := trackedShards[shardName]; ok {
+					if stepOver := trackedStepOver(ctx, db, logger, psc, ks.SchemaName, table.TableName, shardName, r, streamState.SavedColumnOrder(shardName), shardOrder, columns); stepOver != nil {
+						readCtx = lib.WithTrackedStepOver(ctx, *stepOver)
+					}
+				}
+				sc, err := (*db).Read(readCtx, logger, *psc, table.TableName, columns, tc, onRow, onCursor, onUpdate)
 				if sErr := stop(stateKey); sErr != nil {
 					// Checked before the error is classified: a Read cut short by
 					// the cancelled sync can fail with vtgate's "no tablet found",
@@ -520,8 +530,8 @@ func recordShardColumnOrder(state *lib.SyncState, keyspace, table, shard string,
 // every given shard (the shards whose order changed, sorted) with a saved
 // binlog position (lib.SchemaHistoryScanner, in shard order) and returns a nil error when each shard either has no schema change on
 // the table since its cursor or has one followed by a schema version, so the
-// historian decodes the older events correctly (tracked reports whether any
-// shard had one). A shard whose binary logs at the saved position have expired
+// historian decodes the older events correctly (tracked has the shards that
+// had one). A shard whose binary logs at the saved position have expired
 // gets its cursor reset here, like lib.Read does, so the shard is copied again
 // and nothing is decoded from before the change. Otherwise it returns the shard
 // that failed and:
@@ -538,10 +548,13 @@ func recordShardColumnOrder(state *lib.SyncState, keyspace, table, shard string,
 //     reading the current position failed (lib.ErrSchemaHistoryPositionCheck);
 //   - the scan error, e.g. lib.ErrSchemaHistoryInconclusive (a plain error, so
 //     Fivetran retries and the next sync scans again).
-func verifySchemaHistory(ctx context.Context, db *lib.ConnectClient, logger Serializer, psc *lib.PlanetScaleSource, streamState lib.ShardStates, orderErr *ColumnOrderChangedError, shards []string) (tracked bool, failedShard string, err error) {
+//
+// tracked has every shard whose verdict was lib.SchemaHistoryTracked, with
+// the range the scan verified (see trackedStepOver).
+func verifySchemaHistory(ctx context.Context, db *lib.ConnectClient, logger Serializer, psc *lib.PlanetScaleSource, streamState lib.ShardStates, orderErr *ColumnOrderChangedError, shards []string) (tracked map[string]trackedRange, failedShard string, err error) {
 	scanner, ok := (*db).(lib.SchemaHistoryScanner)
 	if !ok {
-		return false, "", orderErr
+		return nil, "", orderErr
 	}
 	tabletType := psdbconnect.TabletType_primary
 	if psc.UseReplica {
@@ -550,7 +563,7 @@ func verifySchemaHistory(ctx context.Context, db *lib.ConnectClient, logger Seri
 	for _, shard := range shards {
 		tc, err := streamState.Shards[shard].SerializedCursorToTableCursor()
 		if err != nil {
-			return false, shard, status.Error(codes.Internal, fmt.Sprintf("invalid cursor for stream %v:%v, failed with [%v]", orderErr.Keyspace, orderErr.Table, err))
+			return nil, shard, status.Error(codes.Internal, fmt.Sprintf("invalid cursor for stream %v:%v, failed with [%v]", orderErr.Keyspace, orderErr.Table, err))
 		}
 		if tc.Position == "" {
 			continue
@@ -567,34 +580,122 @@ func verifySchemaHistory(ctx context.Context, db *lib.ConnectClient, logger Seri
 			// No tablet for the current position (e.g. during a reparent) is
 			// not a sign of expired binlogs at the saved one: a plain error, so
 			// Fivetran retries and the next sync scans again.
-			return false, shard, errors.Wrapf(err, "checking the schema history of table %s on shard %s after its column order changed (%s)", orderErr.Table, shard, orderErr.Reason)
+			return nil, shard, errors.Wrapf(err, "checking the schema history of table %s on shard %s after its column order changed (%s)", orderErr.Table, shard, orderErr.Reason)
 		case errors.Is(err, lib.ErrSchemaHistoryUnavailable):
-			return false, shard, orderErr
+			return nil, shard, orderErr
 		case errors.Is(err, lib.ErrSchemaHistoryScanTimeout):
 			logger.Severe(fmt.Sprintf("table %s:%s shard %s: %v", orderErr.Keyspace, orderErr.Table, shard, err))
 			if history.Progress != nil && (resume == nil || history.Progress.Position != resume.Position) {
-				return false, shard, &schemaScanIncompleteError{Table: orderErr.Table, Shard: shard, Err: err}
+				return nil, shard, &schemaScanIncompleteError{Table: orderErr.Table, Shard: shard, Err: err}
 			}
 			// No progress at all: the next sync would not get further.
-			return false, shard, orderErr
+			return nil, shard, orderErr
 		case lib.IsBinlogsExpirationError(err):
 			if rErr := resetExpiredCursor(logger, streamState, shard, tc, orderErr.Table, err); rErr != nil {
-				return false, shard, rErr
+				return nil, shard, rErr
 			}
 			continue
 		case lib.IsVStreamTabletNotFoundError(err, tabletType):
-			return false, shard, &lib.SuspectedBinlogExpirationError{Keyspace: tc.Keyspace, Shard: shard, Table: orderErr.Table, Err: err}
+			return nil, shard, &lib.SuspectedBinlogExpirationError{Keyspace: tc.Keyspace, Shard: shard, Table: orderErr.Table, Err: err}
 		case err != nil:
-			return false, shard, errors.Wrapf(err, "checking the schema history of table %s on shard %s after its column order changed (%s)", orderErr.Table, shard, orderErr.Reason)
+			return nil, shard, errors.Wrapf(err, "checking the schema history of table %s on shard %s after its column order changed (%s)", orderErr.Table, shard, orderErr.Reason)
 		}
 		if history.Verdict == lib.SchemaHistoryUntracked {
 			orderErr.Untracked, orderErr.Shard, orderErr.DDL = true, shard, history.DDL
-			return false, shard, orderErr
+			return nil, shard, orderErr
 		}
-		tracked = tracked || history.Verdict == lib.SchemaHistoryTracked
+		if history.Verdict == lib.SchemaHistoryTracked {
+			if tracked == nil {
+				tracked = map[string]trackedRange{}
+			}
+			r := trackedRange{cursor: tc.Position}
+			if history.Progress != nil {
+				r.verifiedTo = history.Progress.Position
+			}
+			tracked[shard] = r
+		}
 		logger.Info(fmt.Sprintf("table %s:%s shard %s: %s", orderErr.Keyspace, orderErr.Table, shard, history.Verdict))
 	}
 	return tracked, "", nil
+}
+
+// trackedRange is the binlog range of one shard that the schema history scan
+// of this sync found tracked (lib.SchemaHistoryTracked): from the shard's
+// saved cursor to the position the scan read up to ("" if unknown).
+type trackedRange struct {
+	cursor, verifiedTo string
+}
+
+// trackedStepOver returns what Read may step over on one shard whose schema
+// history scan in this sync found every schema change tracked (see
+// lib.TrackedStepOver), or nil to keep the plain behaviour (vttablet's error
+// raises the re-sync Task). With the tracker on, vttablet resolves the
+// VStream filter against the schema each older event was written with, so a
+// selected column added after the saved cursor makes it fail on those events.
+//
+// Only columns that were plainly added on this shard qualify: the shard's
+// live order must keep every column of its saved order (a rename or drop in
+// the same change gets the Task: a renamed column has values that the older
+// events carry under the old name), the column must be selected, and SHOW
+// COLUMNS on the shard must show it nullable, without a default, not
+// generated or auto-increment, and not in the primary key
+// (lib.ColumnDetail.StepOverBlocker). Online DDL fills a new column for the
+// existing rows on the shadow table without row events for the table, so any
+// other column would stay NULL in the destination for rows not changed since.
+// When in doubt (unknown live order, no saved order, SHOW COLUMNS failing,
+// no verified range) it returns nil.
+func trackedStepOver(ctx context.Context, db *lib.ConnectClient, logger Serializer, psc *lib.PlanetScaleSource, keyspace, table, shard string, r trackedRange, saved []string, shardOrder *shardColumnOrder, selected []string) *lib.TrackedStepOver {
+	prefix := fmt.Sprintf("table %s:%s shard %s: ", keyspace, table, shard)
+	if r.cursor == "" || r.verifiedTo == "" || len(saved) == 0 || shardOrder == nil || shardOrder.live == nil {
+		return nil
+	}
+	added, onlyAdded := lib.AddedColumns(saved, shardOrder.live)
+	if !onlyAdded {
+		logger.Info(prefix + "the column change also drops or renames a column; a selected new column will not be stepped over")
+		return nil
+	}
+	var candidates []string
+	for _, c := range added {
+		for _, sel := range selected {
+			if strings.EqualFold(c, sel) {
+				candidates = append(candidates, c)
+				break
+			}
+		}
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+	reader, ok := (*db).(lib.ShardColumnDetailsReader)
+	if !ok {
+		return nil
+	}
+	details, err := reader.ShardColumnDetails(ctx, *psc, keyspace, shard, table)
+	if err != nil {
+		logger.Info(fmt.Sprintf("%scould not read the shard's column details (%v); a selected new column will not be stepped over", prefix, err))
+		return nil
+	}
+	stepOver := &lib.TrackedStepOver{Shard: shard, Cursor: r.cursor, VerifiedTo: r.verifiedTo}
+	for _, c := range candidates {
+		blocker := "it is not in SHOW COLUMNS on the shard"
+		for _, d := range details {
+			if strings.EqualFold(d.Name, c) {
+				blocker = d.StepOverBlocker()
+				break
+			}
+		}
+		if blocker != "" {
+			logger.Info(fmt.Sprintf("%snew column %s will not be stepped over: %s", prefix, c, blocker))
+			continue
+		}
+		stepOver.Columns = append(stepOver.Columns, c)
+	}
+	if len(stepOver.Columns) == 0 {
+		return nil
+	}
+	logger.Info(fmt.Sprintf("%snew column(s) %s may be left out of binlog events up to %s, written before the tracked schema change that added them",
+		prefix, strings.Join(stepOver.Columns, ","), r.verifiedTo))
+	return stepOver
 }
 
 // schemaScanIncompleteError: the schema history scan of a shard ran out of

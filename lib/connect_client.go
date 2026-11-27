@@ -151,6 +151,33 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 	logger.Info(fmt.Sprintf("%sFiltering with columns %s", preamble, strings.Join(existingColumns, ",")))
 	logger.Info(fmt.Sprintf("%sUsing read timeout: %v", preamble, readDuration))
 
+	// streamColumns is what the VStream filter asks for: existingColumns,
+	// except while a TrackedStepOver replays events written before a column
+	// was added (see TrackedStepOver). stopAtDDL is set while it does.
+	streamColumns := existingColumns
+	stopAtDDL := false
+	stepOver, canStepOver := TrackedStepOverFrom(ctx)
+	if canStepOver && (stepOver.Shard != currentPosition.Shard || stepOver.Cursor == "" ||
+		stepOver.Cursor != currentPosition.Position || currentPosition.LastKnownPk != nil) {
+		// Not the cursor the schema history scan verified from.
+		canStepOver = false
+	}
+	var (
+		// steppedOver: columns already left out once in this Read.
+		steppedOver []string
+		// cutOversSteppedOver counts reduced streams (one per cut-over).
+		cutOversSteppedOver int
+		// stepOverErr is vttablet's error that started the reduced stream.
+		stepOverErr error
+	)
+	// refuseStepOver ends the read with vttablet's original error, which
+	// raises the re-sync Task.
+	refuseStepOver := func(why string) (*SerializedCursor, error) {
+		logger.Warning(fmt.Sprintf("%snot stepping over the schema change: %s", preamble, why))
+		return currentSerializedCursor, errors.Wrapf(stepOverErr, "PlanetScale VStream cannot continue incremental replication for table %s after a schema change (%s); "+
+			"run a Fivetran historical re-sync for this connection to recover", tableName, why)
+	}
+
 	for {
 		logger.Info(preamble + "peeking to see if there's any new rows")
 		latestCursorPosition, lcErr := p.getLatestCursorPosition(ctx, currentPosition.Shard, currentPosition.Keyspace, tableName, ps, tabletType)
@@ -169,7 +196,7 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 		logger.Info(fmt.Sprintf(preamble+"syncing rows with cursor [%v]", currentPosition))
 
 		previousPosition := cloneTableCursor(currentPosition)
-		currentPosition, err = p.sync(ctx, logger, tableName, existingColumns, currentPosition, latestCursorPosition, ps, tabletType, readDuration, onResult, onCursor, onUpdate)
+		currentPosition, err = p.sync(ctx, logger, tableName, streamColumns, stopAtDDL, currentPosition, latestCursorPosition, ps, tabletType, readDuration, onResult, onCursor, onUpdate)
 		madeProgress := tableCursorMadeProgress(previousPosition, currentPosition)
 		if tableCursorHasProgress(currentPosition) {
 			currentSerializedCursor, sErr = TableCursorToSerializedCursor(currentPosition)
@@ -177,6 +204,29 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 				// if we failed to serialize here, we should bail.
 				return currentSerializedCursor, errors.Wrap(sErr, "unable to serialize current position")
 			}
+		}
+		if errors.Is(err, errPassedSchemaChange) {
+			// The reduced stream reached a DDL for the table; currentPosition
+			// includes it. Restart there with every column only if the scan
+			// verified that range (the DDL's schema version is recorded).
+			within, pErr := positionAtLeast(stepOver.VerifiedTo, currentPosition.Position)
+			if pErr != nil || !within {
+				return refuseStepOver(fmt.Sprintf("the stream reached a schema change at %s, past the range the schema history check verified (up to %s)", currentPosition.Position, stepOver.VerifiedTo))
+			}
+			if onCursor != nil {
+				if cErr := onCursor(currentPosition); cErr != nil {
+					return currentSerializedCursor, status.Error(codes.Internal, "unable to serialize cursor")
+				}
+			}
+			logger.Info(fmt.Sprintf("%spassed the schema change, resuming with columns %s", preamble, strings.Join(existingColumns, ",")))
+			streamColumns = existingColumns
+			stopAtDDL = false
+			continue
+		}
+		if stopAtDDL && errors.Is(err, io.EOF) {
+			// The reduced stream reached the current position without a DDL
+			// for the table: the cut-over that added the column was not seen.
+			return refuseStepOver("the stream reached the current position without passing the schema change that added the column")
 		}
 		if errors.Is(err, errStreamEnded) {
 			// vtgate ended the stream (for example while it restarts or
@@ -200,6 +250,9 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 						// Reset the cursor position to empty to trigger historical sync on next iteration
 						currentPosition.Position = ""
 						currentPosition.LastKnownPk = nil
+						// The copy reads the current table: every column, and no
+						// step-over (the verified cursor is gone).
+						streamColumns, stopAtDDL, canStepOver = existingColumns, false, false
 
 						currentSerializedCursor, sErr = TableCursorToSerializedCursor(currentPosition)
 						if sErr != nil {
@@ -221,6 +274,26 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 							Table:    tableName,
 							Err:      err,
 						}
+					}
+
+					// A selected column added after the event being decoded, in a
+					// range the schema history scan verified as tracked: leave it
+					// out until the stream reaches the cut-over (TrackedStepOver).
+					if missing, ok := VStreamMissingFilterColumn(err); ok && canStepOver {
+						if reason := p.stepOverRefusal(stepOver, missing, currentPosition.Position, streamColumns, steppedOver, stopAtDDL, cutOversSteppedOver); reason != "" {
+							stepOverErr = err
+							return refuseStepOver(reason)
+						}
+						if !stopAtDDL {
+							cutOversSteppedOver++
+						}
+						stepOverErr = err
+						steppedOver = append(steppedOver, missing)
+						streamColumns, _ = withoutColumn(streamColumns, missing)
+						stopAtDDL = true
+						logger.Warning(fmt.Sprintf("%scolumn %s did not exist yet at the saved position (added by a schema change that the schema tracker recorded); "+
+							"streaming without it until the stream passes the schema change (schema change %d/%d)", preamble, missing, cutOversSteppedOver, maxTrackedStepOvers))
+						continue
 					}
 
 					if IsVStreamSchemaIncompatibilityError(err) {
@@ -298,7 +371,32 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 	}
 }
 
-func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableName string, columns []string, tc *psdbconnect.TableCursor, stopPosition string, ps PlanetScaleSource, tabletType psdbconnect.TabletType, readDuration time.Duration, onResult OnResult, onCursor OnCursor, onUpdate OnUpdate) (*psdbconnect.TableCursor, error) {
+// stepOverRefusal returns why Read must not leave column out of the stream
+// that starts at position, or "" if it may (see TrackedStepOver).
+func (p connectClient) stepOverRefusal(s TrackedStepOver, column, position string, streamColumns, steppedOver []string, stopAtDDL bool, cutOvers int) string {
+	if !s.allows(column) {
+		return fmt.Sprintf("column %s is not a nullable column without a default that the schema history check found added on this shard", column)
+	}
+	for _, c := range steppedOver {
+		if strings.EqualFold(c, column) {
+			return fmt.Sprintf("column %s was already left out once in this read", column)
+		}
+	}
+	if !stopAtDDL && cutOvers >= maxTrackedStepOvers {
+		return fmt.Sprintf("already stepped over %d schema changes in this read", cutOvers)
+	}
+	reduced, removed := withoutColumn(streamColumns, column)
+	if !removed || len(reduced) == 0 {
+		return fmt.Sprintf("column %s can't be left out of the stream", column)
+	}
+	reached, err := positionAtLeast(position, s.VerifiedTo)
+	if err != nil || reached {
+		return fmt.Sprintf("the stream is at %s, not before the end of the range the schema history check verified (%s)", position, s.VerifiedTo)
+	}
+	return ""
+}
+
+func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableName string, columns []string, stopAtDDL bool, tc *psdbconnect.TableCursor, stopPosition string, ps PlanetScaleSource, tabletType psdbconnect.TabletType, readDuration time.Duration, onResult OnResult, onCursor OnCursor, onUpdate OnUpdate) (*psdbconnect.TableCursor, error) {
 	ctx, cancel := context.WithTimeout(ctx, readDuration)
 	defer cancel()
 
@@ -366,6 +464,14 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 				logger.Info(preamble + "VERSION event: the vttablet schema tracker recorded a schema version")
 			case binlogdatapb.VEventType_DDL:
 				logger.Info(fmt.Sprintf("%sDDL event: %q", preamble, event.Statement))
+			}
+			if stopAtDDL && event.Type == binlogdatapb.VEventType_DDL {
+				// vttablet only sends DDL events for statements that name this
+				// table (mustSendDDL); for Online DDL that is the cut-over RENAME.
+				// The DDL's GTID arrives (as a VGTID) just before it, so tc
+				// already includes it. No checkpoint here: Read checks the
+				// position first.
+				return tc, errPassedSchemaChange
 			}
 		}
 
@@ -982,6 +1088,28 @@ func (p connectClient) ShardColumnOrder(ctx context.Context, ps PlanetScaleSourc
 		tabletType = psdbconnect.TabletType_replica
 	}
 	return (*p.Mysql).GetShardTableColumnOrder(ctx, keyspace, shard, tableName, tabletType)
+}
+
+// ShardColumnDetailsReader is implemented by a ConnectClient that can read
+// SHOW COLUMNS of a table as one shard has it (see
+// MysqlClient.GetShardTableColumns).
+type ShardColumnDetailsReader interface {
+	ShardColumnDetails(ctx context.Context, ps PlanetScaleSource, keyspace, shard, tableName string) ([]ColumnDetail, error)
+}
+
+var _ ShardColumnDetailsReader = connectClient{}
+
+// ShardColumnDetails returns SHOW COLUMNS of the table on one shard (of ps's
+// tablet type), or ErrColumnOrderUnavailable.
+func (p connectClient) ShardColumnDetails(ctx context.Context, ps PlanetScaleSource, keyspace, shard, tableName string) ([]ColumnDetail, error) {
+	if p.Mysql == nil || *p.Mysql == nil {
+		return nil, ErrColumnOrderUnavailable
+	}
+	tabletType := psdbconnect.TabletType_primary
+	if ps.UseReplica {
+		tabletType = psdbconnect.TabletType_replica
+	}
+	return (*p.Mysql).GetShardTableColumns(ctx, keyspace, shard, tableName, tabletType)
 }
 
 // ErrColumnOrderUnavailable: the client has no MySQL connection to read the

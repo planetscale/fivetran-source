@@ -18,6 +18,7 @@ type MysqlClient interface {
 	GetVitessShards(ctx context.Context, psc PlanetScaleSource) ([]string, error)
 	GetKeyspaceTableColumns(ctx context.Context, keyspaceName string, tableName string) ([]MysqlColumn, error)
 	GetShardTableColumnOrder(ctx context.Context, keyspaceName, shard, tableName string, tabletType psdbconnect.TabletType) ([]string, error)
+	GetShardTableColumns(ctx context.Context, keyspaceName, shard, tableName string, tabletType psdbconnect.TabletType) ([]ColumnDetail, error)
 	Close() error
 }
 
@@ -189,6 +190,65 @@ func (p mysqlClient) GetShardTableColumnOrder(ctx context.Context, keyspaceName,
 		return nil, errors.Wrapf(err, "unable to read the columns of table %s on shard %s", tableName, target)
 	}
 	return order, nil
+}
+
+// GetShardTableColumns returns SHOW COLUMNS of a table as one shard has it
+// (shard-targeted, like GetShardTableColumnOrder): name, nullability, key,
+// default and extra of every column, INVISIBLE ones included. The sync uses
+// it to decide whether a column added by a tracked schema change may be left
+// out of older binlog events (ColumnDetail.StepOverBlocker).
+func (p mysqlClient) GetShardTableColumns(ctx context.Context, keyspaceName, shard, tableName string, tabletType psdbconnect.TabletType) ([]ColumnDetail, error) {
+	db, err := p.shardDB(keyspaceName, shard, tabletType)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, shardColumnOrderTimeout)
+	defer cancel()
+	target := keyspaceName + ":" + shard
+	rows, err := db.QueryContext(ctx, "show columns from "+quoteIdentifier(tableName))
+	if err != nil {
+		return nil, errors.Wrapf(err, "unable to read the columns of table %s on shard %s", tableName, target)
+	}
+	defer rows.Close()
+	fields, err := rows.Columns()
+	if err != nil {
+		return nil, errors.Wrapf(err, "unable to read the columns of table %s on shard %s", tableName, target)
+	}
+	index := map[string]int{}
+	for i, f := range fields {
+		index[strings.ToLower(f)] = i
+	}
+	for _, f := range []string{"field", "null", "key", "default", "extra"} {
+		if _, ok := index[f]; !ok {
+			return nil, errors.Errorf("unable to read the columns of table %s on shard %s: SHOW COLUMNS has no %s field", tableName, target, f)
+		}
+	}
+	values := make([]sql.NullString, len(fields))
+	dest := make([]any, len(fields))
+	for i := range values {
+		dest[i] = &values[i]
+	}
+	var columns []ColumnDetail
+	for rows.Next() {
+		if err := rows.Scan(dest...); err != nil {
+			return nil, errors.Wrapf(err, "unable to read the columns of table %s on shard %s", tableName, target)
+		}
+		c := ColumnDetail{
+			Name:     values[index["field"]].String,
+			Nullable: strings.EqualFold(values[index["null"]].String, "YES"),
+			Key:      values[index["key"]].String,
+			Extra:    values[index["extra"]].String,
+		}
+		if d := values[index["default"]]; d.Valid {
+			def := d.String
+			c.Default = &def
+		}
+		columns = append(columns, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, errors.Wrapf(err, "unable to read the columns of table %s on shard %s", tableName, target)
+	}
+	return columns, nil
 }
 
 // shardDB returns the connection pool targeted at keyspace:shard, opening it
