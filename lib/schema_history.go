@@ -50,6 +50,10 @@ type SchemaHistory struct {
 	// DDL is the statement of the first schema change seen on the table (for
 	// Online DDL, the cut-over RENAME), or "".
 	DDL string
+	// DDLCount is the number of DDL events on the table between the cursor
+	// and the position the scan read up to, or -1 if unknown (progress saved
+	// by an older build that did not count them).
+	DDLCount int
 	// Progress is where the scan got to, with everything it learned on the
 	// way, also when it returns an error (for example
 	// ErrSchemaHistoryScanTimeout); nil if it never got past its start. The
@@ -80,6 +84,9 @@ type SchemaScanProgress struct {
 	Untracked bool `json:"untracked,omitempty"`
 	// DDL is the first schema change seen on the table, or "".
 	DDL string `json:"ddl,omitempty"`
+	// DDLs is the number of DDL events on the table seen so far, or -1 if
+	// unknown (see SchemaHistory.DDLCount).
+	DDLs int `json:"ddls,omitempty"`
 	// LastTimestamp is the latest event timestamp seen (dates an undated DDL).
 	LastTimestamp int64 `json:"last_timestamp,omitempty"`
 }
@@ -169,7 +176,7 @@ func (p connectClient) ScanSchemaHistory(ctx context.Context, logger DatabaseLog
 	from := tc.Position
 	if resume != nil && resume.Position != "" {
 		if resume.Untracked {
-			return SchemaHistory{Verdict: SchemaHistoryUntracked, DDL: resume.DDL, Progress: resume}, nil
+			return SchemaHistory{Verdict: SchemaHistoryUntracked, DDL: resume.DDL, DDLCount: resumedDDLCount(resume), Progress: resume}, nil
 		}
 		from = resume.Position
 	} else {
@@ -292,7 +299,9 @@ func scanSchemaHistoryStream(ctx context.Context, recv func() (*vtgatepb.VStream
 		lastTimestamp int64
 		reachedStop   bool
 		// position is the last VGTID of the shard the scan read up to.
-		position    string
+		position string
+		// ddls counts the table's DDL events; -1 once unknown.
+		ddls        int
 		timer       *time.Timer
 		timerC      <-chan time.Time
 		timerForDDL bool
@@ -303,8 +312,10 @@ func scanSchemaHistoryStream(ctx context.Context, recv func() (*vtgatepb.VStream
 		lastTimestamp = resume.LastTimestamp
 		history.DDL = resume.DDL
 		position = resume.Position
+		ddls = resumedDDLCount(resume)
 	}
 	defer func() {
+		history.DDLCount = ddls
 		if position == "" {
 			return
 		}
@@ -314,6 +325,7 @@ func scanSchemaHistoryStream(ctx context.Context, recv func() (*vtgatepb.VStream
 			Tracked:       tracked,
 			Untracked:     history.Verdict == SchemaHistoryUntracked,
 			DDL:           history.DDL,
+			DDLs:          ddls,
 			LastTimestamp: lastTimestamp,
 		}
 	}()
@@ -385,10 +397,13 @@ func scanSchemaHistoryStream(ctx context.Context, recv func() (*vtgatepb.VStream
 				case binlogdatapb.VEventType_VGTID:
 					if pos := vgtidPositionForShard([]*binlogdatapb.VEvent{event}, keyspace, shard); pos != "" {
 						position = pos
-						if pos == stop {
+						// GTID sets, not strings: the stream need not emit
+						// the exact stop VGTID (see positionAtLeast).
+						switch {
+						case pos == stop:
 							reachedStop = true
-						} else if reachedStop {
-							passedStop = true
+						case reachedStop || positionReached(pos, stop):
+							reachedStop, passedStop = true, true
 						}
 					}
 				case binlogdatapb.VEventType_DDL:
@@ -397,6 +412,9 @@ func scanSchemaHistoryStream(ctx context.Context, recv func() (*vtgatepb.VStream
 						ddlTime = lastTimestamp
 					}
 					pendingDDLs = append(pendingDDLs, ddlTime)
+					if ddls >= 0 {
+						ddls++
+					}
 					if history.DDL == "" {
 						history.DDL = event.GetStatement()
 					}
@@ -436,12 +454,29 @@ func scanSchemaHistoryStream(ctx context.Context, recv func() (*vtgatepb.VStream
 	}
 }
 
+// resumedDDLCount is the DDL count carried by resume, or -1 when resume saw a
+// schema change but has no count (saved by an older build).
+func resumedDDLCount(resume *SchemaScanProgress) int {
+	if resume.DDLs == 0 && (resume.Tracked || resume.Untracked || resume.DDL != "" || len(resume.PendingDDLs) > 0) {
+		return -1
+	}
+	return resume.DDLs
+}
+
+// positionReached reports whether binlog position pos contains stop (GTID
+// sets). Positions that can't be compared count as not reached: the scan
+// then ends on its timers or its timeout, as before.
+func positionReached(pos, stop string) bool {
+	ok, err := PositionAtLeast(pos, stop)
+	return err == nil && ok
+}
+
 // resumedVerdict is the verdict of a resumed scan that had nothing left to
 // read: the earlier scan's findings, with a schema change still waiting for
 // its VERSION event judged like at the end of a scan (untracked once it is
 // older than grace, else inconclusive).
 func resumedVerdict(resume *SchemaScanProgress, grace time.Duration, now func() time.Time) (SchemaHistory, error) {
-	history := SchemaHistory{DDL: resume.DDL, Progress: resume}
+	history := SchemaHistory{DDL: resume.DDL, DDLCount: resumedDDLCount(resume), Progress: resume}
 	switch {
 	case len(resume.PendingDDLs) > 0:
 		if ddlTime := resume.PendingDDLs[0]; ddlTime == 0 || now().Sub(time.Unix(ddlTime, 0)) >= grace {

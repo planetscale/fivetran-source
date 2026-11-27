@@ -78,18 +78,19 @@ func (s TrackedStepOver) allows(column string) bool {
 
 // maxTrackedStepOvers bounds how many cut-overs one Read steps over. Each
 // cut-over may add several columns (vttablet reports them one at a time), but
-// it counts once.
-var maxTrackedStepOvers = 3
+// it counts once. The handler only offers a step-over when the scan saw
+// exactly one DDL on the table, so one is enough.
+var maxTrackedStepOvers = 1
 
 // errPassedSchemaChange ends a sync that streamed with a reduced column list
 // at the first DDL event for the table; Read then decides whether to restart
 // there with every column.
 var errPassedSchemaChange = errors.New("vstream reached a schema change for the table")
 
-// positionAtLeast reports whether binlog position a contains b (GTID sets).
-// Positions that can't be decoded are an error: the caller then does not
-// step over anything.
-func positionAtLeast(a, b string) (bool, error) {
+// PositionAtLeast reports whether binlog position a contains b (GTID sets).
+// Positions that can't be decoded are an error: callers then take the safe
+// path (no step-over, no saved column order, the scan's timers).
+func PositionAtLeast(a, b string) (bool, error) {
 	pa, err := replication.DecodePosition(a)
 	if err != nil {
 		return false, errors.Wrapf(err, "decoding binlog position %q", a)

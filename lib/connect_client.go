@@ -209,7 +209,7 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 			// The reduced stream reached a DDL for the table; currentPosition
 			// includes it. Restart there with every column only if the scan
 			// verified that range (the DDL's schema version is recorded).
-			within, pErr := positionAtLeast(stepOver.VerifiedTo, currentPosition.Position)
+			within, pErr := PositionAtLeast(stepOver.VerifiedTo, currentPosition.Position)
 			if pErr != nil || !within {
 				return refuseStepOver(fmt.Sprintf("the stream reached a schema change at %s, past the range the schema history check verified (up to %s)", currentPosition.Position, stepOver.VerifiedTo))
 			}
@@ -389,7 +389,7 @@ func (p connectClient) stepOverRefusal(s TrackedStepOver, column, position strin
 	if !removed || len(reduced) == 0 {
 		return fmt.Sprintf("column %s can't be left out of the stream", column)
 	}
-	reached, err := positionAtLeast(position, s.VerifiedTo)
+	reached, err := PositionAtLeast(position, s.VerifiedTo)
 	if err != nil || reached {
 		return fmt.Sprintf("the stream is at %s, not before the end of the range the schema history check verified (%s)", position, s.VerifiedTo)
 	}
@@ -1110,6 +1110,25 @@ func (p connectClient) ShardColumnDetails(ctx context.Context, ps PlanetScaleSou
 		tabletType = psdbconnect.TabletType_replica
 	}
 	return (*p.Mysql).GetShardTableColumns(ctx, keyspace, shard, tableName, tabletType)
+}
+
+// PrimaryPositionReader is implemented by a ConnectClient that can read a
+// shard's current binlog position on its primary. Every tablet of a shard has
+// applied a subset of the primary's GTIDs, so a position read from the
+// primary after a column order was read (on any tablet) contains every
+// schema change that order reflects. The sync handler saves a shard's column
+// order only once the shard's cursor contains that position, so the saved
+// order is never ahead of the cursor, also with UseReplica (the order and the
+// VStream may come from different replicas).
+type PrimaryPositionReader interface {
+	PrimaryPosition(ctx context.Context, ps PlanetScaleSource, keyspace, shard, tableName string) (string, error)
+}
+
+var _ PrimaryPositionReader = connectClient{}
+
+// PrimaryPosition returns the shard's current binlog position on its primary.
+func (p connectClient) PrimaryPosition(ctx context.Context, ps PlanetScaleSource, keyspace, shard, tableName string) (string, error) {
+	return p.getLatestCursorPosition(ctx, shard, keyspace, tableName, ps, psdbconnect.TabletType_primary)
 }
 
 // ErrColumnOrderUnavailable: the client has no MySQL connection to read the

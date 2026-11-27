@@ -125,10 +125,16 @@ keyspaces:
 			// DDL cuts the shards over independently.
 			order := checkColumnOrder(ctx, db, logger, psc, ks.SchemaName, table.TableName, streamState)
 			// trackedShards: the shards whose schema history scan in this sync
-			// found every schema change tracked (see trackedStepOver).
-			var trackedShards map[string]trackedRange
+			// found every schema change tracked; stepOverColumns: per changed
+			// shard, the selected new columns that may be stepped over if so
+			// (see stepOverColumns, read before the scan).
+			var (
+				trackedShards   map[string]trackedRange
+				stepOverColumns map[string][]string
+			)
 			if orderErr := order.changed; orderErr != nil {
-				tracked, failedShard, hErr := verifySchemaHistory(ctx, db, logger, psc, streamState, orderErr, order.changedShards)
+				stepOverColumns = stepOverCandidates(ctx, db, logger, psc, ks.SchemaName, table.TableName, streamState, order, includedColumns(table))
+				tracked, failedShard, hErr := verifySchemaHistory(ctx, db, logger, psc, streamState, orderErr, order)
 				trackedShards = tracked
 				if err := stop(stateKey); err != nil {
 					// A scan cut short by the cancelled sync proves nothing about
@@ -218,12 +224,18 @@ keyspaces:
 
 			// Second pass: perform the actual sync for each shard
 			for shardName, shardState := range streamState.Shards {
+				// The shard's live column order is saved once the shard's
+				// cursor is known not to be behind it (see pendingColumnOrder).
+				pending := newPendingColumnOrder(ctx, db, logger, psc, state, ks.SchemaName, table.TableName, shardName, order.shards[shardName])
 				onCursor := func(cursor *psdbconnect.TableCursor) error {
 					sc, err := lib.TableCursorToSerializedCursor(cursor)
 					if err != nil {
 						return status.Error(codes.Internal, "unable to serialize table cursor")
 					}
 					state.Keyspaces[ks.SchemaName].Streams[stateKey].Shards[shardName] = sc
+					// Also during a copy that spans several syncs: the order
+					// goes out with the first checkpoint that covers it.
+					pending.saveIfCovered(state, cursor.Position)
 					return noteOutput(logger.State(*state))
 				}
 				tc, err := shardState.SerializedCursorToTableCursor()
@@ -231,11 +243,10 @@ keyspaces:
 					return status.Error(codes.Internal, fmt.Sprintf("invalid cursor for stream %v, failed with [%v]", stateKey, err))
 				}
 
-				shardOrder := order.shards[shardName]
 				columns := includedColumns(table)
 				readCtx := ctx
 				if r, ok := trackedShards[shardName]; ok {
-					if stepOver := trackedStepOver(ctx, db, logger, psc, ks.SchemaName, table.TableName, shardName, r, streamState.SavedColumnOrder(shardName), shardOrder, columns); stepOver != nil {
+					if stepOver := trackedStepOver(logger, ks.SchemaName, table.TableName, shardName, r, stepOverColumns[shardName]); stepOver != nil {
 						readCtx = lib.WithTrackedStepOver(ctx, *stepOver)
 					}
 				}
@@ -304,6 +315,9 @@ keyspaces:
 					// if we get any new state, we assign it here.
 					// otherwise, the older state is round-tripped back to Fivetran.
 					state.Keyspaces[ks.SchemaName].Streams[stateKey].Shards[shardName] = sc
+					if end, cErr := sc.SerializedCursorToTableCursor(); cErr == nil {
+						pending.saveIfCovered(state, end.Position)
+					}
 					if sErr := noteOutput(logger.State(*state)); sErr != nil { // Checkpoint after every shard
 						return sErr
 					}
@@ -314,15 +328,13 @@ keyspaces:
 						return sErr
 					}
 				}
-				// Save the shard's live column order only once the shard was read
-				// up to the current position, i.e. past the schema change that
-				// produced it, whatever the other shards did. Saved earlier, a
-				// cursor still before the change would be compared with an order
-				// that does not describe its events. An unknown live order is
-				// never saved: the shard keeps its saved order and is checked
-				// again.
-				if readComplete && shardOrder != nil && shardOrder.live != nil {
-					recordShardColumnOrder(state, ks.SchemaName, table.TableName, shardName, shardOrder.live)
+				// Save the shard's live column order once the shard's cursor
+				// contains the primary position read after that order, whatever
+				// the other shards did (see pendingColumnOrder). An unknown live
+				// order is never saved: the shard keeps its saved order and is
+				// checked again.
+				if cur, cErr := state.Keyspaces[ks.SchemaName].Streams[stateKey].Shards[shardName].SerializedCursorToTableCursor(); cErr == nil {
+					pending.saveAfterRead(state, readComplete, cur.Position)
 				}
 			}
 		}
@@ -551,7 +563,8 @@ func recordShardColumnOrder(state *lib.SyncState, keyspace, table, shard string,
 //
 // tracked has every shard whose verdict was lib.SchemaHistoryTracked, with
 // the range the scan verified (see trackedStepOver).
-func verifySchemaHistory(ctx context.Context, db *lib.ConnectClient, logger Serializer, psc *lib.PlanetScaleSource, streamState lib.ShardStates, orderErr *ColumnOrderChangedError, shards []string) (tracked map[string]trackedRange, failedShard string, err error) {
+func verifySchemaHistory(ctx context.Context, db *lib.ConnectClient, logger Serializer, psc *lib.PlanetScaleSource, streamState lib.ShardStates, orderErr *ColumnOrderChangedError, order columnOrderCheck) (tracked map[string]trackedRange, failedShard string, err error) {
+	shards := order.changedShards
 	scanner, ok := (*db).(lib.SchemaHistoryScanner)
 	if !ok {
 		return nil, "", orderErr
@@ -582,11 +595,17 @@ func verifySchemaHistory(ctx context.Context, db *lib.ConnectClient, logger Seri
 			// Fivetran retries and the next sync scans again.
 			return nil, shard, errors.Wrapf(err, "checking the schema history of table %s on shard %s after its column order changed (%s)", orderErr.Table, shard, orderErr.Reason)
 		case errors.Is(err, lib.ErrSchemaHistoryUnavailable):
+			if uErr := unknownShardOrderError(order, orderErr, shard, err); uErr != nil {
+				return nil, shard, uErr
+			}
 			return nil, shard, orderErr
 		case errors.Is(err, lib.ErrSchemaHistoryScanTimeout):
 			logger.Severe(fmt.Sprintf("table %s:%s shard %s: %v", orderErr.Keyspace, orderErr.Table, shard, err))
 			if history.Progress != nil && (resume == nil || history.Progress.Position != resume.Position) {
 				return nil, shard, &schemaScanIncompleteError{Table: orderErr.Table, Shard: shard, Err: err}
+			}
+			if uErr := unknownShardOrderError(order, orderErr, shard, err); uErr != nil {
+				return nil, shard, uErr
 			}
 			// No progress at all: the next sync would not get further.
 			return nil, shard, orderErr
@@ -608,7 +627,7 @@ func verifySchemaHistory(ctx context.Context, db *lib.ConnectClient, logger Seri
 			if tracked == nil {
 				tracked = map[string]trackedRange{}
 			}
-			r := trackedRange{cursor: tc.Position}
+			r := trackedRange{cursor: tc.Position, ddls: history.DDLCount}
 			if history.Progress != nil {
 				r.verifiedTo = history.Progress.Position
 			}
@@ -624,6 +643,88 @@ func verifySchemaHistory(ctx context.Context, db *lib.ConnectClient, logger Seri
 // saved cursor to the position the scan read up to ("" if unknown).
 type trackedRange struct {
 	cursor, verifiedTo string
+	// ddls is the number of DDL events on the table in the range, or -1.
+	ddls int
+}
+
+// stepOverCandidates returns, for every changed shard of the table, the
+// selected columns that a tracked step-over may leave out of older binlog
+// events (see lib.TrackedStepOver and trackedStepOver). It runs before the
+// schema history scan: a later schema change on the table (for example a
+// MODIFY that drops the default of the new column) then lands inside the
+// scanned range and makes the DDL count more than one, so the column
+// definitions read here are those of the one schema change the step-over
+// trusts.
+//
+// Only columns that were plainly added on the shard qualify: the shard's live
+// order must keep every column of its saved order (a rename or drop in the
+// same change gets the Task: a renamed column has values that the older
+// events carry under the old name), the column must be selected, and SHOW
+// COLUMNS on the shard must show it nullable, without a default, not
+// generated or auto-increment, and not in the primary key
+// (lib.ColumnDetail.StepOverBlocker). Online DDL fills a new column for the
+// existing rows on the shadow table without row events for the table, so any
+// other column would stay NULL in the destination for rows not changed since.
+// When in doubt (unknown live order, no saved order, SHOW COLUMNS failing) a
+// shard gets nothing.
+func stepOverCandidates(ctx context.Context, db *lib.ConnectClient, logger Serializer, psc *lib.PlanetScaleSource, keyspace, table string, streamState lib.ShardStates, order columnOrderCheck, selected []string) map[string][]string {
+	var candidates map[string][]string
+	for _, shard := range order.changedShards {
+		prefix := fmt.Sprintf("table %s:%s shard %s: ", keyspace, table, shard)
+		saved := streamState.SavedColumnOrder(shard)
+		so := order.shards[shard]
+		if len(saved) == 0 || so == nil || so.live == nil {
+			continue
+		}
+		added, onlyAdded := lib.AddedColumns(saved, so.live)
+		if !onlyAdded {
+			logger.Info(prefix + "the column change also drops or renames a column; a selected new column will not be stepped over")
+			continue
+		}
+		var wanted []string
+		for _, c := range added {
+			for _, sel := range selected {
+				if strings.EqualFold(c, sel) {
+					wanted = append(wanted, c)
+					break
+				}
+			}
+		}
+		if len(wanted) == 0 {
+			continue
+		}
+		reader, ok := (*db).(lib.ShardColumnDetailsReader)
+		if !ok {
+			continue
+		}
+		details, err := reader.ShardColumnDetails(ctx, *psc, keyspace, shard, table)
+		if err != nil {
+			logger.Info(fmt.Sprintf("%scould not read the shard's column details (%v); a selected new column will not be stepped over", prefix, err))
+			continue
+		}
+		var eligible []string
+		for _, c := range wanted {
+			blocker := "it is not in SHOW COLUMNS on the shard"
+			for _, d := range details {
+				if strings.EqualFold(d.Name, c) {
+					blocker = d.StepOverBlocker()
+					break
+				}
+			}
+			if blocker != "" {
+				logger.Info(fmt.Sprintf("%snew column %s will not be stepped over: %s", prefix, c, blocker))
+				continue
+			}
+			eligible = append(eligible, c)
+		}
+		if len(eligible) > 0 {
+			if candidates == nil {
+				candidates = map[string][]string{}
+			}
+			candidates[shard] = eligible
+		}
+	}
+	return candidates
 }
 
 // trackedStepOver returns what Read may step over on one shard whose schema
@@ -632,70 +733,104 @@ type trackedRange struct {
 // raises the re-sync Task). With the tracker on, vttablet resolves the
 // VStream filter against the schema each older event was written with, so a
 // selected column added after the saved cursor makes it fail on those events.
-//
-// Only columns that were plainly added on this shard qualify: the shard's
-// live order must keep every column of its saved order (a rename or drop in
-// the same change gets the Task: a renamed column has values that the older
-// events carry under the old name), the column must be selected, and SHOW
-// COLUMNS on the shard must show it nullable, without a default, not
-// generated or auto-increment, and not in the primary key
-// (lib.ColumnDetail.StepOverBlocker). Online DDL fills a new column for the
-// existing rows on the shadow table without row events for the table, so any
-// other column would stay NULL in the destination for rows not changed since.
-// When in doubt (unknown live order, no saved order, SHOW COLUMNS failing,
-// no verified range) it returns nil.
-func trackedStepOver(ctx context.Context, db *lib.ConnectClient, logger Serializer, psc *lib.PlanetScaleSource, keyspace, table, shard string, r trackedRange, saved []string, shardOrder *shardColumnOrder, selected []string) *lib.TrackedStepOver {
+// It needs the candidates from stepOverCandidates, a known end of the scanned
+// range, and exactly one DDL on the table in that range: with more, the
+// column definitions read before the scan may not be those of the change that
+// added the column (the second change may have dropped a default after the
+// backfill), and the stream would need a step-over per cut-over.
+func trackedStepOver(logger Serializer, keyspace, table, shard string, r trackedRange, columns []string) *lib.TrackedStepOver {
+	if len(columns) == 0 || r.cursor == "" || r.verifiedTo == "" {
+		return nil
+	}
 	prefix := fmt.Sprintf("table %s:%s shard %s: ", keyspace, table, shard)
-	if r.cursor == "" || r.verifiedTo == "" || len(saved) == 0 || shardOrder == nil || shardOrder.live == nil {
-		return nil
-	}
-	added, onlyAdded := lib.AddedColumns(saved, shardOrder.live)
-	if !onlyAdded {
-		logger.Info(prefix + "the column change also drops or renames a column; a selected new column will not be stepped over")
-		return nil
-	}
-	var candidates []string
-	for _, c := range added {
-		for _, sel := range selected {
-			if strings.EqualFold(c, sel) {
-				candidates = append(candidates, c)
-				break
-			}
-		}
-	}
-	if len(candidates) == 0 {
-		return nil
-	}
-	reader, ok := (*db).(lib.ShardColumnDetailsReader)
-	if !ok {
-		return nil
-	}
-	details, err := reader.ShardColumnDetails(ctx, *psc, keyspace, shard, table)
-	if err != nil {
-		logger.Info(fmt.Sprintf("%scould not read the shard's column details (%v); a selected new column will not be stepped over", prefix, err))
-		return nil
-	}
-	stepOver := &lib.TrackedStepOver{Shard: shard, Cursor: r.cursor, VerifiedTo: r.verifiedTo}
-	for _, c := range candidates {
-		blocker := "it is not in SHOW COLUMNS on the shard"
-		for _, d := range details {
-			if strings.EqualFold(d.Name, c) {
-				blocker = d.StepOverBlocker()
-				break
-			}
-		}
-		if blocker != "" {
-			logger.Info(fmt.Sprintf("%snew column %s will not be stepped over: %s", prefix, c, blocker))
-			continue
-		}
-		stepOver.Columns = append(stepOver.Columns, c)
-	}
-	if len(stepOver.Columns) == 0 {
+	if r.ddls != 1 {
+		logger.Info(fmt.Sprintf("%sthe schema history check saw %d schema changes on the table (-1: unknown); a selected new column will not be stepped over", prefix, r.ddls))
 		return nil
 	}
 	logger.Info(fmt.Sprintf("%snew column(s) %s may be left out of binlog events up to %s, written before the tracked schema change that added them",
-		prefix, strings.Join(stepOver.Columns, ","), r.verifiedTo))
-	return stepOver
+		prefix, strings.Join(columns, ","), r.verifiedTo))
+	return &lib.TrackedStepOver{Shard: shard, Cursor: r.cursor, VerifiedTo: r.verifiedTo, Columns: slices.Clone(columns)}
+}
+
+// pendingColumnOrder is a shard's live column order waiting to be saved.
+//
+// The order was read (checkColumnOrder) from some tablet of the shard, and
+// bound is the shard's primary position read after it
+// (lib.PrimaryPositionReader). Every tablet has applied a subset of the
+// primary's GTIDs, so every schema change the order reflects is in bound, and
+// once the shard's cursor contains bound the order is not ahead of it. That
+// holds with UseReplica too, where the order and the VStream can come from
+// different replicas (one past a cut-over, the other not), and during a copy
+// that spans several syncs: the copy's checkpoints carry its binlog position,
+// so the order is saved with the first checkpoint that covers bound instead
+// of only after a read that reached the current position.
+//
+// A client without lib.PrimaryPositionReader keeps the earlier rule: save
+// after a read that reached the current position.
+type pendingColumnOrder struct {
+	keyspace, table, shard string
+	order                  []string
+	bound                  string
+	afterCompleteRead      bool
+}
+
+func newPendingColumnOrder(ctx context.Context, db *lib.ConnectClient, logger Serializer, psc *lib.PlanetScaleSource, state *lib.SyncState, keyspace, table, shard string, so *shardColumnOrder) *pendingColumnOrder {
+	p := &pendingColumnOrder{keyspace: keyspace, table: table, shard: shard}
+	if so == nil || so.live == nil {
+		return p
+	}
+	if own, ok := state.Keyspaces[keyspace].Streams[keyspace+":"+table].ShardColumnOrders[shard]; ok && slices.Equal(own, so.live) {
+		return p
+	}
+	reader, ok := (*db).(lib.PrimaryPositionReader)
+	if !ok {
+		p.order, p.afterCompleteRead = so.live, true
+		return p
+	}
+	bound, err := reader.PrimaryPosition(ctx, *psc, keyspace, shard, table)
+	if err != nil || bound == "" {
+		logger.Info(fmt.Sprintf("table %s:%s shard %s: could not read the primary position (%v); the live column order is not saved in this sync", keyspace, table, shard, err))
+		return p
+	}
+	p.order, p.bound = so.live, bound
+	return p
+}
+
+// saveIfCovered saves the order once position contains bound.
+func (p *pendingColumnOrder) saveIfCovered(state *lib.SyncState, position string) {
+	if p.order == nil || p.afterCompleteRead || position == "" {
+		return
+	}
+	if ok, err := lib.PositionAtLeast(position, p.bound); err != nil || !ok {
+		return
+	}
+	recordShardColumnOrder(state, p.keyspace, p.table, p.shard, p.order)
+	p.order = nil
+}
+
+// saveAfterRead is called after a read that ended without an error, with the
+// shard's cursor position.
+func (p *pendingColumnOrder) saveAfterRead(state *lib.SyncState, readComplete bool, position string) {
+	if p.order != nil && p.afterCompleteRead {
+		if readComplete {
+			recordShardColumnOrder(state, p.keyspace, p.table, p.shard, p.order)
+			p.order = nil
+		}
+		return
+	}
+	p.saveIfCovered(state, position)
+}
+
+// unknownShardOrderError returns a plain error (Fivetran retries) when the
+// shard's live column order could not be read (e.g. a SHOW COLUMNS timeout
+// during a reparent) and its schema history could not be checked either:
+// there may be no schema change at all, so no Task. It returns nil when the
+// shard's live order is known.
+func unknownShardOrderError(order columnOrderCheck, orderErr *ColumnOrderChangedError, shard string, err error) error {
+	if so := order.shards[shard]; so == nil || so.live != nil {
+		return nil
+	}
+	return errors.Wrapf(err, "checking the schema history of table %s on shard %s, whose live column order could not be read", orderErr.Table, shard)
 }
 
 // schemaScanIncompleteError: the schema history scan of a shard ran out of

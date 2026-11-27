@@ -293,6 +293,8 @@ func TestRead_TrackedStepOverCountsCutOvers(t *testing.T) {
 		assert.Len(t, r.filters, 3)
 	})
 	t.Run("second cut-over within the bound", func(t *testing.T) {
+		defer func(prev int) { maxTrackedStepOvers = prev }(maxTrackedStepOvers)
+		maxTrackedStepOvers = 2
 		r := soRead(
 			t, ctx, 25, cols,
 			soErrStream(stepOverMissingColumn("a")),
@@ -378,15 +380,15 @@ func TestAddedColumns(t *testing.T) {
 	assert.False(t, only, "drop")
 }
 
-func TestPositionAtLeast(t *testing.T) {
-	ok, err := positionAtLeast(sp(20), sp(15))
+func TestPositionAtLeastGTIDSets(t *testing.T) {
+	ok, err := PositionAtLeast(sp(20), sp(15))
 	assert.NoError(t, err)
 	assert.True(t, ok)
-	ok, err = positionAtLeast(sp(15), sp(20))
+	ok, err = PositionAtLeast(sp(15), sp(20))
 	assert.NoError(t, err)
 	assert.False(t, ok)
-	_, err = positionAtLeast("", sp(20))
+	_, err = PositionAtLeast("", sp(20))
 	assert.Error(t, err)
-	_, err = positionAtLeast("garbage", sp(20))
+	_, err = PositionAtLeast("garbage", sp(20))
 	assert.Error(t, err)
 }

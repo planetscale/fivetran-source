@@ -3,6 +3,7 @@ package lib
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -297,7 +298,7 @@ func TestScanSchemaHistoryStreamResumesAfterTimeout(t *testing.T) {
 	}
 	got, err := scanSchemaHistoryStream(ctx, shRecv(ctx, first...), shKeyspace, "-", shStop, shTimings(time.Unix(shDDLTime, 0)), nil)
 	assert.ErrorIs(t, err, ErrSchemaHistoryScanTimeout)
-	want := &SchemaScanProgress{Position: "MySQL56/a:1-12", PendingDDLs: []int64{shDDLTime}, DDL: shRename, LastTimestamp: shDDLTime}
+	want := &SchemaScanProgress{Position: "MySQL56/a:1-12", PendingDDLs: []int64{shDDLTime}, DDL: shRename, DDLs: 1, LastTimestamp: shDDLTime}
 	assert.Equal(t, want, got.Progress)
 
 	for name, tc := range map[string]struct {
@@ -487,4 +488,53 @@ func TestScanSchemaHistoryPositionCheckFailure(t *testing.T) {
 	assert.ErrorIs(t, err, ErrSchemaHistoryPositionCheck)
 	assert.Equal(t, codes.Unknown, status.Code(err))
 	assert.Equal(t, 1, requests, "no scan stream after the failed position check")
+}
+
+// Round 4 item 7: the stream need not emit the exact stop VGTID. A position
+// past it (GTID sets) ends the scan instead of running into its timeout.
+func TestScanSchemaHistoryStreamStopsPastStopPosition(t *testing.T) {
+	const uuid = "3e11fa47-71ca-11e1-9e33-c80aa9429562"
+	pos := func(n int) string { return fmt.Sprintf("MySQL56/%s:1-%d", uuid, n) }
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stream := []*vtgatepb.VStreamResponse{
+		shResp(shVGTID("-", pos(11)), shRow(shDDLTime-5)),
+		shResp(shVGTID("-", pos(12)), shDDL(shDDLTime)),
+		shResp(shVGTID("-", pos(13)), shVersion(shDDLTime)),
+		// The stop position is 1-15; the stream jumps from 1-13 to 1-17.
+		shResp(shVGTID("-", pos(17)), shRow(shDDLTime+1)),
+	}
+	start := time.Now()
+	got, err := scanSchemaHistoryStream(ctx, shRecv(ctx, stream...), shKeyspace, "-", pos(15), shTimings(time.Unix(shDDLTime, 0)), nil)
+	assert.NoError(t, err)
+	assert.Equal(t, SchemaHistoryTracked, got.Verdict)
+	assert.Equal(t, 1, got.DDLCount)
+	assert.Less(t, time.Since(start), 4*time.Second)
+}
+
+// Round 4 item 3: the scan counts the table's DDL events, also across a
+// resumed scan; progress saved without a count makes it unknown (-1).
+func TestScanSchemaHistoryCountsDDLs(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stream := []*vtgatepb.VStreamResponse{
+		shResp(shVGTID("-", "MySQL56/a:1-11"), shDDL(shDDLTime)),
+		shResp(shVGTID("-", "MySQL56/a:1-12"), shVersion(shDDLTime)),
+		shResp(shVGTID("-", "MySQL56/a:1-13"), shDDL(shDDLTime+1)),
+		shResp(shVGTID("-", "MySQL56/a:1-14"), shVersion(shDDLTime+1)),
+		shResp(shVGTID("-", shStop)),
+		shResp(shVGTID("-", "MySQL56/a:1-21")),
+	}
+	got, err := scanSchemaHistoryStream(ctx, shRecv(ctx, stream...), shKeyspace, "-", shStop, shTimings(time.Unix(shDDLTime, 0)), nil)
+	assert.NoError(t, err)
+	assert.Equal(t, SchemaHistoryTracked, got.Verdict)
+	assert.Equal(t, 2, got.DDLCount)
+	assert.Equal(t, 2, got.Progress.DDLs)
+
+	assert.Equal(t, 1, resumedDDLCount(&SchemaScanProgress{Tracked: true, DDLs: 1}))
+	assert.Equal(t, -1, resumedDDLCount(&SchemaScanProgress{Tracked: true}), "older progress without a count")
+	assert.Equal(t, 0, resumedDDLCount(&SchemaScanProgress{Position: "MySQL56/a:1-12"}))
+	h, err := resumedVerdict(&SchemaScanProgress{Position: "x", Tracked: true}, time.Minute, time.Now)
+	assert.NoError(t, err)
+	assert.Equal(t, -1, h.DDLCount)
 }
