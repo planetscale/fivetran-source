@@ -129,33 +129,61 @@ func (p mysqlClient) GetKeyspaceTableColumns(ctx context.Context, keyspaceName s
 	return columns, nil
 }
 
-// GetShardTableColumnOrder returns the columns of a table in table order as
-// one shard has them. Online DDL cuts over every shard on its own, so during a
-// schema change the shards of a table can have different column orders, and
-// vtgate answers information_schema queries from one of them.
+// shardColumnOrderTimeout bounds the shard-targeted column query; a shard
+// that does not answer in time gets the unknown-order path (schema history
+// check), not a stuck sync.
+const shardColumnOrderTimeout = 30 * time.Second
+
+// shardConnMaxIdleTime closes a shard connection that the sync no longer
+// uses (it moved on to other tables) instead of keeping it open for the rest
+// of the sync.
+const shardConnMaxIdleTime = time.Minute
+
+// GetShardTableColumnOrder returns every column of a table, INVISIBLE ones
+// included, in table order as one shard has them. Online DDL cuts over every
+// shard on its own, so during a schema change the shards of a table can have
+// different column orders, and vtgate answers information_schema queries
+// from one of them.
 //
 // The query goes to the shard with Vitess shard targeting in the connection's
 // database name, "<keyspace>:<shard>" (with the "@primary"/"@replica" suffix
 // that DSN adds), the same way the integration tests read one shard
-// (assertIntegrationRowsOnEveryShard). vtgate sends a statement on such a
-// connection to that shard's tablet as is. It reads the column names of
-// "SELECT * ... LIMIT 0", which returns no rows. That leaves out INVISIBLE
-// columns, so the caller only trusts the result when it has the same columns
-// as vtgate's information_schema order.
+// (assertIntegrationRowsOnEveryShard). It is SHOW COLUMNS without a schema
+// name, so the tablet answers for its own database whatever that is named;
+// unlike the column names of a SELECT *, SHOW COLUMNS lists INVISIBLE columns,
+// which binlog row events contain too.
 func (p mysqlClient) GetShardTableColumnOrder(ctx context.Context, keyspaceName, shard, tableName string, tabletType psdbconnect.TabletType) ([]string, error) {
 	db, err := p.shardDB(keyspaceName, shard, tabletType)
 	if err != nil {
 		return nil, err
 	}
+	ctx, cancel := context.WithTimeout(ctx, shardColumnOrderTimeout)
+	defer cancel()
 	target := keyspaceName + ":" + shard
-	rows, err := db.QueryContext(ctx, "select * from "+quoteIdentifier(tableName)+" limit 0")
+	rows, err := db.QueryContext(ctx, "show columns from "+quoteIdentifier(tableName))
 	if err != nil {
 		return nil, errors.Wrapf(err, "unable to read the columns of table %s on shard %s", tableName, target)
 	}
 	defer rows.Close()
-	order, err := rows.Columns()
+	fields, err := rows.Columns()
 	if err != nil {
 		return nil, errors.Wrapf(err, "unable to read the columns of table %s on shard %s", tableName, target)
+	}
+	if len(fields) == 0 {
+		return nil, errors.Errorf("unable to read the columns of table %s on shard %s: SHOW COLUMNS returned no fields", tableName, target)
+	}
+	// The first field is the column name (Field); the rest are not needed.
+	values := make([]sql.RawBytes, len(fields))
+	dest := make([]any, len(fields))
+	for i := range values {
+		dest[i] = &values[i]
+	}
+	var order []string
+	for rows.Next() {
+		if err := rows.Scan(dest...); err != nil {
+			return nil, errors.Wrapf(err, "unable to read the columns of table %s on shard %s", tableName, target)
+		}
+		order = append(order, string(values[0]))
 	}
 	if err := rows.Err(); err != nil {
 		return nil, errors.Wrapf(err, "unable to read the columns of table %s on shard %s", tableName, target)
@@ -182,6 +210,8 @@ func (p mysqlClient) shardDB(keyspaceName, shard string, tabletType psdbconnect.
 		return nil, errors.Wrapf(err, "unable to open a connection to shard %s:%s", keyspaceName, shard)
 	}
 	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxIdleTime(shardConnMaxIdleTime)
 	p.shards.dbs[key] = db
 	return db, nil
 }

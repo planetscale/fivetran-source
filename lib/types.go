@@ -76,6 +76,11 @@ type SerializedCursor struct {
 	// Old state without the field parses as false, and older connector versions
 	// ignore it.
 	SuspectedBinlogExpiration bool `json:"suspected_binlog_expiration,omitempty"`
+	// SchemaScan is how far the schema history scan of this cursor got (see
+	// SchemaScanProgress), so the next scan of the same cursor resumes there.
+	// It lives on the cursor because it only describes this cursor: a new one
+	// (the shard's read moved on, or a reset) starts without it.
+	SchemaScan *SchemaScanProgress `json:"schema_scan,omitempty"`
 }
 
 // SetBinlogExpirationError sets a binlog expiration error on the cursor

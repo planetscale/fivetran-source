@@ -151,31 +151,6 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 	logger.Info(fmt.Sprintf("%sFiltering with columns %s", preamble, strings.Join(existingColumns, ",")))
 	logger.Info(fmt.Sprintf("%sUsing read timeout: %v", preamble, readDuration))
 
-	// streamColumns is what the VStream filter asks for. It is existingColumns,
-	// except while replaying binlog events written before a column was added.
-	// PlanetScale applies schema changes with Vitess Online DDL: the ALTER and
-	// the backfill run on a shadow table (_vt_vrp_<uuid>_<time>_) that never
-	// matches this table's filter, and the only statement that touches the
-	// table itself is the cut-over
-	//
-	//	RENAME TABLE `t` TO `_vt_hld_…_`, `_vt_vrp_…_` TO `t`, `_vt_hld_…_` TO `_vt_vrp_…_`
-	//
-	// Row events for t before the cut-over have the old layout, but vttablet
-	// resolves the filter's column names against the current schema cut down to
-	// the event's column count, so a column the cut-over added is "not found in
-	// table t". If the caller allows it (WithAddedColumnRetry), that column is
-	// then left out until the stream reaches the
-	// cut-over (a DDL event, see sync), and the stream restarts right after it
-	// with every column.
-	streamColumns := existingColumns
-	stopAtDDL := false
-	// cutOversSteppedOver counts the column-adding cut-overs this Read
-	// stepped over. One cut-over can add several columns: vttablet reports
-	// them one at a time, and each is left out without counting another
-	// cut-over (stopAtDDL is still set), which is bounded by the number of
-	// columns since every retry leaves one out.
-	cutOversSteppedOver := 0
-
 	for {
 		logger.Info(preamble + "peeking to see if there's any new rows")
 		latestCursorPosition, lcErr := p.getLatestCursorPosition(ctx, currentPosition.Shard, currentPosition.Keyspace, tableName, ps, tabletType)
@@ -194,7 +169,7 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 		logger.Info(fmt.Sprintf(preamble+"syncing rows with cursor [%v]", currentPosition))
 
 		previousPosition := cloneTableCursor(currentPosition)
-		currentPosition, err = p.sync(ctx, logger, tableName, streamColumns, stopAtDDL, currentPosition, latestCursorPosition, ps, tabletType, readDuration, onResult, onCursor, onUpdate)
+		currentPosition, err = p.sync(ctx, logger, tableName, existingColumns, currentPosition, latestCursorPosition, ps, tabletType, readDuration, onResult, onCursor, onUpdate)
 		madeProgress := tableCursorMadeProgress(previousPosition, currentPosition)
 		if tableCursorHasProgress(currentPosition) {
 			currentSerializedCursor, sErr = TableCursorToSerializedCursor(currentPosition)
@@ -203,12 +178,12 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 				return currentSerializedCursor, errors.Wrap(sErr, "unable to serialize current position")
 			}
 		}
-		if errors.Is(err, errPassedSchemaChange) {
-			// The cursor is now past the DDL, so the table has every column again.
-			logger.Info(fmt.Sprintf("%spassed the schema change, resuming with columns %s", preamble, strings.Join(existingColumns, ",")))
-			streamColumns = existingColumns
-			stopAtDDL = false
-			continue
+		if errors.Is(err, errStreamEnded) {
+			// vtgate ended the stream (for example while it restarts or
+			// drains) before it reached the stop position: keep the cursor,
+			// but the shard was not read up to the current position.
+			logger.Info(fmt.Sprintf("%sthe stream ended before it reached the current position; stopping with cursor [%v]", preamble, currentPosition))
+			return currentSerializedCursor, ErrReadStoppedEarly
 		}
 		if err != nil {
 			if s, ok := status.FromError(err); ok {
@@ -245,25 +220,6 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 							Shard:    currentPosition.Shard,
 							Table:    tableName,
 							Err:      err,
-						}
-					}
-
-					// A column added by a schema change after the saved position: leave
-					// it out until the stream passes the cut-over (see streamColumns).
-					// Only with the caller's go-ahead (WithAddedColumnRetry): without the
-					// schema tracker vttablet also reports the last column as "not found"
-					// after a column was added in the middle of the table, and leaving it
-					// out would shift the older values into the wrong columns.
-					if missing, ok := VStreamMissingFilterColumn(err); ok && AddedColumnRetryAllowed(ctx) && (stopAtDDL || cutOversSteppedOver < maxSchemaChangeRetries) {
-						if reduced, removed := withoutColumn(streamColumns, missing); removed && len(reduced) > 0 {
-							if !stopAtDDL {
-								cutOversSteppedOver++
-							}
-							logger.Warning(fmt.Sprintf("%scolumn %s did not exist yet at the saved position (it was added by a later schema change); "+
-								"streaming without it until the stream passes the schema change (schema change %d/%d)", preamble, missing, cutOversSteppedOver, maxSchemaChangeRetries))
-							streamColumns = reduced
-							stopAtDDL = true
-							continue
 						}
 					}
 
@@ -342,7 +298,7 @@ func (p connectClient) Read(ctx context.Context, logger DatabaseLogger, ps Plane
 	}
 }
 
-func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableName string, columns []string, stopAtDDL bool, tc *psdbconnect.TableCursor, stopPosition string, ps PlanetScaleSource, tabletType psdbconnect.TabletType, readDuration time.Duration, onResult OnResult, onCursor OnCursor, onUpdate OnUpdate) (*psdbconnect.TableCursor, error) {
+func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableName string, columns []string, tc *psdbconnect.TableCursor, stopPosition string, ps PlanetScaleSource, tabletType psdbconnect.TabletType, readDuration time.Duration, onResult OnResult, onCursor OnCursor, onUpdate OnUpdate) (*psdbconnect.TableCursor, error) {
 	ctx, cancel := context.WithTimeout(ctx, readDuration)
 	defer cancel()
 
@@ -376,6 +332,15 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 	fieldsByTable := map[string][]*query.Field{}
 	for {
 		res, err := c.Recv()
+		if errors.Is(err, io.EOF) {
+			// The stream ended (for example vtgate restarting or draining).
+			// That only completes the read if the cursor got to the stop
+			// position, out of the copy phase.
+			if watchForVgGtidChange && tc.LastKnownPk == nil {
+				return tc, io.EOF
+			}
+			return tc, errStreamEnded
+		}
 		if err != nil {
 			return tc, err
 		}
@@ -401,21 +366,6 @@ func (p connectClient) sync(ctx context.Context, logger DatabaseLogger, tableNam
 				logger.Info(preamble + "VERSION event: the vttablet schema tracker recorded a schema version")
 			case binlogdatapb.VEventType_DDL:
 				logger.Info(fmt.Sprintf("%sDDL event: %q", preamble, event.Statement))
-			}
-			if stopAtDDL && event.Type == binlogdatapb.VEventType_DDL {
-				// vttablet only sends DDL events for statements that name this table
-				// (mustSendDDL); for Online DDL that is the cut-over RENAME, since the
-				// shadow table's CREATE/ALTER arrive as OTHER events. The DDL's GTID
-				// arrives (as a VGTID) just before it, so tc already points past the
-				// RENAME: a stream restarted from tc only sees the new table, and a
-				// fresh vttablet stream has no table-map plans from before the swap.
-				logger.Info(fmt.Sprintf("%sstopping at schema change %q to restart with all selected columns", preamble, event.Statement))
-				if onCursor != nil {
-					if err := onCursor(tc); err != nil {
-						return tc, status.Error(codes.Internal, "unable to serialize cursor")
-					}
-				}
-				return tc, errPassedSchemaChange
 			}
 		}
 
@@ -1193,84 +1143,17 @@ func IsVStreamSchemaIncompatibilityError(err error) bool {
 		(strings.Contains(message, "column ") && strings.Contains(message, " not found in table "))
 }
 
-// errPassedSchemaChange ends a sync that streamed with a reduced column list
-// once it passed a DDL for the table (the Online DDL cut-over RENAME); Read
-// then restarts with every column.
-var errPassedSchemaChange = errors.New("vstream passed a schema change for the table")
+// errStreamEnded: vtgate ended the VStream (io.EOF) before sync reached the
+// stop position.
+var errStreamEnded = errors.New("the vstream ended before it reached the stop position")
 
 // ErrReadStoppedEarly is returned by Read, with the cursor it reached, when it
-// gave up after maxConsecutiveSyncTimeouts timeouts without progress (it has
-// already sent a Warning). The cursor may still be before the position the
-// read was meant to reach, so the caller keeps the cursor but must not assume
-// the table was read up to the current position.
-var ErrReadStoppedEarly = errors.New("read stopped after repeated timeouts before reaching the current position")
-
-type addedColumnRetryKey struct{}
-
-// WithAddedColumnRetry returns a context in which Read may leave a selected
-// column out of the VStream filter while it replays binlog events written
-// before that column was added (vttablet: "column ... not found in table").
-// That is only safe when the column was added at the end of the table, or when
-// the vttablet schema historian decodes the older events, so the caller sets
-// it only after it confirmed that the table's columns at the saved cursor are
-// a prefix of the live columns (or the schema history check passed). Without
-// it Read returns the schema incompatibility error (re-sync Task).
-func WithAddedColumnRetry(ctx context.Context) context.Context {
-	return context.WithValue(ctx, addedColumnRetryKey{}, true)
-}
-
-// AddedColumnRetryAllowed reports whether ctx came from WithAddedColumnRetry.
-func AddedColumnRetryAllowed(ctx context.Context) bool {
-	allowed, _ := ctx.Value(addedColumnRetryKey{}).(bool)
-	return allowed
-}
-
-// maxSchemaChangeRetries bounds how many column-adding cut-overs one Read can
-// step over (each may add any number of columns).
-var maxSchemaChangeRetries = 10
-
-var vstreamMissingColumnPattern = regexp.MustCompile("column (`(?:[^`]|``)+`|[^\\s`]+) not found in table ")
-
-// VStreamMissingFilterColumn returns the column that vttablet could not find
-// when it built the replication plan for an event, e.g.
-//
-//	failed to build table replication plan for table t: column c not found in table t
-//
-// This happens when the VStream filter names a column that was added after
-// the position the stream resumes from.
-func VStreamMissingFilterColumn(err error) (string, bool) {
-	if err == nil {
-		return "", false
-	}
-	message := err.Error()
-	if !strings.Contains(message, "failed to build table replication plan") {
-		return "", false
-	}
-	m := vstreamMissingColumnPattern.FindStringSubmatch(message)
-	if m == nil {
-		return "", false
-	}
-	column := m[1]
-	if strings.HasPrefix(column, "`") {
-		column = strings.ReplaceAll(column[1:len(column)-1], "``", "`")
-	}
-	return column, true
-}
-
-// withoutColumn returns columns without column (case-insensitive, like MySQL
-// column names) and whether it was there.
-func withoutColumn(columns []string, column string) ([]string, bool) {
-	reduced := make([]string, 0, len(columns))
-	removed := false
-	for _, c := range columns {
-		if strings.EqualFold(strings.TrimSpace(c), column) {
-			removed = true
-			continue
-		}
-		reduced = append(reduced, c)
-	}
-	return reduced, removed
-}
+// stopped before it reached the position it was meant to reach: it gave up
+// after maxConsecutiveSyncTimeouts timeouts without progress (it has already
+// sent a Warning), or vtgate ended the stream (io.EOF) early. The caller keeps
+// the cursor but must not assume the table was read up to the current
+// position.
+var ErrReadStoppedEarly = errors.New("read stopped before reaching the current position")
 
 func vstreamFieldsArePositional(fields []*query.Field) bool {
 	for _, f := range fields {

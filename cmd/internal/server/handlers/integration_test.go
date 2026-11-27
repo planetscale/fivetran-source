@@ -186,7 +186,8 @@ func TestIntegrationShardedInsertUpdateDelete(t *testing.T) {
 // The per-shard column order check reads each shard's columns with a
 // shard-targeted connection (lib.MysqlClient.GetShardTableColumnOrder). This
 // checks that the target works with the integration credentials on every
-// shard, in table order, including after a column is added in the middle.
+// shard, in table order, including after a column is added in the middle and
+// with an INVISIBLE column.
 func TestIntegrationShardTargetedColumnOrder(t *testing.T) {
 	psc := loadIntegrationSource(t)
 	psc, shards := loadIntegrationShardedSource(t, psc)
@@ -239,6 +240,11 @@ func TestIntegrationShardTargetedColumnOrder(t *testing.T) {
 
 	mustExec(t, ctx, db, fmt.Sprintf("alter table %s add column mid varchar(16) after id", quoteIdent(tableName)))
 	assertOrders([]string{"id", "mid", "name", "qty"})
+
+	// INVISIBLE columns are in the binlog row events too, so the shard's
+	// order must list them.
+	mustExec(t, ctx, db, fmt.Sprintf("alter table %s add column hidden int invisible after name", quoteIdent(tableName)))
+	assertOrders([]string{"id", "mid", "name", "hidden", "qty"})
 }
 
 func TestIntegrationBitValues(t *testing.T) {
@@ -624,12 +630,11 @@ func TestIntegrationMidTableDDLRaisesResyncTask(t *testing.T) {
 	}
 }
 
-// A cursor that is behind an ADD COLUMN at the end of the table, with the new
-// column selected, fails in vstreamer with "column ... not found in table" while
-// replaying the pre-DDL events. This is what stalled production connections.
-// The connector streams without the new column up to the schema change and
-// then resumes with all selected columns, so the sync continues without a Task.
-func TestIntegrationAddColumnBehindCursorSyncsThrough(t *testing.T) {
+// A column added at the end of the table after the saved cursor is a column
+// change like any other: without the schema tracker (the integration keyspace
+// does not track schema versions) the table is not streamed, and the
+// enable-tracking re-sync Task is raised instead.
+func TestIntegrationAddColumnAtEndWithoutTrackerRaisesResyncTask(t *testing.T) {
 	psc := loadIntegrationSource(t)
 	ctx := context.Background()
 	tableName := integrationTableName(t)
@@ -649,26 +654,29 @@ func TestIntegrationAddColumnBehindCursorSyncsThrough(t *testing.T) {
 	mustExec(t, ctx, db, fmt.Sprintf("alter table %s add column added_col varchar(64) null", quoteIdent(tableName)))
 	mustExec(t, ctx, db, fmt.Sprintf("insert into %s (id, before_col, added_col) values (2, 'new', 'new')", quoteIdent(tableName)))
 
-	sender, _, err := runIntegrationSyncWithError(t, psc, tableName, []string{"id", "before_col", "added_col"}, state)
-	if err != nil {
-		t.Fatalf("expected ADD COLUMN behind the cursor to sync through, got %s: %v", status.Code(err), err)
-	}
-	if tasks := sender.tasks(); len(tasks) != 0 {
-		t.Fatalf("expected no Task for a column added at the end of the table, got %q", tasks)
-	}
+	beforeCursors := integrationStateTableCursors(t, state, psc.Database, tableName)
+	t.Cleanup(lib.SetSchemaHistoryTimings(5*time.Second, 20*time.Second))
 
-	model := map[int64]map[string]any{}
-	applyIntegrationRecords(t, model, sender.recordsForTable(tableName))
-	assertIntegrationRowCount(t, model, 2)
-	if got := model[1]["before_col"]; got != "old" {
-		t.Fatalf("row 1 (written before the schema change): expected before_col %q, got %v (row %v)", "old", got, model[1])
+	sender, failedState, err := runIntegrationSyncWithError(t, psc, tableName, []string{"id", "before_col", "added_col"}, state)
+	if err != nil {
+		t.Fatalf("expected ADD COLUMN at the end to raise a Fivetran Task and return nil, got %s: %v", status.Code(err), err)
 	}
-	if got, ok := model[1]["added_col"]; ok && got != nil {
-		t.Fatalf("row 1 (written before the schema change): expected no added_col value, got %v", got)
+	tasks := sender.tasks()
+	if len(tasks) != 1 {
+		t.Fatalf("expected exactly one Task, got %d: %q", len(tasks), tasks)
 	}
-	assertIntegrationRowsContain(t, model, map[int64]map[string]any{
-		2: {"id": int64(2), "before_col": "new", "added_col": "new"},
-	}, []int64{2})
+	for _, want := range []string{"Re-sync required", tableName, "track_schema_versions", "Resync all data"} {
+		if !strings.Contains(tasks[0], want) {
+			t.Fatalf("expected Task to contain %q, got %q", want, tasks[0])
+		}
+	}
+	assertIntegrationRecordCount(t, sender.recordsForTable(tableName), 0)
+	afterCursors := integrationStateTableCursors(t, failedState, psc.Database, tableName)
+	for shard, before := range beforeCursors {
+		if !proto.Equal(before, afterCursors[shard]) {
+			t.Fatalf("cursor for shard %s advanced past the schema change: before %v, after %v", shard, before, afterCursors[shard])
+		}
+	}
 }
 
 func TestIntegrationStressBurstLoad(t *testing.T) {

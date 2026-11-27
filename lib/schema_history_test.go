@@ -168,7 +168,7 @@ func TestScanSchemaHistoryStream(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			got, err := scanSchemaHistoryStream(ctx, shRecv(ctx, tc.responses...), shKeyspace, "-", shStop, shTimings(tc.now))
+			got, err := scanSchemaHistoryStream(ctx, shRecv(ctx, tc.responses...), shKeyspace, "-", shStop, shTimings(tc.now), nil)
 			if tc.wantErr != nil {
 				assert.ErrorIs(t, err, tc.wantErr)
 			} else {
@@ -184,7 +184,7 @@ func TestScanSchemaHistoryStreamReturnsStreamErrors(t *testing.T) {
 	ctx := context.Background()
 	boom := errors.New("vttablet: boom")
 	recv := func() (*vtgatepb.VStreamResponse, error) { return nil, boom }
-	_, err := scanSchemaHistoryStream(ctx, recv, shKeyspace, "-", shStop, shTimings(time.Now()))
+	_, err := scanSchemaHistoryStream(ctx, recv, shKeyspace, "-", shStop, shTimings(time.Now()), nil)
 	assert.ErrorIs(t, err, boom)
 }
 
@@ -208,7 +208,7 @@ func TestScanSchemaHistoryRequests(t *testing.T) {
 	client := connectClient{vstreamClientFn: func(ctx context.Context, ps PlanetScaleSource) (vstreamClient, error) { return mock, nil }}
 	logger := &dbLogger{}
 	tc := &psdbconnect.TableCursor{Keyspace: shKeyspace, Shard: "-80", Position: shStart, LastKnownPk: testLastKnownPK("42")}
-	got, err := client.ScanSchemaHistory(context.Background(), logger, PlanetScaleSource{Database: shKeyspace}, "t", tc)
+	got, err := client.ScanSchemaHistory(context.Background(), logger, PlanetScaleSource{Database: shKeyspace}, "t", tc, nil)
 	assert.NoError(t, err)
 	assert.Equal(t, SchemaHistoryTracked, got.Verdict)
 	if assert.Len(t, requests, 2) {
@@ -221,7 +221,7 @@ func TestScanSchemaHistoryRequests(t *testing.T) {
 	// Nothing to scan when the saved position is the current one.
 	requests = nil
 	tc = &psdbconnect.TableCursor{Keyspace: shKeyspace, Shard: "-80", Position: shStop}
-	got, err = client.ScanSchemaHistory(context.Background(), logger, PlanetScaleSource{Database: shKeyspace}, "t", tc)
+	got, err = client.ScanSchemaHistory(context.Background(), logger, PlanetScaleSource{Database: shKeyspace}, "t", tc, nil)
 	assert.NoError(t, err)
 	assert.Equal(t, SchemaHistoryNoDDL, got.Verdict)
 	assert.Len(t, requests, 1)
@@ -265,7 +265,7 @@ func TestScanSchemaHistoryStreamVersionMustFollowEachDDLWithinGrace(t *testing.T
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			got, err := scanSchemaHistoryStream(ctx, shRecv(ctx, tc.responses...), shKeyspace, "-", shStop, shTimings(longAfter))
+			got, err := scanSchemaHistoryStream(ctx, shRecv(ctx, tc.responses...), shKeyspace, "-", shStop, shTimings(longAfter), nil)
 			assert.NoError(t, err)
 			assert.Equal(t, SchemaHistoryUntracked, got.Verdict)
 		})
@@ -273,15 +273,101 @@ func TestScanSchemaHistoryStreamVersionMustFollowEachDDLWithinGrace(t *testing.T
 }
 
 // Review finding 5: a scan that runs out of time before it reaches the current
-// position (a large backlog) is not "inconclusive, try again": the next scan
-// starts from the same cursor and runs out of time again.
+// position (a large backlog) is not "inconclusive, try again": it reports
+// how far it got, so the next sync resumes there (see the resume tests).
 func TestScanSchemaHistoryStreamTimeoutIsNotInconclusive(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	responses := []*vtgatepb.VStreamResponse{shResp(shVGTID("-", "MySQL56/a:1-11"), shRow(shDDLTime))}
-	_, err := scanSchemaHistoryStream(ctx, shRecv(ctx, responses...), shKeyspace, "-", shStop, shTimings(time.Unix(shDDLTime, 0)))
+	_, err := scanSchemaHistoryStream(ctx, shRecv(ctx, responses...), shKeyspace, "-", shStop, shTimings(time.Unix(shDDLTime, 0)), nil)
 	assert.ErrorIs(t, err, ErrSchemaHistoryScanTimeout)
 	assert.NotErrorIs(t, err, ErrSchemaHistoryInconclusive)
+}
+
+// Round 3 item 8: a scan cut short by its timeout reports where it got and
+// what it learned (a schema change still waiting for its VERSION event), and
+// a scan resumed from there finishes the verdict as if it had read the whole
+// range in one go.
+func TestScanSchemaHistoryStreamResumesAfterTimeout(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	first := []*vtgatepb.VStreamResponse{
+		shResp(shVGTID("-", "MySQL56/a:1-11"), shRow(shDDLTime-10)),
+		shResp(shDDL(shDDLTime), shVGTID("-", "MySQL56/a:1-12")),
+	}
+	got, err := scanSchemaHistoryStream(ctx, shRecv(ctx, first...), shKeyspace, "-", shStop, shTimings(time.Unix(shDDLTime, 0)), nil)
+	assert.ErrorIs(t, err, ErrSchemaHistoryScanTimeout)
+	want := &SchemaScanProgress{Position: "MySQL56/a:1-12", PendingDDLs: []int64{shDDLTime}, DDL: shRename, LastTimestamp: shDDLTime}
+	assert.Equal(t, want, got.Progress)
+
+	for name, tc := range map[string]struct {
+		rest []*vtgatepb.VStreamResponse
+		want SchemaHistoryVerdict
+	}{
+		"version follows within grace": {
+			[]*vtgatepb.VStreamResponse{shResp(shVersion(shDDLTime+1), shVGTID("-", "MySQL56/a:1-13")), shResp(shVGTID("-", shStop)), shResp(shVGTID("-", "MySQL56/a:1-21"))},
+			SchemaHistoryTracked,
+		},
+		"no version within grace": {
+			[]*vtgatepb.VStreamResponse{shResp(shRow(shDDLTime+600), shVGTID("-", "MySQL56/a:1-13"))},
+			SchemaHistoryUntracked,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			got, err := scanSchemaHistoryStream(ctx, shRecv(ctx, tc.rest...), shKeyspace, "-", shStop, shTimings(time.Unix(shDDLTime, 0).Add(time.Hour)), want)
+			assert.NoError(t, err)
+			assert.Equal(t, tc.want, got.Verdict)
+			assert.Equal(t, shRename, got.DDL)
+			if assert.NotNil(t, got.Progress) {
+				assert.Equal(t, tc.want == SchemaHistoryUntracked, got.Progress.Untracked)
+			}
+		})
+	}
+}
+
+// A resumed scan starts its stream at the saved progress, not at the cursor;
+// a saved untracked finding is the verdict without streaming, and with
+// nothing written since the earlier scan its findings are the verdict.
+func TestScanSchemaHistoryResumeRequests(t *testing.T) {
+	var requests []*vtgatepb.VStreamRequest
+	current := shStop
+	mock := &vstreamConnectionMock{vstreamFn: func(ctx context.Context, in *vtgatepb.VStreamRequest, opts ...grpc.CallOption) (vtgateservicepb.Vitess_VStreamClient, error) {
+		requests = append(requests, in)
+		if in.Vgtid.ShardGtids[0].Gtid == "current" {
+			return &vstreamClientMock{responses: []*vtgatepb.VStreamResponse{shResp(shVGTID("-80", current))}}, nil
+		}
+		return &vstreamClientMock{responses: []*vtgatepb.VStreamResponse{
+			shResp(shVersion(shDDLTime+1), shVGTID("-80", "MySQL56/a:1-16")),
+			shResp(shVGTID("-80", shStop)),
+			shResp(shVGTID("-80", "MySQL56/a:1-21")),
+		}}, nil
+	}}
+	client := connectClient{vstreamClientFn: func(ctx context.Context, ps PlanetScaleSource) (vstreamClient, error) { return mock, nil }}
+	tc := &psdbconnect.TableCursor{Keyspace: shKeyspace, Shard: "-80", Position: shStart}
+	resume := &SchemaScanProgress{Position: "MySQL56/a:1-15", PendingDDLs: []int64{shDDLTime}, DDL: shRename}
+	got, err := client.ScanSchemaHistory(context.Background(), &dbLogger{}, PlanetScaleSource{Database: shKeyspace}, "t", tc, resume)
+	assert.NoError(t, err)
+	assert.Equal(t, SchemaHistoryTracked, got.Verdict)
+	if assert.Len(t, requests, 2) {
+		assert.Equal(t, "MySQL56/a:1-15", requests[1].Vgtid.ShardGtids[0].Gtid)
+	}
+
+	requests = nil
+	got, err = client.ScanSchemaHistory(context.Background(), &dbLogger{}, PlanetScaleSource{Database: shKeyspace}, "t", tc,
+		&SchemaScanProgress{Position: "MySQL56/a:1-15", Untracked: true, DDL: shRename})
+	assert.NoError(t, err)
+	assert.Equal(t, SchemaHistoryUntracked, got.Verdict)
+	assert.Empty(t, requests)
+
+	requests = nil
+	current = "MySQL56/a:1-15"
+	got, err = client.ScanSchemaHistory(context.Background(), &dbLogger{}, PlanetScaleSource{Database: shKeyspace}, "t", tc,
+		&SchemaScanProgress{Position: "MySQL56/a:1-15", Tracked: true})
+	assert.NoError(t, err)
+	assert.Equal(t, SchemaHistoryTracked, got.Verdict)
+	assert.Len(t, requests, 1)
 }
 
 func TestScanSchemaHistoryStreamEveryDDLWithItsVersionIsTracked(t *testing.T) {
@@ -295,7 +381,7 @@ func TestScanSchemaHistoryStreamEveryDDLWithItsVersionIsTracked(t *testing.T) {
 		shResp(shVGTID("-", "MySQL56/a:1-16"), shVersion(shDDLTime+601), shVersion(shDDLTime+602)),
 		shResp(shVGTID("-", shStop)),
 	}
-	got, err := scanSchemaHistoryStream(ctx, shRecv(ctx, responses...), shKeyspace, "-", shStop, shTimings(time.Unix(shDDLTime, 0).Add(time.Hour)))
+	got, err := scanSchemaHistoryStream(ctx, shRecv(ctx, responses...), shKeyspace, "-", shStop, shTimings(time.Unix(shDDLTime, 0).Add(time.Hour)), nil)
 	assert.NoError(t, err)
 	assert.Equal(t, SchemaHistoryTracked, got.Verdict)
 }
@@ -316,7 +402,7 @@ func TestScanSchemaHistoryStreamLaterUntrackedDDLAfterTrackedOne(t *testing.T) {
 		shResp(shVGTID("-", shStop), shRow(shDDLTime+3800)),
 		shResp(shVGTID("-", "MySQL56/a:1-21")),
 	}
-	got, err := scanSchemaHistoryStream(ctx, shRecv(ctx, responses...), shKeyspace, "-", shStop, shTimings(time.Unix(shDDLTime, 0).Add(2*time.Hour)))
+	got, err := scanSchemaHistoryStream(ctx, shRecv(ctx, responses...), shKeyspace, "-", shStop, shTimings(time.Unix(shDDLTime, 0).Add(2*time.Hour)), nil)
 	assert.NoError(t, err)
 	assert.Equal(t, SchemaHistoryUntracked, got.Verdict)
 
@@ -329,7 +415,7 @@ func TestScanSchemaHistoryStreamLaterUntrackedDDLAfterTrackedOne(t *testing.T) {
 		shResp(shVGTID("-", "MySQL56/a:1-13"), shVersion(shDDLTime+1)),
 		shResp(shVGTID("-", shStop), shDDL(shDDLTime+3600)),
 	}
-	got, err = scanSchemaHistoryStream(ctx2, shRecv(ctx2, responses...), shKeyspace, "-", shStop, shTimings(time.Unix(shDDLTime, 0).Add(2*time.Hour)))
+	got, err = scanSchemaHistoryStream(ctx2, shRecv(ctx2, responses...), shKeyspace, "-", shStop, shTimings(time.Unix(shDDLTime, 0).Add(2*time.Hour)), nil)
 	assert.NoError(t, err)
 	assert.Equal(t, SchemaHistoryUntracked, got.Verdict)
 }
@@ -377,7 +463,7 @@ func TestScanSchemaHistoryStreamUndatedDDL(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			got, err := scanSchemaHistoryStream(ctx, shRecv(ctx, tc.responses...), shKeyspace, "-", shStop, shTimings(tc.now))
+			got, err := scanSchemaHistoryStream(ctx, shRecv(ctx, tc.responses...), shKeyspace, "-", shStop, shTimings(tc.now), nil)
 			assert.NoError(t, err)
 			assert.Equal(t, tc.want, got.Verdict)
 		})
@@ -397,7 +483,7 @@ func TestScanSchemaHistoryPositionCheckFailure(t *testing.T) {
 	}}
 	client := connectClient{vstreamClientFn: func(ctx context.Context, ps PlanetScaleSource) (vstreamClient, error) { return mock, nil }}
 	tc := &psdbconnect.TableCursor{Keyspace: shKeyspace, Shard: "-80", Position: shStart}
-	_, err := client.ScanSchemaHistory(context.Background(), &dbLogger{}, PlanetScaleSource{Database: shKeyspace}, "t", tc)
+	_, err := client.ScanSchemaHistory(context.Background(), &dbLogger{}, PlanetScaleSource{Database: shKeyspace}, "t", tc, nil)
 	assert.ErrorIs(t, err, ErrSchemaHistoryPositionCheck)
 	assert.Equal(t, codes.Unknown, status.Code(err))
 	assert.Equal(t, 1, requests, "no scan stream after the failed position check")

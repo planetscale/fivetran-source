@@ -167,7 +167,7 @@ type (
 	ReadFunc             func(ctx context.Context, logger DatabaseLogger, ps PlanetScaleSource, tableName string, columns []string, tc *psdbconnect.TableCursor, onResult OnResult, onCursor OnCursor, onUpdate OnUpdate) (*SerializedCursor, error)
 	CanConnectFunc       func(ctx context.Context, ps PlanetScaleSource) error
 	ListShardsFunc       func(ctx context.Context, ps PlanetScaleSource) ([]string, error)
-	ScanSchemaFunc       func(ctx context.Context, logger DatabaseLogger, ps PlanetScaleSource, tableName string, tc *psdbconnect.TableCursor) (SchemaHistory, error)
+	ScanSchemaFunc       func(ctx context.Context, logger DatabaseLogger, ps PlanetScaleSource, tableName string, tc *psdbconnect.TableCursor, resume *SchemaScanProgress) (SchemaHistory, error)
 	ColumnOrderFunc      func(ctx context.Context, keyspace, tableName string) ([]string, error)
 	ShardColumnOrderFunc func(ctx context.Context, ps PlanetScaleSource, keyspace, shard, tableName string) ([]string, error)
 
@@ -206,9 +206,9 @@ func (tcc *TestConnectClient) Read(ctx context.Context, logger DatabaseLogger, p
 
 // ScanSchemaHistory implements SchemaHistoryScanner; without
 // ScanSchemaHistoryFn it reports ErrSchemaHistoryUnavailable.
-func (tcc *TestConnectClient) ScanSchemaHistory(ctx context.Context, logger DatabaseLogger, ps PlanetScaleSource, tableName string, tc *psdbconnect.TableCursor) (SchemaHistory, error) {
+func (tcc *TestConnectClient) ScanSchemaHistory(ctx context.Context, logger DatabaseLogger, ps PlanetScaleSource, tableName string, tc *psdbconnect.TableCursor, resume *SchemaScanProgress) (SchemaHistory, error) {
 	if tcc.ScanSchemaHistoryFn != nil {
-		return tcc.ScanSchemaHistoryFn(ctx, logger, ps, tableName, tc)
+		return tcc.ScanSchemaHistoryFn(ctx, logger, ps, tableName, tc, resume)
 	}
 	return SchemaHistory{}, ErrSchemaHistoryUnavailable
 }

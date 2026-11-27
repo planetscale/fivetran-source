@@ -1129,9 +1129,10 @@ func TestColumnOrderCheck(t *testing.T) {
 		wantOrder []string // saved order after the sync
 	}{
 		{name: "identical", saved: saved, live: saved, progress: true, wantOrder: saved},
-		{name: "appended at end", saved: saved, live: []string{"id", "a", "b", "c", "d"}, progress: true, wantOrder: []string{"id", "a", "b", "c", "d"}},
+		{name: "appended at end", saved: saved, live: []string{"id", "a", "b", "c", "d"}, progress: true, wantTask: true, wantOrder: saved},
 		{name: "state without saved order", saved: nil, live: []string{"id", "newcol", "a", "b", "c"}, progress: true, wantOrder: []string{"id", "newcol", "a", "b", "c"}},
-		{name: "drop only is left to the existing paths", saved: saved, live: []string{"id", "a", "c"}, progress: true, wantOrder: []string{"id", "a", "c"}},
+		{name: "dropped", saved: saved, live: []string{"id", "a", "c"}, progress: true, wantTask: true, wantOrder: saved},
+		{name: "renamed in place", saved: saved, live: []string{"id", "a", "b2", "c"}, progress: true, wantTask: true, wantOrder: saved},
 		{name: "reordered", saved: saved, live: []string{"id", "a", "c", "b"}, progress: true, wantTask: true, wantOrder: saved},
 		{name: "added first", saved: saved, live: []string{"x", "id", "a", "b", "c"}, progress: true, wantTask: true, wantOrder: saved},
 		{name: "no progress: copied from scratch, order recorded", saved: saved, live: []string{"id", "a", "c", "b"}, progress: false, wantOrder: []string{"id", "a", "c", "b"}},
@@ -1240,8 +1241,8 @@ func TestColumnOrderChangedErrorTaskHasNoColumnNames(t *testing.T) {
 	assert.False(t, strings.Contains(task, "newcol"))
 }
 
-const columnOrderTrackerTaskForAddAfter = `Re-sync required: a schema change on table "a_add_after" in PlanetScale keyspace "SalesDB" changed the order of its columns ` +
-	`(a column added in the middle of the table, columns reordered, or columns dropped and added), and the keyspace does not track ` +
+const columnOrderTrackerTaskForAddAfter = `Re-sync required: a schema change on table "a_add_after" in PlanetScale keyspace "SalesDB" changed its columns ` +
+	`(a column added, dropped, renamed or moved), and the keyspace does not track ` +
 	`schema versions, so changes made before the schema change cannot be read with the right column names. ` +
 	`To fix this, enable the VTTablet parameter track_schema_versions for keyspace "SalesDB" in PlanetScale (with schema-version-max-age-seconds ` +
 	`set to 0 or at least as long as the binary log retention), then go to the connection's Settings tab in Fivetran and click "Resync all data".`
@@ -1249,7 +1250,7 @@ const columnOrderTrackerTaskForAddAfter = `Re-sync required: a schema change on 
 // scanByShard answers ScanSchemaHistory per shard and records the cursors it
 // was asked about.
 func scanByShard(verdicts map[string]lib.SchemaHistory, errs map[string]error, scanned *[]string) lib.ScanSchemaFunc {
-	return func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, tc *psdbconnect.TableCursor) (lib.SchemaHistory, error) {
+	return func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, tc *psdbconnect.TableCursor, resume *lib.SchemaScanProgress) (lib.SchemaHistory, error) {
 		*scanned = append(*scanned, tableName+"/"+tc.Shard+"@"+tc.Position)
 		if err := errs[tc.Shard]; err != nil {
 			return lib.SchemaHistory{}, err
@@ -1448,6 +1449,8 @@ func TestColumnOrderSavedOnlyAfterReadCompletes(t *testing.T) {
 	) (*lib.SerializedCursor, error) {
 		return nil, errors.New("vttablet: rpc error: code = Unavailable desc = no healthy tablet")
 	})
+	var scanned []string
+	db.(*lib.TestConnectClient).ScanSchemaHistoryFn = scanByShard(map[string]lib.SchemaHistory{"-": noDDL}, nil, &scanned)
 	assert.Error(t, (&Sync{}).Handle(context.Background(), psc, &db, tl, state, columnOrderSelection("t")))
 	assert.Equal(t, saved, state.Keyspaces["SalesDB"].Streams["SalesDB:t"].ColumnOrder)
 	if assert.NotEmpty(t, tl.states) {
@@ -1477,6 +1480,9 @@ func TestColumnOrderChangeWithPurgedBinlogsLetsReadResetTheCursor(t *testing.T) 
 	assert.Empty(t, tl.tasks)
 	assert.Equal(t, []string{"a_add_after/-", "b_bystander/-"}, readTables)
 	assert.Equal(t, []string{"a_add_after@", "b_bystander@MySQL56/old:1-10"}, readFrom, "the expired shard is read from an empty cursor (copied again)")
+	// Round 3 item 4: every shard of the table is copied again, so the
+	// table is truncated first (rows deleted at the source meanwhile go).
+	assert.True(t, tl.truncateCalled)
 	assert.Equal(t, historianLive, tl.states[len(tl.states)-1].Keyspaces["SalesDB"].Streams["SalesDB:a_add_after"].ColumnOrder)
 }
 
@@ -1515,61 +1521,10 @@ func TestConnectionWideErrorStopsTheSync(t *testing.T) {
 	assert.Equal(t, []string{"a_add_after/-"}, readTables)
 }
 
-// Review finding 1: Read may only step over a column vttablet reports as "not
-// found" when the handler confirmed that the saved order is a prefix of the
-// live order (or the schema history check passed, or the table is copied from
-// scratch); never for state without a saved order or an unknown source schema.
-func TestAddedColumnRetryOnlyWithConfirmedColumnOrder(t *testing.T) {
-	saved := []string{"id", "a", "b", "c"}
-	for _, tc := range []struct {
-		name      string
-		saved     []string
-		live      []string // nil: the Serializer does not know the table
-		progress  bool
-		verdict   *lib.SchemaHistory
-		wantAllow bool
-	}{
-		{name: "identical", saved: saved, live: saved, progress: true, wantAllow: true},
-		{name: "appended at end", saved: saved, live: []string{"id", "a", "b", "c", "d"}, progress: true, wantAllow: true},
-		{name: "state without saved order", saved: nil, live: []string{"id", "a", "x", "b", "c"}, progress: true},
-		{name: "source schema unknown", saved: saved, live: nil, progress: true},
-		{name: "copied from scratch", saved: nil, live: saved, progress: false, wantAllow: true},
-		{name: "order change, schema change tracked", saved: saved, live: []string{"id", "a", "x", "b", "c"}, progress: true, verdict: &trackedDDL, wantAllow: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			psc := &lib.PlanetScaleSource{}
-			pos := ""
-			if tc.progress {
-				pos = "MySQL56/old:1-10"
-			}
-			state := &lib.SyncState{Keyspaces: map[string]lib.KeyspaceState{
-				"SalesDB": {Streams: map[string]lib.ShardStates{"SalesDB:t": streamWithProgress(t, tc.saved, map[string]string{"-": pos})}},
-			}}
-			columns := map[string][]string{}
-			if tc.live != nil {
-				columns["SalesDB:t"] = tc.live
-			}
-			tl := &orderedTestLogger{testLogger: &testLogger{}, columns: columns}
-			var allowed []bool
-			db := lib.NewTestConnectClient(func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, columns []string,
-				cur *psdbconnect.TableCursor, onResult lib.OnResult, onCursor lib.OnCursor, onUpdate lib.OnUpdate,
-			) (*lib.SerializedCursor, error) {
-				allowed = append(allowed, lib.AddedColumnRetryAllowed(ctx))
-				return lib.TableCursorToSerializedCursor(&psdbconnect.TableCursor{Keyspace: cur.Keyspace, Shard: cur.Shard, Position: "MySQL56/t:1-20"})
-			})
-			if tc.verdict != nil {
-				var scanned []string
-				db.(*lib.TestConnectClient).ScanSchemaHistoryFn = scanByShard(map[string]lib.SchemaHistory{"-": *tc.verdict}, nil, &scanned)
-			}
-			assert.NoError(t, (&Sync{}).Handle(context.Background(), psc, &db, tl, state, columnOrderSelection("t")))
-			assert.Equal(t, []bool{tc.wantAllow}, allowed)
-		})
-	}
-}
-
-// Review finding 3: a Read that gives up after repeated timeouts keeps the
-// cursor it reached, but the live order is not saved (the cursor may still be
-// before the schema change).
+// Review finding 3 (and round 3 item 1): a Read that gives up after repeated
+// timeouts, or whose stream vtgate ended early, keeps the cursor it reached,
+// but the live order is not saved (the cursor may still be before the schema
+// change).
 func TestColumnOrderNotSavedWhenReadStopsEarly(t *testing.T) {
 	psc := &lib.PlanetScaleSource{}
 	saved := []string{"id", "a", "b", "c"}
@@ -1584,6 +1539,8 @@ func TestColumnOrderNotSavedWhenReadStopsEarly(t *testing.T) {
 		assert.NoError(t, err)
 		return sc, lib.ErrReadStoppedEarly
 	})
+	var scanned []string
+	db.(*lib.TestConnectClient).ScanSchemaHistoryFn = scanByShard(map[string]lib.SchemaHistory{"-": trackedDDL}, nil, &scanned)
 	assert.NoError(t, (&Sync{}).Handle(context.Background(), psc, &db, tl, state, columnOrderSelection("t")))
 	assert.Equal(t, "MySQL56/old:1-15", lastPosition(t, tl.states, "SalesDB:t", "-"))
 	assert.Equal(t, saved, tl.states[len(tl.states)-1].Keyspaces["SalesDB"].Streams["SalesDB:t"].ColumnOrder)
@@ -1691,7 +1648,7 @@ func TestCancelledSyncDuringSchemaHistoryScanStops(t *testing.T) {
 	defer cancel()
 	var readTables []string
 	db := lib.NewTestConnectClient(recordingReadFn(&readTables))
-	db.(*lib.TestConnectClient).ScanSchemaHistoryFn = func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, tc *psdbconnect.TableCursor) (lib.SchemaHistory, error) {
+	db.(*lib.TestConnectClient).ScanSchemaHistoryFn = func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, tc *psdbconnect.TableCursor, resume *lib.SchemaScanProgress) (lib.SchemaHistory, error) {
 		cancel()
 		return lib.SchemaHistory{}, errors.Wrap(lib.ErrSchemaHistoryInconclusive, context.Canceled.Error())
 	}
@@ -1918,25 +1875,6 @@ func TestShardsCuttingOverAtDifferentTimes(t *testing.T) {
 	}
 }
 
-// vtgate may answer from the shard that has not cut over: the shard that did
-// still compares its own order. A column appended at the end needs no scan on
-// either shard, and each shard saves its own order.
-func TestShardAheadOfVtgateOnAppendedColumnNeedsNoScan(t *testing.T) {
-	psc := &lib.PlanetScaleSource{}
-	state := historianTestState(t, historianSaved, map[string]string{"-80": "MySQL56/s1:1-10", "80-": "MySQL56/s2:1-10"})
-	appended := append(slices.Clone(historianSaved), "d")
-	var readTables, scanned []string
-	db := shardedHistorianClient(&readTables, &scanned, nil, historianSaved,
-		map[string][]string{"a_add_after/-80": appended, "a_add_after/80-": historianSaved})
-	tl := historianTestLogger(historianSaved)
-	assert.NoError(t, (&Sync{}).Handle(context.Background(), psc, &db, tl, state, columnOrderSelection("a_add_after", "b_bystander")))
-	assert.Empty(t, tl.tasks)
-	assert.Empty(t, scanned)
-	perShard, tableLevel := savedShardOrders(state)
-	assert.Equal(t, map[string][]string{"-80": appended, "80-": historianSaved}, perShard)
-	assert.Equal(t, historianSaved, tableLevel)
-}
-
 // Old state (table-level order only) is compared shard by shard with that
 // order; the sync then saves every shard's own entry.
 func TestOldStateTableLevelOrderFallback(t *testing.T) {
@@ -1955,16 +1893,20 @@ func TestOldStateTableLevelOrderFallback(t *testing.T) {
 	assert.Equal(t, historianSaved, tableLevel)
 }
 
-// A shard whose live order cannot be read (shard target not usable), or lacks
-// a column vtgate lists and the shard had (e.g. INVISIBLE), is never passed
-// silently: it is scanned, and its order is not saved. Without a scanner it
-// gets the re-sync Task.
+// A shard whose live order cannot be read (shard target not usable) is never
+// passed silently: it is scanned, and its order is not saved. A shard that
+// dropped a column is a change like any other: scanned, and once that passes
+// its new order is saved. Without a scanner both get the re-sync Task.
 func TestUnknownShardColumnOrderIsCheckedNotPassed(t *testing.T) {
-	for name, perShard := range map[string]map[string][]string{
-		"shard target fails":         {"a_add_after/-80": historianSaved},
-		"shard lacks a saved column": {"a_add_after/-80": historianSaved, "a_add_after/80-": {"id", "a", "b"}},
+	for name, tc := range map[string]struct {
+		perShard  map[string][]string
+		wantSaved []string
+	}{
+		"shard target fails":     {map[string][]string{"a_add_after/-80": historianSaved}, historianSaved},
+		"shard dropped a column": {map[string][]string{"a_add_after/-80": historianSaved, "a_add_after/80-": {"id", "a", "b"}}, []string{"id", "a", "b"}},
 	} {
 		t.Run(name, func(t *testing.T) {
+			perShard := tc.perShard
 			psc := &lib.PlanetScaleSource{}
 			state := historianTestState(t, historianSaved, map[string]string{"-80": "MySQL56/s1:1-10", "80-": "MySQL56/s2:1-10"})
 			var readTables, scanned []string
@@ -1975,7 +1917,7 @@ func TestUnknownShardColumnOrderIsCheckedNotPassed(t *testing.T) {
 			assert.Equal(t, []string{"a_add_after/80-@MySQL56/s2:1-10"}, scanned)
 			assert.Len(t, readTables, 3)
 			perShardSaved, _ := savedShardOrders(state)
-			assert.Equal(t, historianSaved, perShardSaved["80-"], "an unknown live order is never saved")
+			assert.Equal(t, tc.wantSaved, perShardSaved["80-"], "an unknown live order is never saved")
 
 			// No schema history scan available: the re-sync Task, not a pass.
 			state = historianTestState(t, historianSaved, map[string]string{"-80": "MySQL56/s1:1-10", "80-": "MySQL56/s2:1-10"})
@@ -1998,15 +1940,115 @@ func TestUnshardedColumnOrderSingleEntry(t *testing.T) {
 	state := historianTestState(t, historianSaved, map[string]string{"-": "MySQL56/old:1-10"})
 	appended := append(slices.Clone(historianSaved), "d")
 	var readTables, scanned, shardCalls []string
-	db := shardedHistorianClient(&readTables, &scanned, nil, appended, nil)
+	db := shardedHistorianClient(&readTables, &scanned, map[string]lib.SchemaHistory{"-": trackedDDL}, appended, nil)
 	db.(*lib.TestConnectClient).ShardColumnOrderFn = shardOrders(nil, &shardCalls)
 	tl := historianTestLogger(historianSaved)
 	assert.NoError(t, (&Sync{}).Handle(context.Background(), psc, &db, tl, state, columnOrderSelection("a_add_after", "b_bystander")))
 	assert.Empty(t, tl.tasks)
-	assert.Empty(t, scanned)
+	assert.Equal(t, []string{"a_add_after/-@MySQL56/old:1-10"}, scanned)
 	assert.Empty(t, shardCalls)
 	assert.Equal(t, []string{"a_add_after/-", "b_bystander/-"}, readTables)
 	perShard, tableLevel := savedShardOrders(state)
 	assert.Equal(t, map[string][]string{"-": appended}, perShard)
 	assert.Equal(t, appended, tableLevel)
+}
+
+// Any column change without the schema tracker raises the enable-tracking
+// Task, a column added at the end and a rename included (vttablet decodes the
+// older events by position against the current schema); with the tracker
+// the table syncs and the new order is saved.
+func TestAnyColumnChangeNeedsTheSchemaTracker(t *testing.T) {
+	for name, live := range map[string][]string{
+		"added at end":     {"id", "a", "b", "c", "d"},
+		"renamed in place": {"id", "a", "b2", "c"},
+		"dropped":          {"id", "a", "c"},
+	} {
+		for _, tracked := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/tracked=%v", name, tracked), func(t *testing.T) {
+				psc := &lib.PlanetScaleSource{}
+				state := historianTestState(t, historianSaved, map[string]string{"-": "MySQL56/old:1-10"})
+				tl := historianTestLogger(live)
+				var readTables, scanned []string
+				db := lib.NewTestConnectClient(recordingReadFn(&readTables))
+				verdict := untrackedDDL
+				if tracked {
+					verdict = trackedDDL
+				}
+				db.(*lib.TestConnectClient).ScanSchemaHistoryFn = scanByShard(map[string]lib.SchemaHistory{"-": verdict}, nil, &scanned)
+				assert.NoError(t, (&Sync{}).Handle(context.Background(), psc, &db, tl, state, columnOrderSelection("a_add_after", "b_bystander")))
+				assert.Equal(t, []string{"a_add_after/-@MySQL56/old:1-10"}, scanned)
+				order := state.Keyspaces["SalesDB"].Streams["SalesDB:a_add_after"].ColumnOrder
+				if !tracked {
+					assert.Equal(t, []string{"b_bystander/-"}, readTables)
+					if assert.Len(t, tl.tasks, 1) {
+						assert.Equal(t, columnOrderTrackerTaskForAddAfter, tl.tasks[0])
+					}
+					assert.Equal(t, historianSaved, order)
+					return
+				}
+				assert.Empty(t, tl.tasks)
+				assert.Equal(t, []string{"a_add_after/-", "b_bystander/-"}, readTables)
+				assert.Equal(t, live, order)
+			})
+		}
+	}
+}
+
+// Round 3 item 7: a sync that ends early with an error (here: a table with
+// no stream state) still sends the Task an earlier table raised.
+func TestPendingTaskSentWhenTheSyncEndsEarly(t *testing.T) {
+	psc := &lib.PlanetScaleSource{}
+	state := historianTestState(t, historianSaved, map[string]string{"-": "MySQL56/old:1-10"})
+	tl := historianTestLogger(historianLive)
+	var readTables, scanned []string
+	db := lib.NewTestConnectClient(recordingReadFn(&readTables))
+	db.(*lib.TestConnectClient).ScanSchemaHistoryFn = scanByShard(map[string]lib.SchemaHistory{"-": untrackedDDL}, nil, &scanned)
+	err := (&Sync{}).Handle(context.Background(), psc, &db, tl, state, columnOrderSelection("a_add_after", "c_without_state"))
+	assert.ErrorContains(t, err, "Unable to read state for stream SalesDB:c_without_state")
+	if assert.Len(t, tl.tasks, 1) {
+		assert.Equal(t, columnOrderTrackerTaskForAddAfter, tl.tasks[0])
+	}
+}
+
+// Round 3 item 8: a schema history scan that runs out of time after some
+// progress saves that progress on the shard's cursor and checkpoints it; the
+// table is skipped with a plain error (no Task), and the next sync resumes the
+// scan from there. A scan that got nowhere still raises the Task (see
+// TestColumnOrderChangeScanTimeoutRaisesResyncTask).
+func TestColumnOrderChangeScanTimeoutResumesNextSync(t *testing.T) {
+	psc := &lib.PlanetScaleSource{}
+	state := historianTestState(t, historianSaved, map[string]string{"-": "MySQL56/old:1-10"})
+	progress := &lib.SchemaScanProgress{Position: "MySQL56/old:1-14", PendingDDLs: []int64{1_700_000_000}, DDL: "RENAME TABLE ..."}
+	var readTables []string
+	var resumed []*lib.SchemaScanProgress
+	db := lib.NewTestConnectClient(recordingReadFn(&readTables))
+	db.(*lib.TestConnectClient).ScanSchemaHistoryFn = func(ctx context.Context, logger lib.DatabaseLogger, ps lib.PlanetScaleSource, tableName string, tc *psdbconnect.TableCursor, resume *lib.SchemaScanProgress) (lib.SchemaHistory, error) {
+		resumed = append(resumed, resume)
+		if resume == nil {
+			return lib.SchemaHistory{DDL: progress.DDL, Progress: progress}, errors.Wrap(lib.ErrSchemaHistoryScanTimeout, "context deadline exceeded")
+		}
+		return lib.SchemaHistory{Verdict: lib.SchemaHistoryTracked, DDL: progress.DDL, Progress: &lib.SchemaScanProgress{Position: "MySQL56/old:1-20", Tracked: true}}, nil
+	}
+
+	tl := historianTestLogger(historianLive)
+	err := (&Sync{}).Handle(context.Background(), psc, &db, tl, state, columnOrderSelection("a_add_after", "b_bystander"))
+	assert.ErrorContains(t, err, "has not reached the current binlog position yet")
+	assert.Empty(t, tl.tasks)
+	assert.Equal(t, []string{"b_bystander/-"}, readTables)
+	if assert.NotEmpty(t, tl.states) {
+		saved := tl.states[len(tl.states)-1].Keyspaces["SalesDB"].Streams["SalesDB:a_add_after"].Shards["-"]
+		assert.Equal(t, progress, saved.SchemaScan)
+		assert.Equal(t, "MySQL56/old:1-10", lastPosition(t, tl.states, "SalesDB:a_add_after", "-"), "the cursor itself is kept")
+	}
+
+	// The next sync resumes the scan, which finishes: the table syncs, and
+	// the new cursor carries no scan progress.
+	readTables = nil
+	tl = historianTestLogger(historianLive)
+	assert.NoError(t, (&Sync{}).Handle(context.Background(), psc, &db, tl, state, columnOrderSelection("a_add_after", "b_bystander")))
+	assert.Empty(t, tl.tasks)
+	assert.Equal(t, []*lib.SchemaScanProgress{nil, progress}, resumed)
+	assert.Equal(t, []string{"a_add_after/-", "b_bystander/-"}, readTables)
+	assert.Nil(t, state.Keyspaces["SalesDB"].Streams["SalesDB:a_add_after"].Shards["-"].SchemaScan)
+	assert.Equal(t, historianLive, state.Keyspaces["SalesDB"].Streams["SalesDB:a_add_after"].ColumnOrder)
 }
